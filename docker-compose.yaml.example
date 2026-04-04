@@ -1,0 +1,19 @@
+services:
+  viiwork:
+    image: viiwork
+    build: .
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+      # Optional: uncomment for IPMI power monitoring (requires /dev/ipmi0 on host)
+      # - /dev/ipmi0:/dev/ipmi0
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./models:/models
+      - ./viiwork.yaml:/etc/viiwork/viiwork.yaml
+      # Copy viiwork.yaml.example to viiwork.yaml before starting
+    group_add:
+      - video
+      - render
+    restart: unless-stopped
