@@ -1,0 +1,48 @@
+server:
+  host: 0.0.0.0
+  port: 8080
+
+model:
+  path: /models/gpt-oss-20b-Q4_K_M.gguf
+  context_size: 8192
+  n_gpu_layers: -1
+
+gpus:
+  count: 10
+  base_port: 9001
+  # power_limit_watts: 180  # optional: limit per-GPU power via rocm-smi
+
+backend:
+  binary: llama-server
+  extra_args: []
+
+health:
+  interval: 5s
+  timeout: 3s
+  max_failures: 3
+
+balancer:
+  latency_window: 30s
+  high_load_threshold: 7
+  max_in_flight_per_gpu: 4
+
+# Mesh: uncomment and list peer viiwork hosts to enable cluster mode.
+# peers:
+#   hosts:
+#     - 192.168.1.10:8080
+#     - 192.168.1.11:8080
+#   poll_interval: 10s
+#   timeout: 3s
+
+# Electricity cost tracking: uncomment and set ENTSOE_API_KEY in .env
+# cost:
+#   bidding_zone: 10YFI-1--------U  # Finland
+#   timezone: Europe/Helsinki
+#   transfer:
+#     winter:
+#       peak_cents_kwh: 4.28
+#       offpeak_cents_kwh: 2.49
+#     summer:
+#       flat_cents_kwh: 2.49
+#   electricity_tax_cents_kwh: 2.253
+#   vat_percent: 25.5

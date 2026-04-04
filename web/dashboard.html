@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>viiwork mesh</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace; background: #0d1117; color: #c9d1d9; padding: 24px; }
+  h1 { font-size: 1.4rem; margin-bottom: 16px; color: #58a6ff; }
+  h2 { font-size: 1.1rem; margin: 20px 0 10px; color: #8b949e; }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 16px; margin-bottom: 12px; }
+  .status { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; }
+  .healthy, .reachable { background: #3fb950; }
+  .unhealthy { background: #d29922; }
+  .dead, .unreachable { background: #f85149; }
+  .starting { background: #8b949e; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 6px 12px; border-bottom: 1px solid #21262d; }
+  th { color: #8b949e; font-weight: 500; font-size: 0.85rem; }
+  .models { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+  .model-tag { background: #1f6feb22; border: 1px solid #1f6feb; border-radius: 4px; padding: 2px 8px; font-size: 0.85rem; color: #58a6ff; }
+  .summary { display: flex; gap: 24px; margin-bottom: 16px; font-size: 0.9rem; flex-wrap: wrap; }
+  .summary span { color: #8b949e; }
+  .summary strong { color: #c9d1d9; }
+  #error { color: #f85149; display: none; margin-bottom: 12px; }
+  canvas { width: 100%; margin-bottom: 8px; border: 1px solid #21262d; border-radius: 4px; }
+  #footer { margin-top: 32px; padding-top: 16px; border-top: 1px solid #21262d; color: #484f58; font-size: 0.75rem; }
+</style>
+</head>
+<body>
+<h1>viiwork mesh</h1>
+<div id="error"></div>
+<div id="summary" class="summary"></div>
+<div id="content"></div>
+<div id="graphs-section" style="display:none">
+  <h2>GPU Metrics (1h)</h2>
+  <canvas id="graph-util" height="180"></canvas>
+  <canvas id="graph-vram" height="180"></canvas>
+  <canvas id="graph-power" height="140"></canvas>
+</div>
+<div id="graphs-unavailable" style="display:none;color:#8b949e;text-align:center;padding:40px">GPU metrics unavailable</div>
+<div id="footer"></div>
+
+<script>
+// --- Cluster status (existing) ---
+let clusterVersion = '';
+
+async function refresh() {
+  try {
+    const resp = await fetch('/v1/cluster');
+    if (!resp.ok) throw new Error('fetch failed');
+    const data = await resp.json();
+    document.getElementById('error').style.display = 'none';
+    if (data.version) clusterVersion = data.version;
+    render(data);
+  } catch (e) {
+    document.getElementById('error').textContent = 'Failed to fetch cluster state: ' + e.message;
+    document.getElementById('error').style.display = 'block';
+  }
+}
+
+function render(data) {
+  const totalGPUs = data.local.backends.length +
+    (data.peers || []).reduce((s, p) => s + (p.healthy_backends || 0), 0);
+  const healthyGPUs = data.local.backends.filter(b => b.status === 'healthy').length +
+    (data.peers || []).reduce((s, p) => s + (p.healthy_backends || 0), 0);
+  const totalPower = (data.local.power_available ? data.local.power_watts : 0) +
+    (data.peers || []).reduce((s, p) => s + (p.power_available ? p.power_watts : 0), 0);
+  const clusterCost = data.cluster_cost_eur_per_hour || 0;
+  const clusterCostToday = data.cluster_cost_today_eur || 0;
+
+  document.getElementById('summary').innerHTML = `
+    <div><span>Node:</span> <strong>${data.node_id}</strong></div>
+    <div><span>Models:</span> <strong>${(data.models || []).length}</strong></div>
+    <div><span>GPUs:</span> <strong>${healthyGPUs}/${totalGPUs} healthy</strong></div>
+    <div><span>Peers:</span> <strong>${(data.peers || []).filter(p => p.status === 'reachable').length}/${(data.peers || []).length} reachable</strong></div>
+    <div><span>Power:</span> <strong>${totalPower > 0 ? totalPower + 'W' : 'N/A'}</strong></div>
+    <div><span>Cost:</span> <strong>${clusterCost > 0 ? clusterCost.toFixed(2) + ' EUR/h' : 'N/A'}</strong></div>
+    <div><span>Today:</span> <strong>${clusterCostToday > 0 ? clusterCostToday.toFixed(2) + ' EUR' : 'N/A'}</strong></div>
+  `;
+
+  let html = '';
+  html += '<h2>Local Backends (' + data.local.model + ')';
+  if (data.local.power_available) html += ' \u2014 ' + data.local.power_watts + 'W';
+  if (data.local.cost_available) html += ' \u2014 ' + data.local.cost_eur_per_hour.toFixed(2) + ' EUR/h';
+  html += '</h2><div class="card"><table>';
+  html += '<tr><th>GPU</th><th>Status</th><th>In-Flight</th></tr>';
+  for (const b of data.local.backends) {
+    html += `<tr><td>gpu-${b.gpu_id}</td><td><span class="status ${b.status}"></span>${b.status}</td><td>${b.in_flight}</td></tr>`;
+  }
+  html += '</table></div>';
+
+  if (data.peers && data.peers.length > 0) {
+    html += '<h2>Peers</h2>';
+    for (const p of data.peers) {
+      html += '<div class="card"><table>';
+      html += `<tr><td><span class="status ${p.status}"></span><strong>${p.addr}</strong></td><td>${p.status}</td>`;
+      if (p.status === 'reachable') {
+        html += `<td>${p.node_id}</td><td>${p.healthy_backends} GPUs</td><td>${p.total_in_flight} in-flight</td>`;
+        html += p.power_available ? `<td>${p.power_watts}W</td>` : '<td style="color:#8b949e">N/A</td>';
+        html += p.cost_available ? `<td>${p.cost_eur_per_hour.toFixed(2)} EUR/h</td>` : '<td style="color:#8b949e">N/A</td>';
+      }
+      html += '</tr></table>';
+      if (p.models && p.models.length > 0) {
+        html += '<div class="models">';
+        for (const m of p.models) html += `<span class="model-tag">${m}</span>`;
+        html += '</div>';
+      }
+      html += '</div>';
+    }
+  }
+
+  html += '<h2>Cluster Models</h2><div class="models">';
+  for (const m of (data.models || [])) html += `<span class="model-tag">${m}</span>`;
+  html += '</div>';
+
+  document.getElementById('content').innerHTML = html;
+
+  // Accumulate power history from cluster data
+  if (data.local && data.local.power_available) {
+    powerHistory.push({t: Math.floor(Date.now()/1000), watts: data.local.power_watts});
+    if (powerHistory.length > 720) powerHistory = powerHistory.slice(-720);
+    drawPowerGraph();
+  }
+
+  // Update footer
+  document.getElementById('footer').textContent = 'viiwork' + (clusterVersion ? ' ' + clusterVersion : '');
+}
+
+refresh();
+setInterval(refresh, 5000);
+
+// --- GPU Metrics Graphs ---
+const GPU_COLORS = [
+  '#58a6ff','#3fb950','#d29922','#f85149','#bc8cff',
+  '#39d353','#db6d28','#f778ba','#79c0ff','#56d364'
+];
+let metricsData = {};
+let vramTotalMB = {};
+let powerHistory = [];
+
+async function initMetrics() {
+  try {
+    const resp = await fetch('/v1/metrics');
+    const data = await resp.json();
+    if (!data.available) {
+      document.getElementById('graphs-unavailable').style.display = 'block';
+      return;
+    }
+    document.getElementById('graphs-section').style.display = '';
+    metricsData = data.gpus || {};
+    for (const [id, samples] of Object.entries(metricsData)) {
+      if (samples.length > 0) vramTotalMB[id] = samples[0].vram_total_mb;
+    }
+    drawAllGraphs();
+    startSSE();
+  } catch (e) {
+    document.getElementById('graphs-unavailable').style.display = 'block';
+  }
+}
+
+function startSSE() {
+  const es = new EventSource('/v1/metrics/stream');
+  es.onmessage = (e) => {
+    const d = JSON.parse(e.data);
+    for (const [id, g] of Object.entries(d.gpus)) {
+      if (!metricsData[id]) metricsData[id] = [];
+      metricsData[id].push({t: d.t, util: g.util, vram_used_mb: g.vram_used_mb, vram_total_mb: vramTotalMB[id] || 16368});
+      if (metricsData[id].length > 720) metricsData[id] = metricsData[id].slice(-720);
+    }
+    requestAnimationFrame(drawAllGraphs);
+  };
+}
+
+function drawAllGraphs() {
+  drawGraph('graph-util', 'GPU Utilization', 100, '%', s => s.util);
+  const maxVRAM = Object.values(vramTotalMB)[0] || 16368;
+  drawGraph('graph-vram', 'VRAM Usage', maxVRAM, 'MB', s => s.vram_used_mb);
+}
+
+function getGlobalTimeRange() {
+  let tMin = Infinity, tMax = -Infinity;
+  for (const samples of Object.values(metricsData)) {
+    if (samples.length > 0) {
+      tMin = Math.min(tMin, samples[0].t);
+      tMax = Math.max(tMax, samples[samples.length - 1].t);
+    }
+  }
+  return {tMin: isFinite(tMin) ? tMin : 0, tMax: isFinite(tMax) ? tMax : 1};
+}
+
+function drawGraph(canvasId, label, yMax, unit, extractor) {
+  const canvas = document.getElementById(canvasId);
+  const ctx = canvas.getContext('2d');
+  canvas.width = canvas.parentElement.clientWidth || 800;
+  const W = canvas.width, H = canvas.height;
+  const pad = {l:50, r:10, t:20, b:20};
+  const gw = W - pad.l - pad.r, gh = H - pad.t - pad.b;
+
+  ctx.fillStyle = '#0d1117';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.strokeStyle = '#21262d';
+  ctx.fillStyle = '#8b949e';
+  ctx.font = '11px monospace';
+  for (let i = 0; i <= 4; i++) {
+    const y = pad.t + gh - (i / 4) * gh;
+    ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(W - pad.r, y); ctx.stroke();
+    ctx.fillText((yMax * i / 4).toFixed(0) + unit, 2, y + 4);
+  }
+  ctx.fillText(label, pad.l, 14);
+
+  const {tMin, tMax} = getGlobalTimeRange();
+  const tRange = Math.max(tMax - tMin, 1);
+
+  let gpuIdx = 0;
+  for (const [id, samples] of Object.entries(metricsData)) {
+    if (samples.length < 2) { gpuIdx++; continue; }
+    ctx.strokeStyle = GPU_COLORS[gpuIdx % GPU_COLORS.length];
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    for (let i = 0; i < samples.length; i++) {
+      const x = pad.l + ((samples[i].t - tMin) / tRange) * gw;
+      const val = extractor(samples[i]);
+      const y = pad.t + gh - (val / yMax) * gh;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    gpuIdx++;
+  }
+}
+
+function drawPowerGraph() {
+  const canvas = document.getElementById('graph-power');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  canvas.width = canvas.parentElement.clientWidth || 800;
+  const W = canvas.width, H = canvas.height;
+  const pad = {l:50, r:10, t:20, b:20};
+  const gw = W - pad.l - pad.r, gh = H - pad.t - pad.b;
+
+  ctx.fillStyle = '#0d1117';
+  ctx.fillRect(0, 0, W, H);
+
+  if (powerHistory.length < 2) {
+    ctx.fillStyle = '#8b949e';
+    ctx.font = '11px monospace';
+    ctx.fillText('System Power (accumulating...)', pad.l, 14);
+    return;
+  }
+
+  const maxW = Math.max(...powerHistory.map(p => p.watts), 100);
+  ctx.strokeStyle = '#21262d';
+  ctx.fillStyle = '#8b949e';
+  ctx.font = '11px monospace';
+  for (let i = 0; i <= 4; i++) {
+    const y = pad.t + gh - (i / 4) * gh;
+    ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(W - pad.r, y); ctx.stroke();
+    ctx.fillText((maxW * i / 4).toFixed(0) + 'W', 2, y + 4);
+  }
+  ctx.fillText('System Power', pad.l, 14);
+
+  ctx.strokeStyle = '#f0883e';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  const tMin = powerHistory[0].t, tMax = powerHistory[powerHistory.length-1].t;
+  const tRange = Math.max(tMax - tMin, 1);
+  for (let i = 0; i < powerHistory.length; i++) {
+    const x = pad.l + ((powerHistory[i].t - tMin) / tRange) * gw;
+    const y = pad.t + gh - (powerHistory[i].watts / maxW) * gh;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+
+initMetrics();
+</script>
+</body>
+</html>

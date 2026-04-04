@@ -1,0 +1,7 @@
+bin/
+models/
+opencode.json
+docker-compose.yaml
+viiwork.yaml
+viiwork-*.yaml
+.env
