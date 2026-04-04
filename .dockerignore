@@ -1,0 +1,8 @@
+models/
+bin/
+*.gguf
+docker-compose.yaml
+viiwork.yaml
+viiwork-*.yaml
+.env
+.git
