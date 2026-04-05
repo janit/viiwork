@@ -2,6 +2,8 @@
 
 LLM inference load balancer for AMD Radeon VII GPUs. Runs multiple llama-server instances and exposes a single OpenAI-compatible API with adaptive load balancing. Multiple nodes can form a mesh cluster where any node is an entry point and requests route by model.
 
+![viiwork dashboard](viiwork-260405.webp)
+
 ## Background
 
 I had 50 Radeon VII cards sitting in servers in my mother-in-law's garage (who doesn't?) and wanted to do something useful with them. viiwork was born out of that — a way to turn a pile of aging-but-capable GPUs into a practical LLM inference cluster.
@@ -33,7 +35,7 @@ cp viiwork.yaml.example viiwork.yaml
 # Edit viiwork.yaml: set model path, GPU count, etc.
 mkdir -p models
 huggingface-cli download unsloth/gemma-4-26B-A4B-it-GGUF \
-  gemma-4-26B-A4B-it-UD-Q3_K_XL.gguf --local-dir models
+  gemma-4-26B-A4B-it-UD-Q3_K_M.gguf --local-dir models
 docker compose up -d
 ```
 
@@ -42,9 +44,9 @@ docker compose up -d
 Run multiple models on one host using `./scripts/setup-node.sh`. It detects GPUs, lets you assign models to GPU groups, downloads models, and generates configs with mesh peering between instances.
 
 Example: 10 GPUs split across 3 models:
-- 4 GPUs on port 8080: Gemma-4-31B-IT (flagship text generation)
-- 4 GPUs on port 8081: Gemma-4-26B-A4B-IT (fast MoE inference)
-- 2 GPUs on port 8082: Gemma-4-E4B-IT (lightweight tasks)
+- 4 GPUs on port 8080: Gemma-4-26B-A4B-IT (fast MoE inference, 4B active params)
+- 4 GPUs on port 8081: Qwen3-32B (general reasoning)
+- 2 GPUs on port 8082: Gemma-4-E4B-IT (lightweight/multimodal tasks)
 
 All models visible from any port via mesh routing.
 
@@ -111,20 +113,37 @@ Track real-time electricity cost per node using Nord Pool spot prices.
 
 The dashboard shows per-node cost rate (EUR/h), daily accumulated cost, and cluster totals.
 
+## Pipelines
+
+Pipelines chain multiple LLM steps into virtual models. A consumer calls a virtual model name (e.g. `localize-fi` or `improve-en`) and viiwork executes a sequence of prompts across one or more real backend models.
+
+Two pipeline types are included:
+
+- **Localization** — translate, culturally adapt, and QC text in a single request. Supports locale aliases and per-locale glossaries.
+- **Text improvement** — generate text then rewrite it to remove AI writing patterns (de-slop).
+
+Each step specifies a model, a Go template prompt, and temperature. Steps execute sequentially, with each step's output feeding the next. Configure pipelines in `viiwork.yaml` — see the example config for both pipeline types.
+
 ## Dashboard
 
 Available at `http://localhost:8080/`. Shows:
-- Node status and GPU health
-- Peer mesh connectivity
+- Local backends table with per-GPU status, in-flight count, context usage, and RSS memory
+- Live in-flight request timers with token progress, context, and RAM usage
+- Activity log (newest first) with model name, completion time, and token counts
+- Host memory graph
 - Live GPU utilization and VRAM graphs (1 hour history, SSE updates)
+- Peer mesh connectivity
 - Power consumption and electricity cost
-- Build version in footer
+
+A lightweight chat UI is available at `/chat` for quick model interaction.
 
 ## API Endpoints
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/` | GET | Status dashboard |
+| `/chat` | GET | Lightweight chat UI |
+| `/health` | GET | System health (JSON) |
 | `/v1/models` | GET | List all models (local + mesh peers) |
 | `/v1/chat/completions` | POST | Chat completion (routes by model) |
 | `/v1/completions` | POST | Text completion (routes by model) |

@@ -268,12 +268,18 @@ echo ""
 echo "  DATA SCIENCE:"
 echo "  12) DeepSeek-R1-Distill-Qwen-32B (Q2_K, ~12.3GB) - chain-of-thought, math"
 echo ""
+echo "  TRANSLATION & MULTILINGUAL:"
+echo "  13) Qwen2.5-7B-Instruct (Q8_0, ~7.5GB) - strong multilingual, lightweight"
+echo "  14) Qwen2.5-14B-Instruct (Q6_K, ~11.3GB) - strong multilingual, high quality"
+echo "  15) Mistral-Nemo-Instruct-12B (Q6_K, ~9.4GB) - good European languages"
+echo ""
 echo "  OTHER:"
-echo "  13) Custom (enter HuggingFace repo and filename)"
+echo "  16) Custom (enter HuggingFace repo and filename)"
 echo ""
 echo "  FAMILIES (auto-distribute GPUs across all models in group):"
 echo "  code) All coding      text) All text & reasoning"
-echo "  g4)   All Gemma 4     data) Data science          all) Everything"
+echo "  g4)   All Gemma 4     data) Data science"
+echo "  trans) Translation    all) Everything"
 echo ""
 echo "  DISCOVER (requires jq; optionally llmfit for smarter picks):"
 echo "  0) I'm feeling lucky — trending models, any category"
@@ -306,7 +312,7 @@ MODEL_CTX[4]=8192
 MODEL_NAMES[5]="Qwen3-32B"
 MODEL_REPOS[5]="unsloth/Qwen3-32B-GGUF"
 MODEL_FILES[5]="Qwen3-32B-UD-Q2_K_XL.gguf"
-MODEL_CTX[5]=8192
+MODEL_CTX[5]=4096
 
 MODEL_NAMES[6]="Gemma-3-27B-IT"
 MODEL_REPOS[6]="unsloth/gemma-3-27b-it-GGUF"
@@ -321,12 +327,12 @@ MODEL_CTX[7]=32768
 MODEL_NAMES[8]="Gemma-4-26B-A4B-IT"
 MODEL_REPOS[8]="unsloth/gemma-4-26B-A4B-it-GGUF"
 MODEL_FILES[8]="gemma-4-26B-A4B-it-UD-Q3_K_M.gguf"
-MODEL_CTX[8]=8192
+MODEL_CTX[8]=4096
 
 MODEL_NAMES[9]="Gemma-4-26B-A4B-IT-Light"
 MODEL_REPOS[9]="unsloth/gemma-4-26B-A4B-it-GGUF"
 MODEL_FILES[9]="gemma-4-26B-A4B-it-UD-IQ3_S.gguf"
-MODEL_CTX[9]=8192
+MODEL_CTX[9]=4096
 
 MODEL_NAMES[10]="Gemma-4-E4B-IT"
 MODEL_REPOS[10]="unsloth/gemma-4-E4B-it-GGUF"
@@ -341,7 +347,22 @@ MODEL_CTX[11]=32768
 MODEL_NAMES[12]="DeepSeek-R1-Distill-Qwen-32B"
 MODEL_REPOS[12]="unsloth/DeepSeek-R1-Distill-Qwen-32B-GGUF"
 MODEL_FILES[12]="DeepSeek-R1-Distill-Qwen-32B-Q2_K.gguf"
-MODEL_CTX[12]=8192
+MODEL_CTX[12]=4096
+
+MODEL_NAMES[13]="Qwen2.5-7B-Instruct"
+MODEL_REPOS[13]="bartowski/Qwen2.5-7B-Instruct-GGUF"
+MODEL_FILES[13]="Qwen2.5-7B-Instruct-Q8_0.gguf"
+MODEL_CTX[13]=32768
+
+MODEL_NAMES[14]="Qwen2.5-14B-Instruct"
+MODEL_REPOS[14]="bartowski/Qwen2.5-14B-Instruct-GGUF"
+MODEL_FILES[14]="Qwen2.5-14B-Instruct-Q6_K.gguf"
+MODEL_CTX[14]=32768
+
+MODEL_NAMES[15]="Mistral-Nemo-Instruct-12B"
+MODEL_REPOS[15]="bartowski/Mistral-Nemo-Instruct-2407-GGUF"
+MODEL_FILES[15]="Mistral-Nemo-Instruct-2407-Q6_K.gguf"
+MODEL_CTX[15]=32768
 
 # ── Family definitions (shortcode → model indices) ──────────────────────────
 declare -A FAMILY_MODELS
@@ -349,7 +370,8 @@ FAMILY_MODELS[code]="1 2 3 4"
 FAMILY_MODELS[text]="5 6 7"
 FAMILY_MODELS[g4]="8 9 10 11"
 FAMILY_MODELS[data]="12"
-FAMILY_MODELS[all]="1 2 3 4 5 6 7 8 9 10 11 12"
+FAMILY_MODELS[trans]="13 14 15"
+FAMILY_MODELS[all]="1 2 3 4 5 6 7 8 9 10 11 12 13 14 15"
 
 # Assign a family of models. Asks whether to spread all GPUs or use 1 each.
 assign_family() {
@@ -403,7 +425,7 @@ GPU_OFFSET=0
 
 echo "You have ${GPU_COUNT} GPUs. Assign models to GPU groups."
 echo ""
-echo "  Enter a number (1-13) for a single model"
+echo "  Enter a number (1-16) for a single model"
 echo "  Enter a family: code, text, g4, data, all"
 echo "  Enter 0/0c/0r/0v/0w/0l/0a for 'I'm feeling lucky'"
 echo ""
@@ -456,13 +478,13 @@ while [ "$GPUS_REMAINING" -gt 0 ]; do
     fi
 
     # Single model selection
-    if [ "$choice" = "13" ]; then
+    if [ "$choice" = "16" ]; then
         read -rp "  HuggingFace repo (e.g. user/model-GGUF): " custom_repo
         read -rp "  Filename (e.g. model-q4_k_m.gguf): " custom_file
-        MODEL_REPOS[13]="$custom_repo"
-        MODEL_FILES[13]="$custom_file"
-        MODEL_NAMES[13]="Custom"
-        MODEL_CTX[13]=32768
+        MODEL_REPOS[16]="$custom_repo"
+        MODEL_FILES[16]="$custom_file"
+        MODEL_NAMES[16]="Custom"
+        MODEL_CTX[16]=32768
     fi
 
     if [ "$GPUS_REMAINING" -eq "$GPU_COUNT" ] && [ "$GPUS_REMAINING" -le 4 ]; then
@@ -493,11 +515,35 @@ if [ "$GPUS_REMAINING" -gt 0 ] && [ "${#INSTANCES[@]}" -gt 0 ]; then
     echo "Assigned remaining ${GPUS_REMAINING} GPUs to ${MODEL_NAMES[$lchoice]}."
 fi
 
+# Validate no GPU device is used by more than one instance
+declare -A USED_GPUS
+has_overlap=false
+for inst in "${INSTANCES[@]}"; do
+    IFS=: read -r choice gpus offset port <<< "$inst"
+    for ((g=0; g<gpus; g++)); do
+        dev=$((offset + g))
+        if [[ -n "${USED_GPUS[$dev]+x}" ]]; then
+            echo "ERROR: GPU ${dev} assigned to both port ${USED_GPUS[$dev]} and port ${port}"
+            has_overlap=true
+        fi
+        USED_GPUS[$dev]="$port"
+    done
+done
+if $has_overlap; then
+    echo "Aborting — fix GPU assignments to avoid overlap."
+    exit 1
+fi
+
 echo ""
 echo "=== Configuration Summary ==="
 for inst in "${INSTANCES[@]}"; do
     IFS=: read -r choice gpus offset port <<< "$inst"
-    echo "  Port ${port}: ${MODEL_NAMES[$choice]} on ${gpus} GPUs (GPU ${offset}-$((offset + gpus - 1)))"
+    devs=""
+    for ((g=0; g<gpus; g++)); do
+        [ -n "$devs" ] && devs="${devs}, "
+        devs="${devs}$((offset + g))"
+    done
+    echo "  Port ${port}: ${MODEL_NAMES[$choice]} on GPUs [${devs}]"
 done
 echo ""
 read -rp "Proceed? (y/n): " confirm
@@ -562,7 +608,7 @@ gpus:
 
 backend:
   binary: llama-server
-  extra_args: []
+  extra_args: ["--reasoning-format", "deepseek"]
 
 health:
   interval: 5s
@@ -614,6 +660,13 @@ else
         cfg_name="viiwork-${port}.yaml"
         base_backend_port=$((9001 + offset))
 
+        # Build explicit GPU device list: [offset, offset+1, ..., offset+gpus-1]
+        devices_yaml=""
+        for ((g=0; g<gpus; g++)); do
+            devices_yaml="${devices_yaml}
+    - $((offset + g))"
+        done
+
         # Build peer list excluding self
         peers_yaml=""
         for other in "${INSTANCES[@]}"; do
@@ -635,13 +688,13 @@ model:
   n_gpu_layers: -1
 
 gpus:
-  count: ${gpus}
+  devices:${devices_yaml}
   base_port: ${base_backend_port}
   # power_limit_watts: 180
 
 backend:
   binary: llama-server
-  extra_args: []
+  extra_args: ["--reasoning-format", "deepseek"]
 
 health:
   interval: 5s

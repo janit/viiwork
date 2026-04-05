@@ -397,7 +397,7 @@ func toolStatus(id json.RawMessage) *rpcResponse {
 
 // HTTP helpers
 
-var httpClient = &http.Client{Timeout: 5 * time.Minute}
+var httpClient = &http.Client{Timeout: 60 * time.Minute}
 
 func httpGet(url string) ([]byte, error) {
 	resp, err := httpClient.Get(url)

@@ -1,0 +1,9 @@
+# Example glossary file for localization pipelines.
+# Copy and adapt for your target locale.
+terms:
+  - source: "cloud computing"
+    target: "cloud computing"
+    note: "replace target with locale-appropriate term"
+  - source: "machine learning"
+    target: "machine learning"
+    note: "replace target with locale-appropriate term"

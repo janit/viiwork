@@ -8,13 +8,16 @@ model:
   n_gpu_layers: -1
 
 gpus:
+  # Use 'devices' to specify exact GPU IDs (recommended for multi-instance):
+  #   devices: [0, 1, 2]
+  # Or use 'count' for simple single-instance setups (uses GPUs 0..count-1):
   count: 10
   base_port: 9001
   # power_limit_watts: 180  # optional: limit per-GPU power via rocm-smi
 
 backend:
   binary: llama-server
-  extra_args: []
+  extra_args: ["--reasoning-format", "deepseek"]  # enables <think> tag parsing for thinking models
 
 health:
   interval: 5s
@@ -46,3 +49,59 @@ balancer:
 #       flat_cents_kwh: 2.49
 #   electricity_tax_cents_kwh: 2.253
 #   vat_percent: 25.5
+
+# Localization pipelines: virtual models that chain multiple real models.
+# Consumer calls e.g. model "localize-fi" and gets culturally adapted text.
+# pipelines:
+#   localize:
+#     locale_aliases:
+#       fi: fi-FI
+#       se: sv-SE
+#       pt: pt-BR
+#       es: es-MX
+#       fr: fr-FR
+#     locales:
+#       pt-BR:
+#         language: Portuguese
+#         audience: "Brazilian general audience"
+#         formality: informal
+#         glossary: glossaries/pt-br.yaml
+#       fi-FI:
+#         language: Finnish
+#         audience: "Finnish general audience"
+#         formality: formal
+#         glossary: glossaries/fi.yaml
+#     steps:
+#       - name: translate
+#         model: alma-r-13b
+#         prompt: prompts/translate.tmpl
+#         temperature: 0.1
+#       - name: localize
+#         model: qwen2.5-14b
+#         prompt: prompts/localize.tmpl
+#         temperature: 0.4
+#       - name: qc
+#         model: qwen2.5-7b
+#         prompt: prompts/qc.tmpl
+#         temperature: 0.1
+#         json_output: true
+#
+#   # Text improvement pipeline: generates text then rewrites to remove AI patterns.
+#   # Consumer calls model "improve-default" (or "improve-en").
+#   improve:
+#     locale_aliases:
+#       en: default
+#     locales:
+#       default:
+#         language: English
+#         audience: "general reader"
+#         formality: neutral
+#     steps:
+#       - name: generate
+#         model: qwen2.5-14b
+#         prompt: prompts/generate.tmpl
+#         temperature: 0.7
+#       - name: improve
+#         model: qwen2.5-14b
+#         prompt: prompts/improve.tmpl
+#         temperature: 0.3
