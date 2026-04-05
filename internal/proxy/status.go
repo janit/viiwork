@@ -1,8 +1,12 @@
 package proxy
 
 import (
+	"bufio"
 	"encoding/json"
 	"net/http"
+	"os"
+	"strconv"
+	"strings"
 
 	"github.com/janit/viiwork/internal/balancer"
 	"github.com/janit/viiwork/internal/peer"
@@ -47,7 +51,45 @@ func NewClusterHandler(reg *peer.Registry) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		state := reg.ClusterState()
 		state.Version = Version
+		totalMB, usedMB := readHostMemory()
+		state.Local.HostMemTotalMB = totalMB
+		state.Local.HostMemUsedMB = usedMB
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(state)
 	})
+}
+
+// readHostMemory reads /proc/meminfo and returns total and used memory in MB.
+func readHostMemory() (totalMB, usedMB int64) {
+	f, err := os.Open("/proc/meminfo")
+	if err != nil {
+		return 0, 0
+	}
+	defer f.Close()
+
+	var memTotal, memAvailable int64
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "MemTotal:") {
+			memTotal = parseMemInfoKB(line)
+		} else if strings.HasPrefix(line, "MemAvailable:") {
+			memAvailable = parseMemInfoKB(line)
+		}
+		if memTotal > 0 && memAvailable > 0 {
+			break
+		}
+	}
+	totalMB = memTotal / 1024
+	usedMB = (memTotal - memAvailable) / 1024
+	return totalMB, usedMB
+}
+
+func parseMemInfoKB(line string) int64 {
+	fields := strings.Fields(line)
+	if len(fields) < 2 {
+		return 0
+	}
+	v, _ := strconv.ParseInt(fields[1], 10, 64)
+	return v
 }

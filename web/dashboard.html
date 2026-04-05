@@ -26,20 +26,45 @@
   #error { color: #f85149; display: none; margin-bottom: 12px; }
   canvas { width: 100%; margin-bottom: 8px; border: 1px solid #21262d; border-radius: 4px; }
   #footer { margin-top: 32px; padding-top: 16px; border-top: 1px solid #21262d; color: #484f58; font-size: 0.75rem; }
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 20px; align-items: start; }
+  .two-col > div > h2 { margin-top: 0; }
+  .left-col { display: flex; flex-direction: column; }
+  .left-col #activity-log { flex: 1; overflow-y: auto; }
+  @media (max-width: 900px) { .two-col { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
 <h1>viiwork mesh</h1>
 <div id="error"></div>
 <div id="summary" class="summary"></div>
-<div id="content"></div>
-<div id="graphs-section" style="display:none">
-  <h2>GPU Metrics (1h)</h2>
-  <canvas id="graph-util" height="180"></canvas>
-  <canvas id="graph-vram" height="180"></canvas>
-  <canvas id="graph-power" height="140"></canvas>
+<div id="peers-section"></div>
+<div class="two-col">
+  <div class="left-col" id="activity-section">
+    <div id="cluster-models"></div>
+    <div id="inflight-section" style="display:none;margin-bottom:12px">
+      <h2>In-Flight Requests</h2>
+      <div id="inflight-list" class="card" style="font-size:0.8rem;font-family:monospace;padding:8px 12px"></div>
+    </div>
+    <h2>Activity</h2>
+    <div id="activity-log" class="card" style="overflow-y:auto;font-size:0.8rem;font-family:monospace;padding:8px 12px"></div>
+  </div>
+  <div>
+    <div id="backends-section"></div>
+    <div id="hostmem-section" style="display:none;margin-bottom:12px">
+      <div style="position:relative">
+        <canvas id="graph-hostmem" height="120"></canvas>
+        <span id="hostmem-live" style="position:absolute;top:4px;right:8px;font-size:0.8rem;font-family:monospace;color:#bc8cff"></span>
+      </div>
+    </div>
+    <div id="graphs-section" style="display:none">
+      <h2>GPU Metrics (1h)</h2>
+      <canvas id="graph-util" height="160"></canvas>
+      <canvas id="graph-vram" height="160"></canvas>
+      <canvas id="graph-power" height="120"></canvas>
+    </div>
+    <div id="graphs-unavailable" style="display:none;color:#8b949e;text-align:center;padding:40px">GPU metrics unavailable</div>
+  </div>
 </div>
-<div id="graphs-unavailable" style="display:none;color:#8b949e;text-align:center;padding:40px">GPU metrics unavailable</div>
 <div id="footer"></div>
 
 <script>
@@ -80,42 +105,120 @@ function render(data) {
     <div><span>Today:</span> <strong>${clusterCostToday > 0 ? clusterCostToday.toFixed(2) + ' EUR' : 'N/A'}</strong></div>
   `;
 
-  let html = '';
-  html += '<h2>Local Backends (' + data.local.model + ')';
-  if (data.local.power_available) html += ' \u2014 ' + data.local.power_watts + 'W';
-  if (data.local.cost_available) html += ' \u2014 ' + data.local.cost_eur_per_hour.toFixed(2) + ' EUR/h';
-  html += '</h2><div class="card"><table>';
-  html += '<tr><th>GPU</th><th>Status</th><th>In-Flight</th></tr>';
+  // Local Backends → right column (merged with backend stats)
+  let backendsHtml = '<h2>Local Backends (' + data.local.model + ')';
+  if (data.local.power_available) backendsHtml += ' \u2014 ' + data.local.power_watts + 'W';
+  if (data.local.cost_available) backendsHtml += ' \u2014 ' + data.local.cost_eur_per_hour.toFixed(2) + ' EUR/h';
+  backendsHtml += '</h2><div class="card"><table>';
+  backendsHtml += '<tr><th></th><th>GPU</th><th>In-Flight</th><th>RSS</th><th>GPU%</th><th>VRAM</th><th>Context Use</th></tr>';
   for (const b of data.local.backends) {
-    html += `<tr><td>gpu-${b.gpu_id}</td><td><span class="status ${b.status}"></span>${b.status}</td><td>${b.in_flight}</td></tr>`;
-  }
-  html += '</table></div>';
+    const gpuColor = GPU_COLORS[b.gpu_id % GPU_COLORS.length];
+    const gpuKey = String(b.gpu_id);
+    backendsHtml += `<tr>`;
+    backendsHtml += `<td><span class="status ${b.status}"></span></td>`;
+    backendsHtml += `<td style="color:${gpuColor}">gpu-${b.gpu_id}</td>`;
+    backendsHtml += `<td>${b.in_flight || 0}</td>`;
 
+    if (b.rss_mb) {
+      if (!backendRSSHistory[b.gpu_id]) backendRSSHistory[b.gpu_id] = [];
+      backendRSSHistory[b.gpu_id].push({t: Math.floor(Date.now()/1000), rss: b.rss_mb});
+      if (backendRSSHistory[b.gpu_id].length > RSS_HISTORY_MAX)
+        backendRSSHistory[b.gpu_id] = backendRSSHistory[b.gpu_id].slice(-RSS_HISTORY_MAX);
+      const rssLabel = b.rss_mb >= 1024 ? (b.rss_mb / 1024).toFixed(1) + 'G' : b.rss_mb + 'M';
+      const history = backendRSSHistory[b.gpu_id];
+      let trend = '\u2192', trendColor = '#8b949e';
+      if (history.length >= 10) {
+        const half = Math.floor(history.length / 2);
+        const earlyAvg = history.slice(0, half).reduce((s, h) => s + h.rss, 0) / half;
+        const lateAvg = history.slice(-half).reduce((s, h) => s + h.rss, 0) / half;
+        const pct = ((lateAvg - earlyAvg) / earlyAvg) * 100;
+        if (pct > 2) { trend = '\u2191'; trendColor = pct > 10 ? '#f85149' : '#d29922'; }
+        else if (pct < -2) { trend = '\u2193'; trendColor = '#3fb950'; }
+      }
+      backendsHtml += `<td><span style="color:${trendColor};font-weight:bold">${trend}</span> ${rssLabel}</td>`;
+    } else {
+      backendsHtml += `<td></td>`;
+    }
+
+    // GPU utilization from metrics stream
+    const gpuSamples = metricsData[gpuKey];
+    if (gpuSamples && gpuSamples.length > 0) {
+      const latest = gpuSamples[gpuSamples.length - 1];
+      const util = Math.round(latest.util);
+      let utilColor = '#8b949e';
+      if (util > 80) utilColor = '#f85149';
+      else if (util > 40) utilColor = '#d29922';
+      else if (util > 0) utilColor = '#3fb950';
+      backendsHtml += `<td style="color:${utilColor}">${util}%</td>`;
+    } else {
+      backendsHtml += `<td></td>`;
+    }
+
+    // VRAM usage from metrics stream
+    if (gpuSamples && gpuSamples.length > 0) {
+      const latest = gpuSamples[gpuSamples.length - 1];
+      const vramGB = (latest.vram_used_mb / 1024).toFixed(1);
+      const totalGB = ((vramTotalMB[gpuKey] || 16368) / 1024).toFixed(0);
+      backendsHtml += `<td>${vramGB}/${totalGB}G</td>`;
+    } else {
+      backendsHtml += `<td></td>`;
+    }
+
+    // Context use (decoded tokens / total tokens progress)
+    if (b.slot_count > 0) {
+      const decoded = b.tok_decoded || 0;
+      const remain = b.tok_remain || 0;
+      const total = decoded + remain;
+      if ((b.slot_active || 0) > 0 && total > 0) {
+        const pct = Math.round((decoded / total) * 100);
+        let barColor = '#58a6ff';
+        if (pct > 80) barColor = '#3fb950';
+        backendsHtml += `<td><div style="display:flex;align-items:center;gap:4px;min-width:100px">`;
+        backendsHtml += `<span style="flex:1;height:8px;background:#21262d;border-radius:2px;overflow:hidden">`;
+        backendsHtml += `<span style="display:block;width:${pct}%;height:100%;background:${barColor};border-radius:2px"></span>`;
+        backendsHtml += `</span>`;
+        backendsHtml += `<span style="color:${barColor};font-size:0.8rem">${decoded}/${total}t</span>`;
+        backendsHtml += `</div></td>`;
+      } else {
+        backendsHtml += `<td style="color:#484f58">idle</td>`;
+      }
+    } else {
+      backendsHtml += `<td></td>`;
+    }
+
+    backendsHtml += `</tr>`;
+  }
+  backendsHtml += '</table></div>';
+  document.getElementById('backends-section').innerHTML = backendsHtml;
+
+  // Peers → full width above the two-col
+  let peersHtml = '';
   if (data.peers && data.peers.length > 0) {
-    html += '<h2>Peers</h2>';
+    peersHtml += '<h2>Peers</h2>';
     for (const p of data.peers) {
-      html += '<div class="card"><table>';
-      html += `<tr><td><span class="status ${p.status}"></span><strong>${p.addr}</strong></td><td>${p.status}</td>`;
+      peersHtml += '<div class="card"><table>';
+      peersHtml += `<tr><td><span class="status ${p.status}"></span><strong>${p.addr}</strong></td><td>${p.status}</td>`;
       if (p.status === 'reachable') {
-        html += `<td>${p.node_id}</td><td>${p.healthy_backends} GPUs</td><td>${p.total_in_flight} in-flight</td>`;
-        html += p.power_available ? `<td>${p.power_watts}W</td>` : '<td style="color:#8b949e">N/A</td>';
-        html += p.cost_available ? `<td>${p.cost_eur_per_hour.toFixed(2)} EUR/h</td>` : '<td style="color:#8b949e">N/A</td>';
+        peersHtml += `<td>${p.node_id}</td><td>${p.healthy_backends} GPUs</td><td>${p.total_in_flight} in-flight</td>`;
+        peersHtml += p.power_available ? `<td>${p.power_watts}W</td>` : '<td style="color:#8b949e">N/A</td>';
+        peersHtml += p.cost_available ? `<td>${p.cost_eur_per_hour.toFixed(2)} EUR/h</td>` : '<td style="color:#8b949e">N/A</td>';
       }
-      html += '</tr></table>';
+      peersHtml += '</tr></table>';
       if (p.models && p.models.length > 0) {
-        html += '<div class="models">';
-        for (const m of p.models) html += `<span class="model-tag">${m}</span>`;
-        html += '</div>';
+        peersHtml += '<div class="models">';
+        for (const m of p.models) peersHtml += `<span class="model-tag">${m}</span>`;
+        peersHtml += '</div>';
       }
-      html += '</div>';
+      peersHtml += '</div>';
     }
   }
+  document.getElementById('peers-section').innerHTML = peersHtml;
 
-  html += '<h2>Cluster Models</h2><div class="models">';
-  for (const m of (data.models || [])) html += `<span class="model-tag">${m}</span>`;
-  html += '</div>';
-
-  document.getElementById('content').innerHTML = html;
+  // Cluster Models → left column top
+  let modelsHtml = '<h2>Cluster Models</h2><div class="models" style="margin-bottom:12px">';
+  for (const m of (data.models || [])) modelsHtml += `<span class="model-tag">${m}</span>`;
+  modelsHtml += '</div>';
+  document.getElementById('cluster-models').innerHTML = modelsHtml;
 
   // Accumulate power history from cluster data
   if (data.local && data.local.power_available) {
@@ -124,12 +227,23 @@ function render(data) {
     drawPowerGraph();
   }
 
+  // Accumulate host memory history
+  if (data.local && data.local.host_mem_total_mb > 0) {
+    hostMemTotal = data.local.host_mem_total_mb;
+    hostMemHistory.push({t: Math.floor(Date.now()/1000), used: data.local.host_mem_used_mb});
+    if (hostMemHistory.length > 720) hostMemHistory = hostMemHistory.slice(-720);
+    document.getElementById('hostmem-section').style.display = '';
+    const usedGB = (data.local.host_mem_used_mb / 1024).toFixed(1);
+    document.getElementById('hostmem-live').textContent = usedGB + ' GB';
+    drawHostMemGraph();
+  }
+
   // Update footer
   document.getElementById('footer').textContent = 'viiwork' + (clusterVersion ? ' ' + clusterVersion : '');
 }
 
 refresh();
-setInterval(refresh, 5000);
+setInterval(refresh, 1000);
 
 // --- GPU Metrics Graphs ---
 const GPU_COLORS = [
@@ -139,6 +253,8 @@ const GPU_COLORS = [
 let metricsData = {};
 let vramTotalMB = {};
 let powerHistory = [];
+let hostMemHistory = [];
+let hostMemTotal = 0;
 
 async function initMetrics() {
   try {
@@ -274,7 +390,167 @@ function drawPowerGraph() {
   ctx.stroke();
 }
 
+function drawHostMemGraph() {
+  const canvas = document.getElementById('graph-hostmem');
+  if (!canvas || hostMemHistory.length < 2) return;
+  const ctx = canvas.getContext('2d');
+  canvas.width = canvas.parentElement.clientWidth || 800;
+  const W = canvas.width, H = canvas.height;
+  const pad = {l:50, r:10, t:20, b:20};
+  const gw = W - pad.l - pad.r, gh = H - pad.t - pad.b;
+  const yMax = hostMemTotal;
+
+  ctx.fillStyle = '#0d1117';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.strokeStyle = '#21262d';
+  ctx.fillStyle = '#8b949e';
+  ctx.font = '11px monospace';
+  for (let i = 0; i <= 4; i++) {
+    const y = pad.t + gh - (i / 4) * gh;
+    ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(W - pad.r, y); ctx.stroke();
+    const val = yMax * i / 4;
+    const label = val >= 1024 ? (val / 1024).toFixed(0) + 'G' : val.toFixed(0) + 'M';
+    ctx.fillText(label, 2, y + 4);
+  }
+  ctx.fillText('Host Memory Usage', pad.l, 14);
+
+  ctx.strokeStyle = '#bc8cff';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  const tMin = hostMemHistory[0].t, tMax = hostMemHistory[hostMemHistory.length-1].t;
+  const tRange = Math.max(tMax - tMin, 1);
+  for (let i = 0; i < hostMemHistory.length; i++) {
+    const x = pad.l + ((hostMemHistory[i].t - tMin) / tRange) * gw;
+    const y = pad.t + gh - (hostMemHistory[i].used / yMax) * gh;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+
+let backendRSSHistory = {};
+const RSS_HISTORY_MAX = 300; // 5 min at 1s intervals
+
 initMetrics();
+
+// --- Activity Feed ---
+const activityLog = document.getElementById('activity-log');
+const ACT_COLORS = {backend: '#3fb950', request: '#58a6ff', system: '#d29922'};
+const MAX_ACTIVITY_LINES = 100;
+
+function appendActivity(ev) {
+  const line = document.createElement('div');
+  line.style.padding = '2px 0';
+  line.style.borderBottom = '1px solid #21262d';
+  const time = new Date(ev.t * 1000).toLocaleTimeString();
+  const color = ACT_COLORS[ev.type] || '#8b949e';
+  const gpuTag = ev.gpu_id >= 0 ? `<span style="color:${GPU_COLORS[ev.gpu_id % GPU_COLORS.length]}">gpu-${ev.gpu_id}</span> ` : '';
+  line.innerHTML = `<span style="color:#484f58">${time}</span> <span style="color:${color}">[${ev.type}]</span> ${gpuTag}${escapeHtml(ev.message)}`;
+  activityLog.insertBefore(line, activityLog.firstChild);
+  while (activityLog.children.length > MAX_ACTIVITY_LINES) activityLog.removeChild(activityLog.lastChild);
+}
+
+function escapeHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+async function initActivity() {
+  try {
+    const resp = await fetch('/v1/activity');
+    const data = await resp.json();
+    for (const ev of (data.events || [])) appendActivity(ev);
+  } catch (e) { /* ignore */ }
+
+  const es = new EventSource('/v1/activity/stream');
+  es.onmessage = (e) => {
+    try { appendActivity(JSON.parse(e.data)); } catch (err) { /* skip */ }
+  };
+}
+
+initActivity();
+
+// --- In-Flight Request Timers ---
+const inflightSection = document.getElementById('inflight-section');
+const inflightList = document.getElementById('inflight-list');
+const inflightRequests = new Map(); // key -> {gpu, model, startTime, el}
+
+function inflightColor(seconds) {
+  if (seconds < 5) return '#3fb950';   // green: fast
+  if (seconds < 15) return '#58a6ff';  // blue: normal
+  if (seconds < 30) return '#d29922';  // yellow: slow
+  if (seconds < 60) return '#db6d28';  // orange: very slow
+  return '#f85149';                     // red: stuck
+}
+
+function handleInflightEvent(ev) {
+  if (ev.type !== 'request' || !ev.rid) return;
+  const msg = ev.message;
+  const key = ev.rid;
+
+  // Request done or aborted — remove timer
+  if (msg.includes(' done (') || msg.includes(' aborted ')) {
+    if (inflightRequests.has(key)) {
+      const req = inflightRequests.get(key);
+      if (req.el && req.el.parentNode) req.el.remove();
+      inflightRequests.delete(key);
+    }
+    if (inflightRequests.size === 0) inflightSection.style.display = 'none';
+    return;
+  }
+
+  // New request — add timer
+  const el = document.createElement('div');
+  el.style.padding = '3px 0';
+  el.style.borderBottom = '1px solid #21262d';
+  inflightRequests.set(key, {startTime: ev.t * 1000, el, label: msg});
+  inflightList.appendChild(el);
+  inflightSection.style.display = '';
+}
+
+function updateInflightTimers() {
+  const now = Date.now();
+  for (const [key, req] of inflightRequests) {
+    const secs = ((now - req.startTime) / 1000);
+    const display = secs < 60 ? secs.toFixed(1) + 's' : Math.floor(secs / 60) + 'm' + Math.floor(secs % 60) + 's';
+    const color = inflightColor(secs);
+    const gpuMatch = req.label.match(/gpu-(\d+)/);
+    const gpuColor = gpuMatch ? GPU_COLORS[parseInt(gpuMatch[1]) % GPU_COLORS.length] : '#8b949e';
+    const parts = req.label.split(' → ');
+    const model = parts[0] || '';
+    const target = parts[1] || '';
+    const targetHtml = gpuMatch
+      ? `<span style="color:${gpuColor}">${escapeHtml(target)}</span>`
+      : escapeHtml(target);
+    req.el.innerHTML = `<span style="color:${color};font-weight:bold;min-width:50px;display:inline-block">${display}</span> ${escapeHtml(model)} \u2192 ${targetHtml}`;
+  }
+  requestAnimationFrame(updateInflightTimers);
+}
+
+// Patch appendActivity to also track in-flight
+const _origAppendActivity = appendActivity;
+appendActivity = function(ev) {
+  _origAppendActivity(ev);
+  handleInflightEvent(ev);
+};
+
+requestAnimationFrame(updateInflightTimers);
+
+// Sync activity log height to right column
+function syncActivityHeight() {
+  const twoCol = document.querySelector('.two-col');
+  const leftCol = twoCol?.children[0];
+  const rightCol = twoCol?.children[1];
+  const log = document.getElementById('activity-log');
+  if (!rightCol || !leftCol || !log) return;
+  log.style.maxHeight = 'none';
+  const rightH = rightCol.offsetHeight;
+  const leftOther = leftCol.offsetHeight - log.offsetHeight;
+  const available = rightH - leftOther;
+  if (available > 200) log.style.maxHeight = available + 'px';
+}
+new ResizeObserver(syncActivityHeight).observe(document.querySelector('.two-col'));
 </script>
 </body>
 </html>

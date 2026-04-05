@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/janit/viiwork/internal/pipeline"
 	"gopkg.in/yaml.v3"
 )
 
@@ -35,12 +36,28 @@ type ModelConfig struct {
 	Path        string `yaml:"path"`
 	ContextSize int    `yaml:"context_size"`
 	NGPULayers  int    `yaml:"n_gpu_layers"`
+	Parallel    int    `yaml:"parallel"`
 }
 
 type GPUConfig struct {
-	Count           int `yaml:"count"`
-	BasePort        int `yaml:"base_port"`
-	PowerLimitWatts int `yaml:"power_limit_watts"`
+	Count           int   `yaml:"count"`
+	Devices         []int `yaml:"devices"`
+	BasePort        int   `yaml:"base_port"`
+	Offset          int   `yaml:"offset"`
+	PowerLimitWatts int   `yaml:"power_limit_watts"`
+}
+
+// ResolvedDevices returns the explicit GPU device IDs to use.
+// If devices is set, it takes priority. Otherwise falls back to count+offset.
+func (g *GPUConfig) ResolvedDevices() []int {
+	if len(g.Devices) > 0 {
+		return g.Devices
+	}
+	ids := make([]int, g.Count)
+	for i := range ids {
+		ids[i] = g.Offset + i
+	}
+	return ids
 }
 
 type BackendConfig struct {
@@ -89,14 +106,15 @@ type CostConfig struct {
 }
 
 type Config struct {
-	Server   ServerConfig   `yaml:"server"`
-	Model    ModelConfig    `yaml:"model"`
-	GPUs     GPUConfig      `yaml:"gpus"`
-	Backend  BackendConfig  `yaml:"backend"`
-	Health   HealthConfig   `yaml:"health"`
-	Balancer BalancerConfig `yaml:"balancer"`
-	Peers    PeersConfig    `yaml:"peers"`
-	Cost     CostConfig     `yaml:"cost"`
+	Server    ServerConfig                        `yaml:"server"`
+	Model     ModelConfig                         `yaml:"model"`
+	GPUs      GPUConfig                           `yaml:"gpus"`
+	Backend   BackendConfig                       `yaml:"backend"`
+	Health    HealthConfig                        `yaml:"health"`
+	Balancer  BalancerConfig                      `yaml:"balancer"`
+	Peers     PeersConfig                         `yaml:"peers"`
+	Cost      CostConfig                          `yaml:"cost"`
+	Pipelines map[string]pipeline.PipelineConfig `yaml:"pipelines"`
 }
 
 func Load(path string) (*Config, error) {
@@ -121,8 +139,11 @@ func (c *Config) Validate() error {
 	if c.Model.Path == "" {
 		return fmt.Errorf("model.path is required")
 	}
+	if len(c.GPUs.Devices) > 0 {
+		c.GPUs.Count = len(c.GPUs.Devices)
+	}
 	if c.GPUs.Count < 1 {
-		return fmt.Errorf("gpus.count must be >= 1")
+		return fmt.Errorf("gpus.count or gpus.devices is required")
 	}
 	if c.Server.Port < 1 || c.Server.Port > 65535 {
 		return fmt.Errorf("server.port must be 1-65535")
@@ -170,6 +191,12 @@ func (c *Config) ApplyOverrides(overrides map[string]string) error {
 				return fmt.Errorf("invalid gpus.base_port: %w", err)
 			}
 			c.GPUs.BasePort = v
+		case "gpus.offset":
+			v, err := strconv.Atoi(val)
+			if err != nil {
+				return fmt.Errorf("invalid gpus.offset: %w", err)
+			}
+			c.GPUs.Offset = v
 		case "backend.binary":
 			c.Backend.Binary = val
 		case "balancer.high_load_threshold":

@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/janit/viiwork/internal/activity"
 	"github.com/janit/viiwork/internal/balancer"
 	"github.com/janit/viiwork/internal/config"
 	"github.com/janit/viiwork/internal/cost"
@@ -20,6 +21,7 @@ import (
 	"github.com/janit/viiwork/internal/logging"
 	"github.com/janit/viiwork/internal/model"
 	"github.com/janit/viiwork/internal/peer"
+	"github.com/janit/viiwork/internal/pipeline"
 	"github.com/janit/viiwork/internal/power"
 	"github.com/janit/viiwork/internal/process"
 	"github.com/janit/viiwork/internal/proxy"
@@ -58,6 +60,17 @@ func main() {
 
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("config validation: %v", err)
+	}
+
+	// Load pipelines
+	var pipelines []*pipeline.Pipeline
+	for name, rawCfg := range cfg.Pipelines {
+		p, err := pipeline.LoadPipeline(name, rawCfg)
+		if err != nil {
+			log.Fatalf("loading pipeline %s: %v", name, err)
+		}
+		pipelines = append(pipelines, p)
+		log.Printf("pipeline '%s' loaded with %d locales, %d steps", name, len(p.Locales), len(p.Steps))
 	}
 
 	nodeID := identity.GenerateNodeID()
@@ -104,7 +117,9 @@ func main() {
 	bcast := gpu.NewBroadcaster()
 	collector := gpu.NewStatCollector(hist, bcast)
 
-	mgr := process.NewManager(cfg, nil, sampler, costTracker, collector)
+	actLog := activity.NewLog()
+
+	mgr := process.NewManager(cfg, nil, sampler, costTracker, collector, actLog)
 	for _, b := range mgr.Backends {
 		b.LogWriter = logging.NewPrefixWriter(os.Stdout, fmt.Sprintf("[gpu-%d] ", b.GPUID))
 	}
@@ -123,6 +138,16 @@ func main() {
 	}
 	handler := proxy.NewMeshHandler(bal, reg, cfg.Balancer.LatencyWindow.Duration)
 	handler.SetMetrics(hist, bcast, collector.Available)
+	handler.SetActivity(actLog)
+
+	if len(pipelines) > 0 {
+		resolver := proxy.NewPipelineResolver(pipelines)
+		execURL := fmt.Sprintf("http://localhost:%d", cfg.Server.Port)
+		client := &http.Client{}
+		exec := pipeline.NewExecutor(execURL, client)
+		handler.SetPipelines(resolver, exec)
+		log.Printf("pipeline virtual models: %v", resolver.VirtualModelNames())
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

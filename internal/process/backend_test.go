@@ -13,11 +13,11 @@ import (
 func TestBackendBuildArgs(t *testing.T) {
 	b := &Backend{
 		GPUID: 2, ModelPath: "/models/test.gguf", Port: 9003,
-		ContextSize: 8192, NGPULayers: -1, Binary: "llama-server",
+		ContextSize: 8192, NGPULayers: -1, Parallel: 1, Binary: "llama-server",
 		ExtraArgs: []string{"--threads", "4"},
 	}
 	args := b.buildArgs()
-	expected := []string{"--model", "/models/test.gguf", "--port", "9003", "--ctx-size", "8192", "--n-gpu-layers", "-1", "--threads", "4"}
+	expected := []string{"--model", "/models/test.gguf", "--port", "9003", "--ctx-size", "8192", "--n-gpu-layers", "-1", "--parallel", "1", "--slots", "--log-disable", "--threads", "4"}
 	if len(args) != len(expected) {
 		t.Fatalf("expected %d args, got %d: %v", len(expected), len(args), args)
 	}

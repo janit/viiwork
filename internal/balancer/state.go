@@ -35,8 +35,17 @@ type BackendState struct {
 	Addr    string
 	inFlight atomic.Int64
 	status   atomic.Int32
+	rssMB       atomic.Int64
+	slotCtx     atomic.Int64
+	slotCount   atomic.Int32
+	slotActive  atomic.Int32
+	tokDecoded  atomic.Int64
+	tokRemain   atomic.Int64
 	mu          sync.Mutex
 	latencies   []time.Duration
+	latHead     int
+	latCount    int
+	latMax      int
 	latencySum  time.Duration
 }
 
@@ -68,19 +77,44 @@ func (s *BackendState) RecordLatency(d time.Duration, window time.Duration) {
 	if maxSamples < 10 {
 		maxSamples = 10
 	}
-	s.latencies = append(s.latencies, d)
+	if s.latMax != maxSamples {
+		s.latencies = make([]time.Duration, maxSamples)
+		s.latHead = 0
+		s.latCount = 0
+		s.latencySum = 0
+		s.latMax = maxSamples
+	}
+	if s.latCount == s.latMax {
+		s.latencySum -= s.latencies[s.latHead]
+	}
+	s.latencies[s.latHead] = d
 	s.latencySum += d
-	for len(s.latencies) > maxSamples {
-		s.latencySum -= s.latencies[0]
-		s.latencies = s.latencies[1:]
+	s.latHead = (s.latHead + 1) % s.latMax
+	if s.latCount < s.latMax {
+		s.latCount++
 	}
 }
 
 func (s *BackendState) LatencyAvg() time.Duration {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.latencies) == 0 {
+	if s.latCount == 0 {
 		return 0
 	}
-	return s.latencySum / time.Duration(len(s.latencies))
+	return s.latencySum / time.Duration(s.latCount)
+}
+
+func (s *BackendState) RSSMB() int64        { return s.rssMB.Load() }
+func (s *BackendState) SetRSSMB(mb int64)    { s.rssMB.Store(mb) }
+func (s *BackendState) SlotCtx() int64       { return s.slotCtx.Load() }
+func (s *BackendState) SlotCount() int       { return int(s.slotCount.Load()) }
+func (s *BackendState) SlotActive() int      { return int(s.slotActive.Load()) }
+func (s *BackendState) TokDecoded() int64    { return s.tokDecoded.Load() }
+func (s *BackendState) TokRemain() int64     { return s.tokRemain.Load() }
+func (s *BackendState) SetSlots(nctx int64, count, active int, decoded, remain int64) {
+	s.slotCtx.Store(nctx)
+	s.slotCount.Store(int32(count))
+	s.slotActive.Store(int32(active))
+	s.tokDecoded.Store(decoded)
+	s.tokRemain.Store(remain)
 }

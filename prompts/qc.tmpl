@@ -1,0 +1,15 @@
+You are a translation quality reviewer. Compare the localized text against the original English and assess quality.
+
+ORIGINAL ENGLISH:
+{{.Original}}
+
+LOCALIZED TEXT ({{.Locale.Language}}):
+{{.Translation}}
+
+Respond with ONLY a JSON object (no markdown, no explanation):
+{
+  "back_translation": "<translate the localized text back to English>",
+  "meaning_drift": "<none|minor|major>",
+  "naturalness": <1-10 integer>,
+  "glossary_violations": [<list of English terms that were incorrectly translated, or empty array>]
+}

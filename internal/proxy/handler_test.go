@@ -302,3 +302,60 @@ func TestEmbeddings429OnBackpressure(t *testing.T) {
 		t.Errorf("expected Retry-After: 2, got %s", w.Header().Get("Retry-After"))
 	}
 }
+
+func TestHealthEndpointHealthy(t *testing.T) {
+	state := balancer.NewBackendState(0, "localhost:9001")
+	state.SetStatus(balancer.StatusHealthy)
+	bal := balancer.New([]*balancer.BackendState{state}, 7, 4)
+	h := NewHandler(bal, "/models/test.gguf", 30*time.Second)
+
+	req := httptest.NewRequest("GET", "/health", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != 200 { t.Fatalf("expected 200, got %d", w.Code) }
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["status"] != "ok" { t.Errorf("expected status 'ok', got %v", resp["status"]) }
+	if resp["backends_healthy"] != float64(1) { t.Errorf("expected 1 healthy, got %v", resp["backends_healthy"]) }
+	if resp["version"] == nil { t.Error("expected version field") }
+	if resp["uptime_seconds"] == nil { t.Error("expected uptime_seconds field") }
+	if resp["goroutines"] == nil { t.Error("expected goroutines field") }
+	if resp["memory_alloc_mb"] == nil { t.Error("expected memory_alloc_mb field") }
+}
+
+func TestHealthEndpointUnhealthy(t *testing.T) {
+	state := balancer.NewBackendState(0, "localhost:9001")
+	state.SetStatus(balancer.StatusDead)
+	bal := balancer.New([]*balancer.BackendState{state}, 7, 4)
+	h := NewHandler(bal, "/models/test.gguf", 30*time.Second)
+
+	req := httptest.NewRequest("GET", "/health", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != 503 { t.Fatalf("expected 503, got %d", w.Code) }
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["status"] != "unhealthy" { t.Errorf("expected status 'unhealthy', got %v", resp["status"]) }
+}
+
+func TestHealthEndpointWithMesh(t *testing.T) {
+	localState := balancer.NewBackendState(0, "localhost:9001")
+	localState.SetStatus(balancer.StatusHealthy)
+	backends := []*balancer.BackendState{localState}
+	reg := peer.NewRegistry("viiwork-test", "local-model", backends, nil, 3*time.Second)
+	bal := balancer.New(backends, 7, 4)
+	h := NewMeshHandler(bal, reg, 30*time.Second)
+
+	req := httptest.NewRequest("GET", "/health", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != 200 { t.Fatalf("expected 200, got %d", w.Code) }
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["node_id"] != "viiwork-test" { t.Errorf("expected node_id, got %v", resp["node_id"]) }
+	if resp["model"] != "local-model" { t.Errorf("expected model, got %v", resp["model"]) }
+	if resp["peers_total"] == nil { t.Error("expected peers_total field") }
+}
