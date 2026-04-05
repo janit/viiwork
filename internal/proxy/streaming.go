@@ -1,9 +1,13 @@
 package proxy
 
 import (
+	"context"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/janit/viiwork/internal/balancer"
@@ -18,7 +22,10 @@ var backendClient = &http.Client{
 	},
 }
 
-func proxyRequest(w http.ResponseWriter, r *http.Request, backend *balancer.BackendState, latencyWindow time.Duration) {
+// proxyRequest forwards a request to a backend. When thinkDisabled is true,
+// reasoning_content is rewritten to content with think blocks stripped.
+// Returns true if the client disconnected early.
+func proxyRequest(w http.ResponseWriter, r *http.Request, backend *balancer.BackendState, latencyWindow time.Duration, thinkDisabled bool) (clientAborted bool) {
 	start := time.Now()
 	backend.IncrInFlight()
 	defer func() {
@@ -26,11 +33,17 @@ func proxyRequest(w http.ResponseWriter, r *http.Request, backend *balancer.Back
 		backend.RecordLatency(time.Since(start), latencyWindow)
 	}()
 
+	// Derive a cancellable context so we can kill the backend request immediately
+	// when the client disconnects, rather than waiting for resp.Body to drain.
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+
 	targetURL := fmt.Sprintf("http://%s%s", backend.Addr, r.URL.Path)
 	if r.URL.RawQuery != "" { targetURL += "?" + r.URL.RawQuery }
 
-	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, r.Body)
+	proxyReq, err := http.NewRequestWithContext(ctx, r.Method, targetURL, r.Body)
 	if err != nil {
+		log.Printf("[debug] proxy request creation failed for gpu-%d: %v", backend.GPUID, err)
 		http.Error(w, "proxy error", http.StatusBadGateway)
 		return
 	}
@@ -40,16 +53,46 @@ func proxyRequest(w http.ResponseWriter, r *http.Request, backend *balancer.Back
 
 	resp, err := backendClient.Do(proxyReq)
 	if err != nil {
+		log.Printf("[debug] backend gpu-%d (%s) unavailable: %v", backend.GPUID, backend.Addr, err)
 		http.Error(w, "backend unavailable", http.StatusBadGateway)
 		return
 	}
+	log.Printf("[debug] backend gpu-%d responded %d (content-type: %s)", backend.GPUID, resp.StatusCode, resp.Header.Get("Content-Type"))
 	defer resp.Body.Close()
 
 	for key, values := range resp.Header {
+		if thinkDisabled && strings.EqualFold(key, "Content-Length") {
+			continue // body will be rewritten, original length is wrong
+		}
 		for _, v := range values { w.Header().Add(key, v) }
 	}
 	w.Header().Set("X-GPU-Backend", fmt.Sprintf("gpu-%d", backend.GPUID))
 	w.Header().Set("X-Queue-Depth", fmt.Sprintf("%d", backend.InFlight()))
+
+	// When think is disabled, rewrite the response to move reasoning_content
+	// into content with <think> blocks stripped.
+	if thinkDisabled {
+		if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
+			w.WriteHeader(resp.StatusCode)
+			clientAborted = streamThinkDisabled(w, resp.Body, cancel)
+			if clientAborted {
+				log.Printf("[debug] gpu-%d stream: client aborted (think-disabled path)", backend.GPUID)
+			}
+		} else {
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				log.Printf("[debug] gpu-%d non-streaming read error: %v", backend.GPUID, err)
+				http.Error(w, "backend read error", http.StatusBadGateway)
+				return
+			}
+			rewritten := rewriteThinkResponse(body)
+			w.Header().Set("Content-Length", strconv.Itoa(len(rewritten)))
+			w.WriteHeader(resp.StatusCode)
+			w.Write(rewritten)
+		}
+		return
+	}
+
 	w.WriteHeader(resp.StatusCode)
 
 	if f, ok := w.(http.Flusher); ok {
@@ -58,13 +101,22 @@ func proxyRequest(w http.ResponseWriter, r *http.Request, backend *balancer.Back
 			n, readErr := resp.Body.Read(buf)
 			if n > 0 {
 				if _, writeErr := w.Write(buf[:n]); writeErr != nil {
-					break // client disconnected
+					log.Printf("[debug] gpu-%d stream: client write error (aborting): %v", backend.GPUID, writeErr)
+					cancel() // client disconnected — kill backend request immediately
+					clientAborted = true
+					break
 				}
 				f.Flush()
 			}
-			if readErr != nil { break }
+			if readErr != nil {
+				if readErr != io.EOF {
+					log.Printf("[debug] gpu-%d stream: backend read error: %v", backend.GPUID, readErr)
+				}
+				break
+			}
 		}
 	} else {
 		io.Copy(w, resp.Body)
 	}
+	return
 }

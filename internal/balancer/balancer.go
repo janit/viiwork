@@ -35,6 +35,10 @@ func (b *Balancer) Pick() (*BackendState, error) {
 		}
 	}
 	if len(healthy) == 0 {
+		b.logger.Printf("[debug] Pick: no healthy backends (total=%d)", len(b.backends))
+		for _, be := range b.backends {
+			b.logger.Printf("[debug]   gpu-%d status=%s in_flight=%d", be.GPUID, be.Status(), be.InFlight())
+		}
 		return nil, ErrNoHealthyBackend
 	}
 	if len(healthy) == 1 {
@@ -48,6 +52,10 @@ func (b *Balancer) Pick() (*BackendState, error) {
 		}
 	}
 	if allAtMax {
+		b.logger.Printf("[debug] Pick: backpressure — all %d healthy backends at max_in_flight=%d", len(healthy), b.maxInFlightPerGPU)
+		for _, be := range healthy {
+			b.logger.Printf("[debug]   gpu-%d in_flight=%d", be.GPUID, be.InFlight())
+		}
 		return nil, ErrBackpressure
 	}
 	busyCount := 0
@@ -60,9 +68,13 @@ func (b *Balancer) Pick() (*BackendState, error) {
 		}
 	}
 	if busyCount < b.highLoadThreshold && len(idle) > 0 {
-		return pickLowestLatency(idle), nil
+		picked := pickLowestLatency(idle)
+		b.logger.Printf("[debug] Pick: low-load path, picked gpu-%d (idle=%d busy=%d)", picked.GPUID, len(idle), busyCount)
+		return picked, nil
 	}
-	return pickLeastLoaded(healthy), nil
+	picked := pickLeastLoaded(healthy)
+	b.logger.Printf("[debug] Pick: high-load path, picked gpu-%d (in_flight=%d healthy=%d busy=%d)", picked.GPUID, picked.InFlight(), len(healthy), busyCount)
+	return picked, nil
 }
 
 func pickLowestLatency(backends []*BackendState) *BackendState {
@@ -75,7 +87,8 @@ func pickLowestLatency(backends []*BackendState) *BackendState {
 	return best
 }
 
-func (b *Balancer) MaxInFlightPerGPU() int { return int(b.maxInFlightPerGPU) }
+func (b *Balancer) MaxInFlightPerGPU() int         { return int(b.maxInFlightPerGPU) }
+func (b *Balancer) Backends() []*BackendState       { return b.backends }
 
 func pickLeastLoaded(backends []*BackendState) *BackendState {
 	best := backends[0]

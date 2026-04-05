@@ -11,13 +11,15 @@ func Defaults() Config {
 		Model: ModelConfig{
 			ContextSize: 8192,
 			NGPULayers:  -1,
+			Parallel:    1,
 		},
 		GPUs: GPUConfig{
 			Count:    10,
 			BasePort: 9001,
 		},
 		Backend: BackendConfig{
-			Binary: "llama-server",
+			Binary:    "llama-server",
+			ExtraArgs: []string{"--reasoning-format", "deepseek"},
 		},
 		Health: HealthConfig{
 			Interval:    Duration{5 * time.Second},

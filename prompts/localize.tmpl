@@ -1,0 +1,20 @@
+You are a professional localizer (not translator). Your task is to adapt the following text for {{.Locale.Audience}}.
+
+ORIGINAL ENGLISH:
+{{.Original}}
+
+LITERAL TRANSLATION ({{.Locale.Language}}):
+{{.Translation}}
+{{if .Glossary}}
+GLOSSARY — use these terms exactly as specified:
+{{.Glossary}}
+{{end}}
+Rules:
+- Adapt idioms and metaphors to culturally equivalent ones in {{.Locale.Language}}
+- Use local conventions for dates, numbers, currency
+- Replace cultural references with locally resonant equivalents
+- Use {{.Locale.Formality}} register
+- If a term has no local equivalent, keep the English term only if that is what locals actually use
+- Do not explain your choices
+
+Output only the localized text, nothing else.

@@ -22,7 +22,7 @@ func TestProxyToPeer(t *testing.T) {
 		strings.NewReader(`{"model":"peer-model","messages":[{"role":"user","content":"hi"}]}`))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	proxyToPeer(w, req, peerSrv.Listener.Addr().String(), "viiwork-test")
+	proxyToPeer(w, req, peerSrv.Listener.Addr().String(), "viiwork-test", false)
 
 	if w.Code != 200 { t.Errorf("expected 200, got %d", w.Code) }
 	body, _ := io.ReadAll(w.Body)
@@ -38,7 +38,7 @@ func TestProxyToPeerHeaders(t *testing.T) {
 
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{}`))
 	w := httptest.NewRecorder()
-	proxyToPeer(w, req, peerSrv.Listener.Addr().String(), "viiwork-test")
+	proxyToPeer(w, req, peerSrv.Listener.Addr().String(), "viiwork-test", false)
 
 	if w.Header().Get("X-GPU-Backend") != "gpu-0" { t.Errorf("expected X-GPU-Backend from peer, got %q", w.Header().Get("X-GPU-Backend")) }
 	if w.Header().Get("X-Viiwork-Origin") == "" { t.Error("expected X-Viiwork-Origin header") }
@@ -47,6 +47,6 @@ func TestProxyToPeerHeaders(t *testing.T) {
 func TestProxyToPeerUnreachable(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{}`))
 	w := httptest.NewRecorder()
-	proxyToPeer(w, req, "127.0.0.1:1", "viiwork-test")
+	proxyToPeer(w, req, "127.0.0.1:1", "viiwork-test", false)
 	if w.Code != 502 { t.Errorf("expected 502, got %d", w.Code) }
 }

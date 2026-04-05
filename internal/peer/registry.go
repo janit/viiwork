@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -96,6 +97,7 @@ func (r *Registry) pollPeer(ctx context.Context, p *PeerState) {
 	defer resp.Body.Close()
 	var status StatusResponse
 	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil { p.MarkUnreachable(); return }
+	io.Copy(io.Discard, resp.Body) // drain remaining bytes for connection reuse
 	if status.NodeID == r.nodeID { p.MarkUnreachable(); return } // self-detection
 	wasUnreachable := p.Status() == StatusUnreachable
 	p.Update(status)
@@ -124,20 +126,21 @@ func (r *Registry) FindRoutesForModel(modelName string) []Route {
 }
 
 func (r *Registry) AllModels() []model.ModelEntry {
-	seen := make(map[string]string)
-	seen[r.localModel] = "local"
+	seen := make(map[string]bool)
+	seen[r.localModel] = true
+	// Local model always first — callers can assume models[0] is what this node serves.
+	models := []model.ModelEntry{{ID: r.localModel, Object: "model", OwnedBy: "local"}}
+	var peerModels []model.ModelEntry
 	for _, p := range r.peers {
 		if p.Status() != StatusReachable { continue }
 		for _, m := range p.Models() {
-			if _, exists := seen[m]; !exists { seen[m] = "peer" }
+			if seen[m] { continue }
+			seen[m] = true
+			peerModels = append(peerModels, model.ModelEntry{ID: m, Object: "model", OwnedBy: "peer"})
 		}
 	}
-	var models []model.ModelEntry
-	for id, owner := range seen {
-		models = append(models, model.ModelEntry{ID: id, Object: "model", OwnedBy: owner})
-	}
-	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
-	return models
+	sort.Slice(peerModels, func(i, j int) bool { return peerModels[i].ID < peerModels[j].ID })
+	return append(models, peerModels...)
 }
 
 type ClusterResponse struct {
@@ -158,12 +161,20 @@ type ClusterLocalInfo struct {
 	CostAvailable  bool                 `json:"cost_available,omitempty"`
 	CostEURPerHour float64              `json:"cost_eur_per_hour,omitempty"`
 	CostTodayEUR   float64              `json:"cost_today_eur,omitempty"`
+	HostMemTotalMB int64                `json:"host_mem_total_mb,omitempty"`
+	HostMemUsedMB  int64                `json:"host_mem_used_mb,omitempty"`
 }
 
 type ClusterBackendInfo struct {
-	GPUID    int    `json:"gpu_id"`
-	Status   string `json:"status"`
-	InFlight int64  `json:"in_flight"`
+	GPUID      int    `json:"gpu_id"`
+	Status     string `json:"status"`
+	InFlight   int64  `json:"in_flight"`
+	RSSMB      int64  `json:"rss_mb,omitempty"`
+	SlotCtx    int64  `json:"slot_ctx,omitempty"`
+	SlotCount  int    `json:"slot_count,omitempty"`
+	SlotActive int    `json:"slot_active,omitempty"`
+	TokDecoded int64  `json:"tok_decoded,omitempty"`
+	TokRemain  int64  `json:"tok_remain,omitempty"`
 }
 
 type ClusterPeerInfo struct {
@@ -194,7 +205,11 @@ func (r *Registry) ClusterState() ClusterResponse {
 		resp.ClusterCostTodayEUR += r.cost.TodayEUR()
 	}
 	for _, b := range r.backends {
-		resp.Local.Backends = append(resp.Local.Backends, ClusterBackendInfo{GPUID: b.GPUID, Status: b.Status().String(), InFlight: b.InFlight()})
+		resp.Local.Backends = append(resp.Local.Backends, ClusterBackendInfo{
+			GPUID: b.GPUID, Status: b.Status().String(), InFlight: b.InFlight(),
+			RSSMB: b.RSSMB(), SlotCtx: b.SlotCtx(), SlotCount: b.SlotCount(), SlotActive: b.SlotActive(),
+			TokDecoded: b.TokDecoded(), TokRemain: b.TokRemain(),
+		})
 	}
 	modelSet := map[string]bool{r.localModel: true}
 	for _, p := range r.peers {

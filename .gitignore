@@ -5,3 +5,4 @@ docker-compose.yaml
 viiwork.yaml
 viiwork-*.yaml
 .env
+.worktrees/
