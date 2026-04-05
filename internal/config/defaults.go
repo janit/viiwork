@@ -9,7 +9,7 @@ func Defaults() Config {
 			Port: 8080,
 		},
 		Model: ModelConfig{
-			ContextSize: 8192,
+			ContextSize: 13337,
 			NGPULayers:  -1,
 			Parallel:    1,
 		},

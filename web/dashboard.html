@@ -164,11 +164,10 @@ function render(data) {
       backendsHtml += `<td></td>`;
     }
 
-    // Context use (decoded tokens / total tokens progress)
+    // Context use (decoded tokens / configured context size)
     if (b.slot_count > 0) {
       const decoded = b.tok_decoded || 0;
-      const remain = b.tok_remain || 0;
-      const total = decoded + remain;
+      const total = b.slot_ctx || 0;
       if ((b.slot_active || 0) > 0 && total > 0) {
         const pct = Math.round((decoded / total) * 100);
         let barColor = '#58a6ff';
