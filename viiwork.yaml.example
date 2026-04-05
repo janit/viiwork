@@ -4,7 +4,7 @@ server:
 
 model:
   path: /models/gpt-oss-20b-Q4_K_M.gguf
-  context_size: 8192
+  context_size: 13337
   n_gpu_layers: -1
 
 gpus:
