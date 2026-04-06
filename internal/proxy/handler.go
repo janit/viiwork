@@ -66,6 +66,7 @@ func (h *Handler) SetActivity(actLog *activity.Log) {
 	h.activity = actLog
 }
 
+
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		if rv := recover(); rv != nil {
@@ -100,6 +101,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Write(web.ChatHTML)
 	case r.URL.Path == "/v1/chat/completions" || r.URL.Path == "/v1/completions":
+		if r.Method != "POST" {
+			http.Error(w, `{"error":{"message":"method not allowed","type":"invalid_request"}}`, http.StatusMethodNotAllowed)
+			return
+		}
 		h.handleProxy(w, r)
 	case r.URL.Path == "/v1/metrics" && r.Method == "GET":
 		h.handleMetrics(w, r)
@@ -135,10 +140,18 @@ func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(ModelsResponse{Object: "list"})
 }
 
+// maxRequestBodySize limits inference request bodies to 32 MB.
+const maxRequestBodySize = 32 << 20
+
 func (h *Handler) handleProxy(w http.ResponseWriter, r *http.Request) {
 	// Read and buffer body to extract model and think parameters
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
+		if err.Error() == "http: request body too large" {
+			http.Error(w, `{"error":{"message":"request body too large","type":"invalid_request"}}`, http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, `{"error":{"message":"failed to read request","type":"invalid_request"}}`, http.StatusBadRequest)
 		return
 	}
@@ -192,10 +205,11 @@ func (h *Handler) handleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	isForwarded := r.Header.Get(HeaderForwarded) != ""
+	forwardedBy := r.Header.Get(HeaderForwarded)
+	isForwarded := forwardedBy != "" && h.registry.IsKnownPeer(forwardedBy)
 
 	if isForwarded {
-		// Forwarded request: only use local backends
+		// Forwarded request from a known peer: only use local backends
 		if reqBody.Model != h.registry.LocalModel() {
 			http.Error(w, `{"error":{"message":"model not found","type":"not_found"}}`, http.StatusNotFound)
 			return
@@ -386,19 +400,12 @@ func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
 		totalInFlight += b.InFlight()
 	}
 
-	var memStats runtime.MemStats
-	runtime.ReadMemStats(&memStats)
-
 	resp := map[string]any{
 		"status":           "ok",
 		"version":          Version,
 		"uptime_seconds":   int(time.Since(startTime).Seconds()),
 		"backends_healthy": healthy,
 		"backends_total":   total,
-		"in_flight":        totalInFlight,
-		"goroutines":       runtime.NumGoroutine(),
-		"memory_alloc_mb":  float64(memStats.Alloc) / (1024 * 1024),
-		"memory_sys_mb":    float64(memStats.Sys) / (1024 * 1024),
 	}
 
 	if h.registry != nil {

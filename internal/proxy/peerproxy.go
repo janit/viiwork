@@ -39,6 +39,9 @@ func proxyToPeer(w http.ResponseWriter, r *http.Request, peerAddr string, nodeID
 	defer resp.Body.Close()
 
 	for key, values := range resp.Header {
+		if hopByHopHeaders[http.CanonicalHeaderKey(key)] {
+			continue
+		}
 		if thinkDisabled && strings.EqualFold(key, "Content-Length") {
 			continue
 		}

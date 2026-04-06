@@ -3,6 +3,7 @@ package proxy
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -17,8 +18,26 @@ type PipelineResolver struct {
 	pipelines []*pipeline.Pipeline
 }
 
+// NewPipelineResolver creates a resolver and validates that no pipeline step
+// references a virtual model name (which would cause infinite recursion).
 func NewPipelineResolver(pipelines []*pipeline.Pipeline) *PipelineResolver {
-	return &PipelineResolver{pipelines: pipelines}
+	pr := &PipelineResolver{pipelines: pipelines}
+	// Build set of all virtual model names for cycle detection
+	virtualNames := make(map[string]bool)
+	for _, p := range pipelines {
+		for _, name := range p.VirtualModels() {
+			virtualNames[name] = true
+		}
+	}
+	// Check that no pipeline step references a virtual model
+	for _, p := range pipelines {
+		for _, step := range p.Steps {
+			if virtualNames[step.Model] {
+				log.Fatalf("pipeline %q step %q references virtual model %q — this would cause infinite recursion", p.Name, step.Name, step.Model)
+			}
+		}
+	}
+	return pr
 }
 
 // Resolve checks if a model name matches any pipeline.
@@ -106,9 +125,10 @@ func (h *Handler) handlePipeline(w http.ResponseWriter, r *http.Request, p *pipe
 			})
 			return
 		}
+		log.Printf("[pipeline] %s error: %v", modelName, err)
 		writeJSON(w, http.StatusBadGateway, map[string]any{
 			"error": map[string]string{
-				"message": fmt.Sprintf("pipeline error: %v", err),
+				"message": "pipeline processing failed",
 				"type":    "server_error",
 			},
 		})
