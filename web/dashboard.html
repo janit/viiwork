@@ -96,7 +96,7 @@ function render(data) {
   const clusterCostToday = data.cluster_cost_today_eur || 0;
 
   document.getElementById('summary').innerHTML = `
-    <div><span>Node:</span> <strong>${data.node_id}</strong></div>
+    <div><span>Node:</span> <strong>${escapeHtml(data.node_id)}</strong></div>
     <div><span>Models:</span> <strong>${(data.models || []).length}</strong></div>
     <div><span>GPUs:</span> <strong>${healthyGPUs}/${totalGPUs} healthy</strong></div>
     <div><span>Peers:</span> <strong>${(data.peers || []).filter(p => p.status === 'reachable').length}/${(data.peers || []).length} reachable</strong></div>
@@ -196,16 +196,16 @@ function render(data) {
     peersHtml += '<h2>Peers</h2>';
     for (const p of data.peers) {
       peersHtml += '<div class="card"><table>';
-      peersHtml += `<tr><td><span class="status ${p.status}"></span><strong>${p.addr}</strong></td><td>${p.status}</td>`;
+      peersHtml += `<tr><td><span class="status ${escapeHtml(p.status)}"></span><strong>${escapeHtml(p.addr)}</strong></td><td>${escapeHtml(p.status)}</td>`;
       if (p.status === 'reachable') {
-        peersHtml += `<td>${p.node_id}</td><td>${p.healthy_backends} GPUs</td><td>${p.total_in_flight} in-flight</td>`;
+        peersHtml += `<td>${escapeHtml(p.node_id)}</td><td>${p.healthy_backends} GPUs</td><td>${p.total_in_flight} in-flight</td>`;
         peersHtml += p.power_available ? `<td>${p.power_watts}W</td>` : '<td style="color:#8b949e">N/A</td>';
         peersHtml += p.cost_available ? `<td>${p.cost_eur_per_hour.toFixed(2)} EUR/h</td>` : '<td style="color:#8b949e">N/A</td>';
       }
       peersHtml += '</tr></table>';
       if (p.models && p.models.length > 0) {
         peersHtml += '<div class="models">';
-        for (const m of p.models) peersHtml += `<span class="model-tag">${m}</span>`;
+        for (const m of p.models) peersHtml += `<span class="model-tag">${escapeHtml(m)}</span>`;
         peersHtml += '</div>';
       }
       peersHtml += '</div>';
@@ -215,7 +215,7 @@ function render(data) {
 
   // Cluster Models → left column top
   let modelsHtml = '<h2>Cluster Models</h2><div class="models" style="margin-bottom:12px">';
-  for (const m of (data.models || [])) modelsHtml += `<span class="model-tag">${m}</span>`;
+  for (const m of (data.models || [])) modelsHtml += `<span class="model-tag">${escapeHtml(m)}</span>`;
   modelsHtml += '</div>';
   document.getElementById('cluster-models').innerHTML = modelsHtml;
 

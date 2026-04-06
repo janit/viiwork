@@ -10,8 +10,8 @@ func TestGenerateNodeID(t *testing.T) {
 	if !strings.HasPrefix(id, "viiwork-") {
 		t.Errorf("expected viiwork- prefix, got %s", id)
 	}
-	if len(id) != len("viiwork-")+8 {
-		t.Errorf("expected 16 char id, got %d: %s", len(id), id)
+	if len(id) != len("viiwork-")+16 {
+		t.Errorf("expected 24 char id, got %d: %s", len(id), id)
 	}
 }
 

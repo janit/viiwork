@@ -137,6 +137,10 @@ Available at `http://localhost:8080/`. Shows:
 
 A lightweight chat UI is available at `/chat` for quick model interaction.
 
+## Security
+
+viiwork is designed for trusted local networks and has no built-in authentication. All API endpoints are open to any client that can reach the server. If you expose viiwork to an untrusted network, use a reverse proxy (Caddy, nginx) or firewall rules to restrict access.
+
 ## API Endpoints
 
 | Endpoint | Method | Description |

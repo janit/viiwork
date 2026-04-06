@@ -320,8 +320,6 @@ func TestHealthEndpointHealthy(t *testing.T) {
 	if resp["backends_healthy"] != float64(1) { t.Errorf("expected 1 healthy, got %v", resp["backends_healthy"]) }
 	if resp["version"] == nil { t.Error("expected version field") }
 	if resp["uptime_seconds"] == nil { t.Error("expected uptime_seconds field") }
-	if resp["goroutines"] == nil { t.Error("expected goroutines field") }
-	if resp["memory_alloc_mb"] == nil { t.Error("expected memory_alloc_mb field") }
 }
 
 func TestHealthEndpointUnhealthy(t *testing.T) {

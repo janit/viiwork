@@ -56,6 +56,16 @@ func (r *Registry) LocalModel() string                 { return r.localModel }
 func (r *Registry) Backends() []*balancer.BackendState { return r.backends }
 func (r *Registry) Peers() []*PeerState                { return r.peers }
 
+// IsKnownPeer returns true if the given node ID matches any configured peer.
+func (r *Registry) IsKnownPeer(nodeID string) bool {
+	for _, p := range r.peers {
+		if p.NodeID() == nodeID {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *Registry) SetPowerReader(p PowerReader) {
 	r.power = p
 }
@@ -96,7 +106,8 @@ func (r *Registry) pollPeer(ctx context.Context, p *PeerState) {
 	}
 	defer resp.Body.Close()
 	var status StatusResponse
-	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil { p.MarkUnreachable(); return }
+	// Limit peer response body to 1 MB to prevent rogue peers from exhausting memory
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&status); err != nil { p.MarkUnreachable(); return }
 	io.Copy(io.Discard, resp.Body) // drain remaining bytes for connection reuse
 	if status.NodeID == r.nodeID { p.MarkUnreachable(); return } // self-detection
 	wasUnreachable := p.Status() == StatusUnreachable

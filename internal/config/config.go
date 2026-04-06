@@ -151,6 +151,18 @@ func (c *Config) Validate() error {
 	if c.Balancer.MaxInFlightPerGPU < 1 {
 		return fmt.Errorf("balancer.max_in_flight_per_gpu must be >= 1")
 	}
+	if c.Health.Interval.Duration <= 0 {
+		return fmt.Errorf("health.interval must be positive")
+	}
+	if c.Health.Timeout.Duration <= 0 {
+		return fmt.Errorf("health.timeout must be positive")
+	}
+	if c.Health.MaxFailures < 1 {
+		return fmt.Errorf("health.max_failures must be >= 1")
+	}
+	if c.GPUs.BasePort < 1 || c.GPUs.BasePort+c.GPUs.Count-1 > 65535 {
+		return fmt.Errorf("gpus.base_port must be 1-65535 and base_port+count must not exceed 65535")
+	}
 	return nil
 }
 
