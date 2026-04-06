@@ -266,6 +266,7 @@ func streamThinkDisabled(w http.ResponseWriter, body io.Reader, cancel func()) (
 
 	inThinkBlock := false
 	var thinkBuf strings.Builder // buffer reasoning tokens for salvage on truncation
+	const maxThinkBufSize = 1 << 20 // 1 MB cap to prevent unbounded growth
 	var lastChunkTemplate map[string]any // keep a template for synthetic chunks
 
 	for scanner.Scan() {
@@ -392,7 +393,9 @@ func streamThinkDisabled(w http.ResponseWriter, body io.Reader, cancel func()) (
 						emit = true
 					}
 				} else {
-					thinkBuf.WriteString(reasoning)
+					if thinkBuf.Len()+len(reasoning) <= maxThinkBufSize {
+						thinkBuf.WriteString(reasoning)
+					}
 				}
 				continue
 			}

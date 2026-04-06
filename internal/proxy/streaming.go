@@ -13,6 +13,18 @@ import (
 	"github.com/janit/viiwork/internal/balancer"
 )
 
+// hopByHopHeaders are HTTP/1.1 headers that must not be forwarded by proxies (RFC 7230).
+var hopByHopHeaders = map[string]bool{
+	"Connection":          true,
+	"Keep-Alive":          true,
+	"Proxy-Authenticate":  true,
+	"Proxy-Authorization": true,
+	"Te":                  true,
+	"Trailers":            true,
+	"Transfer-Encoding":   true,
+	"Upgrade":             true,
+}
+
 // backendClient has no timeout — LLM inference requests can stream for minutes.
 // The context from the incoming request controls cancellation.
 var backendClient = &http.Client{
@@ -27,11 +39,11 @@ var backendClient = &http.Client{
 // Returns true if the client disconnected early.
 func proxyRequest(w http.ResponseWriter, r *http.Request, backend *balancer.BackendState, latencyWindow time.Duration, thinkDisabled bool) (clientAborted bool) {
 	start := time.Now()
-	backend.IncrInFlight()
 	defer func() {
 		backend.DecrInFlight()
 		backend.RecordLatency(time.Since(start), latencyWindow)
 	}()
+	backend.IncrInFlight()
 
 	// Derive a cancellable context so we can kill the backend request immediately
 	// when the client disconnects, rather than waiting for resp.Body to drain.
@@ -61,6 +73,9 @@ func proxyRequest(w http.ResponseWriter, r *http.Request, backend *balancer.Back
 	defer resp.Body.Close()
 
 	for key, values := range resp.Header {
+		if hopByHopHeaders[http.CanonicalHeaderKey(key)] {
+			continue
+		}
 		if thinkDisabled && strings.EqualFold(key, "Content-Length") {
 			continue // body will be rewritten, original length is wrong
 		}
