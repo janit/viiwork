@@ -1,0 +1,30 @@
+# Second viiwork instance built from the gfx906 stripped fork.
+# Coexists alongside the production `viiwork` container without conflict:
+#
+#   port 8090   server (vs 8080 on the production instance)
+#   ports 9011-9013   llama-server backends (vs 9001-9003)
+#   physical GPUs 4-6 (visible inside the container as 0-2 via ROCR_VISIBLE_DEVICES)
+#
+# Up:    docker compose -f docker-compose.gfx906.yaml up -d
+# Down:  docker compose -f docker-compose.gfx906.yaml down
+# Logs:  docker compose -f docker-compose.gfx906.yaml logs -f
+services:
+  viiwork-gfx906:
+    image: viiwork:gfx906
+    container_name: viiwork-gfx906
+    network_mode: host
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    # No ROCR_VISIBLE_DEVICES at the container level - viiwork's manager
+    # spawns each llama-server child with its own ROCR_VISIBLE_DEVICES=N
+    # based on the absolute physical indices in viiwork.gfx906.yaml's
+    # gpus.devices list, so the children land directly on physical
+    # GPUs 4, 5, 6.
+    volumes:
+      - ./models:/models
+      - ./viiwork.gfx906.yaml:/etc/viiwork/viiwork.yaml
+    group_add:
+      - video
+      - render
+    restart: unless-stopped

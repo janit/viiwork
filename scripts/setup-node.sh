@@ -7,6 +7,46 @@ set -euo pipefail
 echo "=== viiwork node setup ==="
 echo ""
 
+# --- llama.cpp variant selection ---
+# Two builds are available:
+#   1) Standard upstream llama.cpp via the default Dockerfile
+#   2) gfx906-stripped fork via Dockerfile.gfx906 (Phase 1 of the
+#      llama.cpp-gfx906 project: ~73% lines removed from llama-model.cpp,
+#      14 non-HIP backends gone, sampler/grammar trims, 9 of 20 HIP MMQ
+#      instances dropped). Sustained 3% throughput edge over upstream
+#      under the 4h A/B soak (milestone/gfx906-fork-4h-soak-2026-04-09)
+#      with bounded RSS and flat VRAM. Image must exist locally before
+#      `docker compose up` -- this script will not build it for you.
+echo "Which llama.cpp build do you want to use?"
+echo "  1) Standard upstream  (image: viiwork, built from Dockerfile)"
+echo "  2) gfx906 fork        (image: viiwork:gfx906, must exist locally)"
+read -rp "Select [1/2, default 1]: " llama_choice
+case "${llama_choice:-1}" in
+    2|gfx906|fork)
+        LLAMA_VARIANT="gfx906"
+        IMAGE_NAME="viiwork:gfx906"
+        # No build directive -- the gfx906 image is built separately
+        # via `make docker-gfx906` on a node that has the fork tree
+        # (or pulled / docker-loaded onto fresh nodes).
+        BUILD_DIRECTIVE=""
+        echo "  -> using gfx906 fork build"
+        if ! docker image inspect viiwork:gfx906 >/dev/null 2>&1; then
+            echo "  WARNING: viiwork:gfx906 image not found locally."
+            echo "           Build it on a node with the fork tree:"
+            echo "             make docker-gfx906"
+            echo "           Or transfer it from another node:"
+            echo "             docker save viiwork:gfx906 | ssh THIS_NODE docker load"
+        fi
+        ;;
+    *)
+        LLAMA_VARIANT="standard"
+        IMAGE_NAME="viiwork"
+        BUILD_DIRECTIVE="    build: ."
+        echo "  -> using standard upstream build"
+        ;;
+esac
+echo ""
+
 # Detect GPUs — count AMD devices via sysfs (most reliable)
 GPU_COUNT=0
 for card in /sys/class/drm/card*/device/vendor; do
@@ -237,7 +277,7 @@ feeling_lucky() {
         MODEL_FILES[$num]="$file"
         MODEL_CTX[$num]=8192  # conservative for large models on 16GB
 
-        INSTANCES+=("${num}:${gpus}:${GPU_OFFSET}:$((BASE_PORT + INSTANCE_NUM))")
+        INSTANCES+=("${num}:${gpus}:${GPU_OFFSET}:$((BASE_PORT + INSTANCE_NUM)):replica")
         GPU_OFFSET=$((GPU_OFFSET + gpus))
         INSTANCE_NUM=$((INSTANCE_NUM + 1))
         GPUS_REMAINING=$((GPUS_REMAINING - gpus))
@@ -273,8 +313,15 @@ echo "  13) Qwen2.5-7B-Instruct (Q8_0, ~7.5GB) - strong multilingual, lightweigh
 echo "  14) Qwen2.5-14B-Instruct (Q6_K, ~11.3GB) - strong multilingual, high quality"
 echo "  15) Mistral-Nemo-Instruct-12B (Q6_K, ~9.4GB) - good European languages"
 echo ""
+echo "  LARGE MODELS (tensor-split, need 2+ GPUs):"
+echo "  17) Gemma-4-31B-IT (Q4_K_M, ~18GB) - full 31B, 2 GPUs"
+echo "  18) Qwen3-32B (Q4_K_M, ~19GB) - full 32B, 2 GPUs"
+echo "  19) DeepSeek-R1-Distill-Qwen-32B (Q4_K_M, ~19GB) - full 32B reasoning, 2 GPUs"
+echo "  20) Qwen2.5-Coder-32B-Instruct (Q4_K_M, ~19GB) - full 32B coder, 2 GPUs"
+echo ""
 echo "  OTHER:"
-echo "  16) Custom (enter HuggingFace repo and filename)"
+echo "  90) Custom (enter HuggingFace repo and filename)"
+echo "  91) Custom tensor-split (enter repo, filename, min GPUs)"
 echo ""
 echo "  FAMILIES (auto-distribute GPUs across all models in group):"
 echo "  code) All coding      text) All text & reasoning"
@@ -287,8 +334,9 @@ echo "  0c) Coding  0r) Reasoning  0l) Multilingual"
 echo "  0v) Vision  0w) Writing    0a) Agents"
 echo ""
 
-# Model definitions: name, HF repo, filename, context default
-declare -A MODEL_NAMES MODEL_REPOS MODEL_FILES MODEL_CTX
+# Model definitions: name, HF repo, filename, context default, mode
+# MODE: "replica" = 1 backend per GPU (default), "tensor-split" = 1 backend spanning all GPUs
+declare -A MODEL_NAMES MODEL_REPOS MODEL_FILES MODEL_CTX MODEL_MODE MODEL_MIN_GPUS
 MODEL_NAMES[1]="Qwen2.5-Coder-14B-Instruct"
 MODEL_REPOS[1]="Qwen/Qwen2.5-Coder-14B-Instruct-GGUF"
 MODEL_FILES[1]="qwen2.5-coder-14b-instruct-q6_k.gguf"
@@ -364,6 +412,35 @@ MODEL_REPOS[15]="bartowski/Mistral-Nemo-Instruct-2407-GGUF"
 MODEL_FILES[15]="Mistral-Nemo-Instruct-2407-Q6_K.gguf"
 MODEL_CTX[15]=32768
 
+# --- Large models (tensor-split: one llama-server spanning multiple GPUs) ---
+MODEL_NAMES[17]="Gemma-4-31B-IT"
+MODEL_REPOS[17]="unsloth/gemma-4-31B-it-GGUF"
+MODEL_FILES[17]="gemma-4-31B-it-Q4_K_M.gguf"
+MODEL_CTX[17]=4096
+MODEL_MODE[17]="tensor-split"
+MODEL_MIN_GPUS[17]=2
+
+MODEL_NAMES[18]="Qwen3-32B"
+MODEL_REPOS[18]="unsloth/Qwen3-32B-GGUF"
+MODEL_FILES[18]="Qwen3-32B-Q4_K_M.gguf"
+MODEL_CTX[18]=4096
+MODEL_MODE[18]="tensor-split"
+MODEL_MIN_GPUS[18]=2
+
+MODEL_NAMES[19]="DeepSeek-R1-Distill-Qwen-32B"
+MODEL_REPOS[19]="bartowski/DeepSeek-R1-Distill-Qwen-32B-GGUF"
+MODEL_FILES[19]="DeepSeek-R1-Distill-Qwen-32B-Q4_K_M.gguf"
+MODEL_CTX[19]=4096
+MODEL_MODE[19]="tensor-split"
+MODEL_MIN_GPUS[19]=2
+
+MODEL_NAMES[20]="Qwen2.5-Coder-32B-Instruct"
+MODEL_REPOS[20]="bartowski/Qwen2.5-Coder-32B-Instruct-GGUF"
+MODEL_FILES[20]="Qwen2.5-Coder-32B-Instruct-Q4_K_M.gguf"
+MODEL_CTX[20]=8192
+MODEL_MODE[20]="tensor-split"
+MODEL_MIN_GPUS[20]=2
+
 # ── Family definitions (shortcode → model indices) ──────────────────────────
 declare -A FAMILY_MODELS
 FAMILY_MODELS[code]="1 2 3 4"
@@ -407,8 +484,9 @@ assign_family() {
         local gpus=$gpus_per
         [ $idx -lt $extra ] && gpus=$((gpus + 1))
 
-        INSTANCES+=("${mid}:${gpus}:${GPU_OFFSET}:$((BASE_PORT + INSTANCE_NUM))")
-        echo "  Port $((BASE_PORT + INSTANCE_NUM)): ${MODEL_NAMES[$mid]} on ${gpus} GPUs"
+        local mid_mode="${MODEL_MODE[$mid]:-replica}"
+        INSTANCES+=("${mid}:${gpus}:${GPU_OFFSET}:$((BASE_PORT + INSTANCE_NUM)):${mid_mode}")
+        echo "  Port $((BASE_PORT + INSTANCE_NUM)): ${MODEL_NAMES[$mid]} on ${gpus} GPUs (${mid_mode})"
         GPU_OFFSET=$((GPU_OFFSET + gpus))
         INSTANCE_NUM=$((INSTANCE_NUM + 1))
         GPUS_REMAINING=$((GPUS_REMAINING - gpus))
@@ -478,16 +556,36 @@ while [ "$GPUS_REMAINING" -gt 0 ]; do
     fi
 
     # Single model selection
-    if [ "$choice" = "16" ]; then
+    if [ "$choice" = "90" ]; then
         read -rp "  HuggingFace repo (e.g. user/model-GGUF): " custom_repo
         read -rp "  Filename (e.g. model-q4_k_m.gguf): " custom_file
-        MODEL_REPOS[16]="$custom_repo"
-        MODEL_FILES[16]="$custom_file"
-        MODEL_NAMES[16]="Custom"
-        MODEL_CTX[16]=32768
+        MODEL_REPOS[90]="$custom_repo"
+        MODEL_FILES[90]="$custom_file"
+        MODEL_NAMES[90]="Custom"
+        MODEL_CTX[90]=32768
+    elif [ "$choice" = "91" ]; then
+        read -rp "  HuggingFace repo (e.g. user/model-GGUF): " custom_repo
+        read -rp "  Filename (e.g. model-q4_k_m.gguf): " custom_file
+        read -rp "  Minimum GPUs needed: " custom_min_gpus
+        MODEL_REPOS[91]="$custom_repo"
+        MODEL_FILES[91]="$custom_file"
+        MODEL_NAMES[91]="Custom-TS"
+        MODEL_CTX[91]=4096
+        MODEL_MODE[91]="tensor-split"
+        MODEL_MIN_GPUS[91]="${custom_min_gpus:-2}"
     fi
 
-    if [ "$GPUS_REMAINING" -eq "$GPU_COUNT" ] && [ "$GPUS_REMAINING" -le 4 ]; then
+    local mode="${MODEL_MODE[$choice]:-replica}"
+    local min_gpus="${MODEL_MIN_GPUS[$choice]:-1}"
+
+    if [ "$mode" = "tensor-split" ]; then
+        if [ "$GPUS_REMAINING" -lt "$min_gpus" ]; then
+            echo "  Need at least ${min_gpus} GPUs for tensor-split, only ${GPUS_REMAINING} available!"
+            continue
+        fi
+        default_gpus=$min_gpus
+        echo "  (tensor-split mode — one backend spanning multiple GPUs, min ${min_gpus})"
+    elif [ "$GPUS_REMAINING" -eq "$GPU_COUNT" ] && [ "$GPUS_REMAINING" -le 4 ]; then
         default_gpus=$GPUS_REMAINING
     else
         default_gpus=$((GPUS_REMAINING > 1 ? GPUS_REMAINING / 2 : GPUS_REMAINING))
@@ -499,8 +597,12 @@ while [ "$GPUS_REMAINING" -gt 0 ]; do
         echo "  Only ${GPUS_REMAINING} GPUs available!"
         continue
     fi
+    if [ "$mode" = "tensor-split" ] && [ "$gpu_count" -lt "$min_gpus" ]; then
+        echo "  Tensor-split needs at least ${min_gpus} GPUs!"
+        continue
+    fi
 
-    INSTANCES+=("${choice}:${gpu_count}:${GPU_OFFSET}:$((BASE_PORT + INSTANCE_NUM))")
+    INSTANCES+=("${choice}:${gpu_count}:${GPU_OFFSET}:$((BASE_PORT + INSTANCE_NUM)):${mode}")
     GPUS_REMAINING=$((GPUS_REMAINING - gpu_count))
     GPU_OFFSET=$((GPU_OFFSET + gpu_count))
     INSTANCE_NUM=$((INSTANCE_NUM + 1))
@@ -509,9 +611,9 @@ done
 # Assign remaining GPUs to last instance if any left
 if [ "$GPUS_REMAINING" -gt 0 ] && [ "${#INSTANCES[@]}" -gt 0 ]; then
     last="${INSTANCES[-1]}"
-    IFS=: read -r lchoice lgpus loffset lport <<< "$last"
+    IFS=: read -r lchoice lgpus loffset lport lmode <<< "$last"
     lgpus=$((lgpus + GPUS_REMAINING))
-    INSTANCES[-1]="${lchoice}:${lgpus}:${loffset}:${lport}"
+    INSTANCES[-1]="${lchoice}:${lgpus}:${loffset}:${lport}:${lmode}"
     echo "Assigned remaining ${GPUS_REMAINING} GPUs to ${MODEL_NAMES[$lchoice]}."
 fi
 
@@ -519,7 +621,7 @@ fi
 declare -A USED_GPUS
 has_overlap=false
 for inst in "${INSTANCES[@]}"; do
-    IFS=: read -r choice gpus offset port <<< "$inst"
+    IFS=: read -r choice gpus offset port mode <<< "$inst"
     for ((g=0; g<gpus; g++)); do
         dev=$((offset + g))
         if [[ -n "${USED_GPUS[$dev]+x}" ]]; then
@@ -537,13 +639,15 @@ fi
 echo ""
 echo "=== Configuration Summary ==="
 for inst in "${INSTANCES[@]}"; do
-    IFS=: read -r choice gpus offset port <<< "$inst"
+    IFS=: read -r choice gpus offset port mode <<< "$inst"
     devs=""
     for ((g=0; g<gpus; g++)); do
         [ -n "$devs" ] && devs="${devs}, "
         devs="${devs}$((offset + g))"
     done
-    echo "  Port ${port}: ${MODEL_NAMES[$choice]} on GPUs [${devs}]"
+    local mode_label=""
+    [ "$mode" = "tensor-split" ] && mode_label=" (tensor-split)"
+    echo "  Port ${port}: ${MODEL_NAMES[$choice]} on GPUs [${devs}]${mode_label}"
 done
 echo ""
 read -rp "Proceed? (y/n): " confirm
@@ -564,7 +668,7 @@ fi
 # Download models
 echo ""
 for inst in "${INSTANCES[@]}"; do
-    IFS=: read -r choice gpus offset port <<< "$inst"
+    IFS=: read -r choice gpus offset port mode <<< "$inst"
     file="${MODEL_FILES[$choice]}"
     if [ -f "models/${file}" ]; then
         echo "==> ${file} already exists, skipping download."
@@ -581,17 +685,105 @@ for inst in "${INSTANCES[@]}"; do
     fi
 done
 
+# --- Optional GPU power/performance benchmark ---
+# Sweeps the first GPU through power-cap settings and finds the value that
+# gives best efficiency without losing performance. The recommendation is
+# baked into the generated viiwork.yaml as `gpus.power_limit_watts`. Skip
+# is fine — the default cap (250W on Radeon VII) just leaves more thermal
+# headroom unused. This is power-cap only (safe, can only clamp clocks
+# downward, cannot corrupt outputs). Voltage / memory clock tuning is
+# explicitly NOT in this script.
+POWER_LIMIT_WATTS=""
+echo ""
+echo "GPU power/performance benchmark (optional):"
+echo "  Sweeps GPU 0 through power caps 150/180/210/250W to find the best"
+echo "  setting for this card. Takes ~15-20 min unattended. Result is baked"
+echo "  into the generated viiwork.yaml. Power-cap-only, fully reversible."
+read -rp "Run benchmark? [y/N]: " run_sweep
+if [[ "${run_sweep}" == "y" || "${run_sweep}" == "Y" ]]; then
+    sweep_script="$(dirname "$0")/power-perf-sweep.sh"
+    if [ ! -x "${sweep_script}" ]; then
+        echo "  WARN: ${sweep_script} not found or not executable, skipping"
+    else
+        # Use first instance's model + GPU 0 + the chosen llama variant image
+        IFS=: read -r _choice _gpus _offset _port _mode <<< "${INSTANCES[0]}"
+        sweep_model="${MODEL_FILES[$_choice]}"
+        sweep_log="/tmp/setup-node-power-sweep-$(date -u +%Y%m%dT%H%M%SZ).log"
+        echo "  Starting benchmark on GPU 0 with ${sweep_model}..."
+        echo "  Log: ${sweep_log}"
+        if GPU=0 \
+           IMAGE="${IMAGE_NAME}" \
+           MODEL_FILE="${sweep_model}" \
+           MODELS_DIR="$(pwd)/models" \
+           "${sweep_script}" 2>&1 | tee "${sweep_log}"
+        then
+            POWER_LIMIT_WATTS=$(grep -oE 'RECOMMENDED power_limit_watts: [0-9]+' "${sweep_log}" | grep -oE '[0-9]+$' | head -1)
+            if [ -n "${POWER_LIMIT_WATTS}" ]; then
+                echo ""
+                echo "  Benchmark recommends: power_limit_watts: ${POWER_LIMIT_WATTS}"
+                echo "  Will be baked into the generated viiwork.yaml."
+            else
+                echo "  Benchmark didn't produce a recommendation; leaving power_limit_watts unset."
+            fi
+        else
+            echo "  Benchmark failed; leaving power_limit_watts unset (default 250W cap will apply)."
+        fi
+    fi
+fi
+
 # Generate configs
 echo ""
 echo "==> Generating configuration files..."
 
 # If single instance, generate simple config
 if [ "${#INSTANCES[@]}" -eq 1 ]; then
-    IFS=: read -r choice gpus offset port <<< "${INSTANCES[0]}"
+    IFS=: read -r choice gpus offset port mode <<< "${INSTANCES[0]}"
     file="${MODEL_FILES[$choice]}"
     ctx="${MODEL_CTX[$choice]}"
 
-    cat > viiwork.yaml <<EOF
+    if [ "$mode" = "tensor-split" ]; then
+        # Build device list for tensor-split
+        devices_yaml=""
+        for ((g=0; g<gpus; g++)); do
+            [ -n "$devices_yaml" ] && devices_yaml="${devices_yaml}, "
+            devices_yaml="${devices_yaml}$((offset + g))"
+        done
+        cat > viiwork.yaml <<EOF
+server:
+  host: 0.0.0.0
+  port: ${port}
+
+model:
+  path: /models/${file}
+  context_size: ${ctx}
+  n_gpu_layers: -1
+  parallel: 1
+
+gpus:
+  devices: [${devices_yaml}]
+  base_port: 9001
+$([ -n "${POWER_LIMIT_WATTS}" ] && echo "  power_limit_watts: ${POWER_LIMIT_WATTS}" || echo "  # power_limit_watts: 180")
+  tensor_split:
+    enabled: true
+    mode: layer
+
+backend:
+  binary: llama-server
+  extra_args: ["--reasoning-format", "deepseek"]
+
+health:
+  interval: 5s
+  timeout: 3s
+  max_failures: 3
+
+balancer:
+  latency_window: 30s
+  high_load_threshold: 3
+  max_in_flight_per_gpu: 4
+EOF
+        echo "  Generated viiwork.yaml (single instance, tensor-split across ${gpus} GPUs)"
+    else
+        cat > viiwork.yaml <<EOF
 server:
   host: 0.0.0.0
   port: ${port}
@@ -604,7 +796,7 @@ model:
 gpus:
   count: ${gpus}
   base_port: 9001
-  # power_limit_watts: 180
+$([ -n "${POWER_LIMIT_WATTS}" ] && echo "  power_limit_watts: ${POWER_LIMIT_WATTS}" || echo "  # power_limit_watts: 180")
 
 backend:
   binary: llama-server
@@ -621,14 +813,14 @@ balancer:
   high_load_threshold: $((gpus - 3 > 1 ? gpus - 3 : 1))
   max_in_flight_per_gpu: 4
 EOF
-
-    echo "  Generated viiwork.yaml (single instance)"
+        echo "  Generated viiwork.yaml (single instance, replica mode)"
+    fi
 
     cat > docker-compose.yaml <<EOF
 services:
   viiwork:
-    image: viiwork
-    build: .
+    image: ${IMAGE_NAME}
+${BUILD_DIRECTIVE}
     container_name: viiwork
     network_mode: host
     devices:
@@ -642,19 +834,21 @@ services:
       - render
     restart: unless-stopped
 EOF
+    # Strip the empty line left by an empty BUILD_DIRECTIVE
+    sed -i '/^$/N;/^\n$/D' docker-compose.yaml
 
-    echo "  Generated docker-compose.yaml (single instance, network_mode: host)"
+    echo "  Generated docker-compose.yaml (single instance, ${LLAMA_VARIANT} llama, network_mode: host)"
 
 else
     # Multiple instances: generate per-instance configs + docker-compose
     PEER_LIST=""
     for inst in "${INSTANCES[@]}"; do
-        IFS=: read -r choice gpus offset port <<< "$inst"
+        IFS=: read -r choice gpus offset port mode <<< "$inst"
         PEER_LIST="${PEER_LIST}    - localhost:${port}\n"
     done
 
     for inst in "${INSTANCES[@]}"; do
-        IFS=: read -r choice gpus offset port <<< "$inst"
+        IFS=: read -r choice gpus offset port mode <<< "$inst"
         file="${MODEL_FILES[$choice]}"
         ctx="${MODEL_CTX[$choice]}"
         cfg_name="viiwork-${port}.yaml"
@@ -670,14 +864,54 @@ else
         # Build peer list excluding self
         peers_yaml=""
         for other in "${INSTANCES[@]}"; do
-            IFS=: read -r _ _ _ oport <<< "$other"
+            IFS=: read -r _ _ _ oport _ <<< "$other"
             if [ "$oport" != "$port" ]; then
                 peers_yaml="${peers_yaml}
     - localhost:${oport}"
             fi
         done
 
-        cat > "${cfg_name}" <<EOF
+        if [ "$mode" = "tensor-split" ]; then
+            cat > "${cfg_name}" <<EOF
+server:
+  host: 0.0.0.0
+  port: ${port}
+
+model:
+  path: /models/${file}
+  context_size: ${ctx}
+  n_gpu_layers: -1
+  parallel: 1
+
+gpus:
+  devices:${devices_yaml}
+  base_port: ${base_backend_port}
+$([ -n "${POWER_LIMIT_WATTS}" ] && echo "  power_limit_watts: ${POWER_LIMIT_WATTS}" || echo "  # power_limit_watts: 180")
+  tensor_split:
+    enabled: true
+    mode: layer
+
+backend:
+  binary: llama-server
+  extra_args: ["--reasoning-format", "deepseek"]
+
+health:
+  interval: 5s
+  timeout: 3s
+  max_failures: 3
+
+balancer:
+  latency_window: 30s
+  high_load_threshold: 3
+  max_in_flight_per_gpu: 4
+
+peers:
+  hosts:${peers_yaml}
+  poll_interval: 10s
+  timeout: 3s
+EOF
+        else
+            cat > "${cfg_name}" <<EOF
 server:
   host: 0.0.0.0
   port: ${port}
@@ -690,7 +924,7 @@ model:
 gpus:
   devices:${devices_yaml}
   base_port: ${base_backend_port}
-  # power_limit_watts: 180
+$([ -n "${POWER_LIMIT_WATTS}" ] && echo "  power_limit_watts: ${POWER_LIMIT_WATTS}" || echo "  # power_limit_watts: 180")
 
 backend:
   binary: llama-server
@@ -712,8 +946,8 @@ peers:
   poll_interval: 10s
   timeout: 3s
 EOF
-
-        echo "  Generated ${cfg_name}"
+        fi
+        echo "  Generated ${cfg_name} (${mode})"
     done
 
     # Generate docker-compose for multi-instance
@@ -722,14 +956,14 @@ services:
 EOF
 
     for inst in "${INSTANCES[@]}"; do
-        IFS=: read -r choice gpus offset port <<< "$inst"
+        IFS=: read -r choice gpus offset port mode <<< "$inst"
         file="${MODEL_FILES[$choice]}"
         name=$(echo "${file}" | sed 's/\.gguf//' | tr '[:upper:]' '[:lower:]' | tr '.' '-')
 
         cat >> docker-compose.yaml <<EOF
   viiwork-${port}:
-    image: viiwork
-    build: .
+    image: ${IMAGE_NAME}
+${BUILD_DIRECTIVE}
     container_name: viiwork-${port}
     network_mode: host
     devices:
@@ -745,15 +979,16 @@ EOF
 
 EOF
     done
+    sed -i '/^$/N;/^\n$/D' docker-compose.yaml
 
-    echo "  Generated docker-compose.yaml (${#INSTANCES[@]} instances, network_mode: host)"
+    echo "  Generated docker-compose.yaml (${#INSTANCES[@]} instances, ${LLAMA_VARIANT} llama, network_mode: host)"
 fi
 
 echo ""
 echo "=== Done ==="
 echo ""
 if [ "${#INSTANCES[@]}" -eq 1 ]; then
-    IFS=: read -r _ _ _ port <<< "${INSTANCES[0]}"
+    IFS=: read -r _ _ _ port _ <<< "${INSTANCES[0]}"
     echo "Start with: docker compose up -d"
     echo "Dashboard:  http://localhost:${port}/"
     echo "API:        http://localhost:${port}/v1/models"
@@ -761,10 +996,18 @@ else
     echo "Start with: docker compose up -d"
     echo ""
     for inst in "${INSTANCES[@]}"; do
-        IFS=: read -r choice gpus offset port <<< "$inst"
-        echo "  ${MODEL_NAMES[$choice]}: http://localhost:${port}/"
+        IFS=: read -r choice gpus offset port mode <<< "$inst"
+        local suffix=""
+        [ "$mode" = "tensor-split" ] && suffix=" (tensor-split, ${gpus} GPUs)"
+        echo "  ${MODEL_NAMES[$choice]}: http://localhost:${port}/${suffix}"
     done
     echo ""
     echo "Connect OpenCode to any instance — mesh routing handles the rest."
     echo "All models visible from any endpoint via /v1/models."
+    echo ""
+    echo "Notes:"
+    echo "  Replica instances run one llama-server per GPU (N-way concurrency)."
+    echo "  Tensor-split instances run one llama-server spanning multiple GPUs"
+    echo "  (single-request at a time, but can serve models too large for one GPU)."
+    echo "  See viiwork.tensor-split.yaml.example for tensor-split details."
 fi

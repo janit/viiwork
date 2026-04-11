@@ -1,0 +1,130 @@
+# viiwork tensor-split mode example.
+#
+# Use this when you want to run a single model that's TOO BIG for one GPU,
+# split layer-wise across multiple GPUs. The viiwork process spawns ONE
+# llama-server bound to all the listed devices, and serves a SINGLE request
+# at a time (tensor-split mode in llama.cpp serializes — there is no
+# request-level parallelism, only weight-level parallelism).
+#
+# Use the regular viiwork.yaml.example if your model fits a single GPU and
+# you want N-way request concurrency from N replica backends.
+#
+# Trade-offs vs replica mode:
+#   replica mode  : N small models, N-way concurrency, model size capped at 1 GPU
+#   tensor-split  : 1 big model, 1-way concurrency, model size capped at N GPUs
+#
+# On the gfx906 mining-rig topology (PCIe gen1 x1 risers), measured tensor-split
+# penalty is mild and bounded:
+#   N=2 layer-split: -2 to -13% TG vs single-GPU baseline (model dependent)
+#   N=4 layer-split: -7 to -20%
+#   N=6 layer-split: -10 to -25%
+# See docs/tensor-split-design.md and the bench notes for the full data.
+#
+# IMPORTANT: split-mode "row" is broken on the gfx906 stripped llama.cpp fork
+# (crashes during warmup with GGML_ASSERT failure). Stick with the default
+# "layer" mode unless you know what you're doing.
+
+server:
+  host: 0.0.0.0
+  port: 8080
+
+model:
+  # A model that exceeds single-GPU VRAM. Examples that benefit from
+  # tensor-split on a 16 GB Radeon VII rig:
+  #   - gemma-4-31B-it-Q4_K_M.gguf (~18 GB) → 2-4 GPUs
+  #   - Qwen3.5-122B-A10B Q4_K_M (~70 GB)   → 5-6 GPUs
+  #   - Qwen3-235B-A22B Q3_K_M (~100 GB)    → 7-8 GPUs
+  path: /models/gemma-4-31B-it-Q4_K_M.gguf
+  context_size: 4096
+  n_gpu_layers: -1
+  # parallel is forced to 1 in tensor-split mode regardless of this value
+  parallel: 1
+
+gpus:
+  # List the GPU device IDs the single backend will span. Order matters:
+  # llama.cpp distributes layers across these devices in order.
+  devices: [4, 5]
+
+  # Single port for the one backend. Replica mode would use base_port..base_port+N-1
+  # for the N processes, but tensor-split has only one process so only base_port
+  # is used.
+  base_port: 9001
+
+  # power_limit_watts: 180  # optional: applied to every device in the group
+
+  tensor_split:
+    enabled: true
+
+    # "layer" (default, recommended): split transformer layers across GPUs.
+    #   Each GPU holds a contiguous range of layers. Cross-GPU traffic is the
+    #   activation tensor at layer boundaries — small (~16 KB at hidden=4096
+    #   per token) and tolerable even on PCIe gen1 x1.
+    #
+    # "row": split each matmul across GPUs (row tensor parallelism).
+    #   Every layer becomes an all-reduce → catastrophic on slow interconnects.
+    #   ALSO BROKEN ON THE GFX906 FORK as of 2026-04-09. Don't use it.
+    mode: layer
+
+    # Optional explicit per-GPU split weights. If omitted, even weights (1,1,1,...)
+    # are used. Useful when GPUs have different free VRAM (other tenants) and you
+    # want to bias the split.
+    # weights: [1.0, 1.0, 1.0, 1.0]
+
+    # main_gpu: 0   # only used when mode="row" — index into the devices list
+
+backend:
+  binary: llama-server
+  # Pass extra flags directly to llama-server. Common ones for tensor-split:
+  #
+  #   --no-mmap        Read tensors into malloc'd buffers instead of mmap'ing
+  #                    the model file. REQUIRED when model size > host RAM AND
+  #                    model lives on a slow / network filesystem (e.g. NFS).
+  #                    Without this flag, the kernel page-faults randomly
+  #                    through the mmap'd file during the post-load metadata
+  #                    pass, and on a 100 GB model with 46 GB host RAM and an
+  #                    NFS-backed file the load can stall for hours in
+  #                    folio_wait_bit_common. With --no-mmap each tensor is
+  #                    read once into a tiny buffer (a few MB) and freed
+  #                    after VRAM upload, so peak host RAM stays minimal.
+  #
+  #                    NOTE: viiwork auto-injects --no-mmap when it detects
+  #                    a model file larger than 80% of MemTotal in
+  #                    /proc/meminfo. You only need to set it explicitly to
+  #                    override that decision (set it false-positive on a
+  #                    fast nvme path, or true on a fast filesystem with a
+  #                    fits-in-RAM model where you'd actually prefer mmap).
+  #                    Set --mmap explicitly to opt out of the auto-inject
+  #                    behavior — viiwork will respect that and just log a
+  #                    warning if it thinks you're at risk.
+  #
+  #   --no-warmup      Skip the empty-batch warmup pass at startup. Saves a
+  #                    few seconds for very large models. Optional.
+  #
+  #   --reasoning-format deepseek
+  #                    Enables <think> tag parsing for thinking models.
+  #                    Match what you'd pass to llama-server directly.
+  extra_args: ["--reasoning-format", "deepseek"]
+
+health:
+  interval: 5s
+  timeout: 3s
+  max_failures: 3
+
+balancer:
+  # In tensor-split mode there's only one backend; the load balancer trivially
+  # picks it. The high_load_threshold and latency_window settings still apply
+  # for queue-depth tracking and request scheduling.
+  latency_window: 30s
+  high_load_threshold: 7
+  # max_in_flight_per_gpu doubles as the queue depth at the single backend in
+  # tensor-split mode. Past this depth the proxy returns 429 with Retry-After.
+  max_in_flight_per_gpu: 4
+
+# Mesh networking is unchanged from replica mode — peers see this node as a
+# single endpoint serving one model with one slot.
+# peers:
+#   hosts:
+#     - 192.168.1.10:8080
+#     - 192.168.1.11:8080
+#   poll_interval: 10s
+#   timeout: 3s

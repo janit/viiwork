@@ -1,0 +1,59 @@
+# viiwork docker image built with the gfx906-stripped llama.cpp fork.
+#
+# This Dockerfile is the cutover target for Phase 1 of the gfx906 fork
+# work. The original Dockerfile is left untouched as the rollback path.
+#
+# Build via:
+#
+#   docker build -t viiwork:gfx906 \
+#     --build-context fork=/home/janit/gfx906-work/llama.cpp-gfx906 \
+#     -f Dockerfile.gfx906 .
+#
+# (or `make docker-gfx906`).
+#
+# The named build context `fork` is required - it points at the local
+# clone of llama.cpp-gfx906 that holds the Phase 1 commits. The fork
+# tree is COPYd in instead of git-cloned because we don't push it to a
+# remote during local validation.
+
+# Stage 1: Build llama.cpp-gfx906 with ROCm/gfx906
+FROM rocm/dev-ubuntu-24.04:6.2.4-complete AS llama-build
+RUN apt-get update && apt-get install -y cmake git
+COPY --from=fork . /llama.cpp
+WORKDIR /llama.cpp
+# The fork already carries the gfx906 fp8 sed as a real commit
+# (`fix(hip): disable __hip_fp8_e4m3 path for gfx906`) so no in-place
+# patching is needed here.
+RUN cmake -B build -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx906 \
+    && cmake --build build --target llama-server llama-cli -j$(nproc)
+# llama-cli is included alongside llama-server for `rocprof`-based
+# kernel profiling (Phase 2 of the gfx906 fork plan). rocprof v1 in
+# ROCm 6.2 cannot cleanly wrap llama-server through a driver subshell
+# but wraps single-shot llama-cli directly. Including the second
+# binary permanently is ~10 MB and saves us from maintaining a
+# parallel "-prof" image variant.
+# Smoke test: both binaries run and can find HIP runtime
+RUN ldd /llama.cpp/build/bin/llama-server && /llama.cpp/build/bin/llama-server --help > /dev/null
+RUN ldd /llama.cpp/build/bin/llama-cli    && /llama.cpp/build/bin/llama-cli    --help > /dev/null
+
+# Stage 2: Build viiwork (unchanged from the original Dockerfile)
+FROM golang:1.23.6 AS go-build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ARG VERSION=dev
+RUN CGO_ENABLED=0 go build -ldflags "-X main.version=${VERSION}" -o /viiwork ./cmd/viiwork
+
+# Stage 3: Runtime (unchanged from the original Dockerfile)
+FROM rocm/dev-ubuntu-24.04:6.2.4-complete
+RUN apt-get update && apt-get install -y --no-install-recommends ipmitool && rm -rf /var/lib/apt/lists/*
+COPY --from=llama-build /llama.cpp/build/bin/llama-server /usr/local/bin/
+COPY --from=llama-build /llama.cpp/build/bin/llama-cli    /usr/local/bin/
+COPY --from=llama-build /llama.cpp/build /tmp/llama-build/
+RUN find /tmp/llama-build -name '*.so*' -exec cp {} /usr/local/lib/ \; && rm -rf /tmp/llama-build && ldconfig
+COPY --from=go-build /viiwork /usr/local/bin/
+ENV HSA_OVERRIDE_GFX_VERSION=9.0.6
+EXPOSE 8080
+ENTRYPOINT ["viiwork"]
+CMD ["--config", "/etc/viiwork/viiwork.yaml"]
