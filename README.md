@@ -41,12 +41,12 @@ docker compose up -d
 
 ## Multi-Model Setup
 
-Run multiple models on one host using `./scripts/setup-node.sh`. It detects GPUs, lets you assign models to GPU groups, downloads models, and generates configs with mesh peering between instances.
+Run multiple models on one host using `./scripts/setup-node.sh`. It detects GPUs, lets you assign models to GPU groups, downloads models, and generates configs with mesh peering between instances. Supports both **replica mode** (one backend per GPU, N-way concurrency) and **tensor-split mode** (one backend spanning multiple GPUs for models too large for a single card).
 
 Example: 10 GPUs split across 3 models:
-- 4 GPUs on port 8080: Gemma-4-26B-A4B-IT (fast MoE inference, 4B active params)
-- 4 GPUs on port 8081: Qwen3-32B (general reasoning)
-- 2 GPUs on port 8082: Gemma-4-E4B-IT (lightweight/multimodal tasks)
+- 4 GPUs on port 8080: Gemma-4-26B-A4B-IT (replica mode, 4-way concurrency)
+- 4 GPUs on port 8081: Qwen3-32B (replica mode, aggressive quant to fit 16GB)
+- 2 GPUs on port 8082: Gemma-4-31B-IT (tensor-split, full quality Q4_K_M across 2 GPUs)
 
 All models visible from any port via mesh routing.
 
@@ -67,6 +67,34 @@ The setup script can auto-discover trending models that fit your hardware:
 ```
 
 Uses [llmfit](https://www.llmfit.org/) for hardware-aware scoring when installed, with HuggingFace API as fallback. Auto-picks a diverse assortment and assigns GPUs.
+
+## Tensor-Split Mode
+
+For models that don't fit in a single GPU's VRAM, tensor-split mode runs one llama-server process spanning multiple GPUs. The model's layers are distributed across GPUs, with cross-GPU traffic at layer boundaries.
+
+```yaml
+gpus:
+  devices: [0, 1]
+  base_port: 9001
+  tensor_split:
+    enabled: true
+    mode: layer    # "layer" recommended; "row" is broken on the gfx906 fork
+model:
+  parallel: 1      # forced to 1 in tensor-split mode
+```
+
+Trade-offs vs replica mode:
+
+| | Replica mode | Tensor-split mode |
+|---|---|---|
+| Concurrency | N backends = N-way parallel | 1 backend = serial requests |
+| Model size cap | Must fit in 1 GPU | Can span N GPUs |
+| Throughput | Higher (parallel) | Lower (serial) |
+| Use case | Models ≤13GB on 16GB cards | Models >13GB that need 2+ cards |
+
+On the gfx906 mining-rig topology (PCIe gen1 x1 risers), measured tensor-split penalty is -2 to -13% for 2-GPU and -7 to -20% for 4-GPU splits. On PCIe gen3/4/5 the penalty is smaller.
+
+The setup script offers tensor-split models (17-20) and custom tensor-split (91) for any model. See `viiwork.tensor-split.yaml.example` for all options.
 
 ## Configuration
 
@@ -168,7 +196,7 @@ viiwork is designed for trusted local networks and has no built-in authenticatio
 
 ## Recommended Models
 
-All models fit in 16GB VRAM (Radeon VII) with full GPU offload. The safe VRAM ceiling is ~13GB after accounting for KV cache and ROCm runtime overhead.
+**Single-GPU models** fit in 16GB VRAM (Radeon VII) with full GPU offload. The safe VRAM ceiling is ~13GB after accounting for KV cache and ROCm runtime overhead. **Large models** use tensor-split mode across 2+ GPUs — higher quality quants at the cost of serial-only inference.
 
 ### Coding
 
@@ -203,13 +231,42 @@ All models fit in 16GB VRAM (Radeon VII) with full GPU offload. The safe VRAM ce
 | DeepSeek-R1-Distill-Qwen-32B | Q2_K | ~12.3GB | Chain-of-thought reasoning, math, complex analysis |
 | DeepSeek-R1-Distill-Qwen-14B | Q4_K_M | ~9GB | Reasoning at higher quant quality |
 
+### Large Models (tensor-split, 2+ GPUs)
+
+These models are too large for a single 16GB GPU at reasonable quant levels. Use tensor-split mode to split them across 2 or more GPUs.
+
+| Model | Quant | Size | Min GPUs | Best For |
+|-------|-------|------|----------|----------|
+| Gemma-4-31B-IT | Q4_K_M | ~18GB | 2 | Full 31B dense model, higher quality than the 26B MoE |
+| Qwen3-32B | Q4_K_M | ~19GB | 2 | General reasoning at full quality (vs Q2_K single-GPU) |
+| DeepSeek-R1-Distill-Qwen-32B | Q4_K_M | ~19GB | 2 | Reasoning at full quality (vs Q2_K single-GPU) |
+| Qwen2.5-Coder-32B | Q4_K_M | ~19GB | 2 | Largest coder at full quality (vs Q2_K single-GPU) |
+
+## Builds
+
+viiwork ships in two parallel builds in this same repo. They share the Go server, balancer, dashboard, and API — they differ only in the llama.cpp binary the server spawns.
+
+| | Stable foundation | Experimental track |
+|---|---|---|
+| Image | `viiwork:latest` | `viiwork:gfx906` |
+| Dockerfile | `Dockerfile` | `Dockerfile.gfx906` |
+| Make target | `make docker` (alias `make docker-stable`) | `make docker-gfx906` (alias `make docker-experimental`) |
+| llama.cpp | Pinned upstream `ggml-org/llama.cpp` release | Local `llama.cpp-gfx906` fork tree (stripped, gfx906-specialized) |
+| Status | Default. Production-stable, runs everywhere. | Bake-in track, opt-in per node. +3.0% sustained tok/s vs upstream and identical memory profile in the 4 h A/B soak (`milestone/gfx906-fork-4h-soak-2026-04-09`). |
+
+`scripts/setup-node.sh` asks which build to use as its very first prompt — option 1 (stable) is the default. To switch a running node between tracks in place without re-running setup, use `scripts/switch-node-build.sh`.
+
+See **[BUILDS.md](BUILDS.md)** for the full comparison, when to use which, image distribution between nodes, rollback procedure, and the specific design rationale for the experimental track.
+
 ## Docker Build
 
-The Docker image pins llama.cpp to a specific release tag and patches the HIP FP8 header for gfx906 compatibility. To bump the llama.cpp version:
+Both builds pin llama.cpp to a specific release tag and patch the HIP FP8 header for gfx906 compatibility. To bump the upstream version on the stable build:
 
 ```bash
 docker compose build --build-arg LLAMA_CPP_VERSION=b8700
 ```
+
+The experimental build is pinned to a specific commit on the `llama.cpp-gfx906` fork — bump it by updating the fork tree at `$GFX906_FORK` (default `~/gfx906-work/llama.cpp-gfx906`) and re-running `make docker-gfx906`.
 
 The FP8 patch is required because ROCm 6.2+ includes `<hip/hip_fp8.h>` for all architectures, but gfx906 has no FP8 hardware and the header fails to compile.
 
@@ -217,7 +274,10 @@ The FP8 patch is required because ROCm 6.2+ includes `<hip/hip_fp8.h>` for all a
 
 | Script | Description |
 |--------|-------------|
-| `scripts/setup-node.sh` | Interactive setup: detect GPUs, select models, download, generate configs |
+| `scripts/setup-node.sh` | Interactive setup: pick build (stable/experimental), detect GPUs, select models (replica or tensor-split), download, generate configs, optionally run the power/perf benchmark |
+| `scripts/switch-node-build.sh` | Flip a running node between the stable foundation and the experimental gfx906 track in place |
+| `scripts/power-perf-sweep.sh` | Sweep one GPU through power-cap settings (150/180/210/250W), measure tok/s + watts + temperature, recommend the best `power_limit_watts`. ~15-20 min, power-cap-only, fully reversible |
+| `scripts/power-perf-sweep-phase2.sh` | Advanced sweep: voltage curve + memory clock tuning. Riskier than Phase 1 — requires explicit user go-ahead. Has correctness gate (compares outputs against baseline) |
 | `scripts/setup-opencode.sh` | Configure OpenCode client with auto-detected models |
 | `scripts/update.sh` | Pull latest, rebuild Docker image, restart |
 | `scripts/rebuild.sh` | Full clean rebuild: stop, remove images, rebuild, start |
@@ -255,12 +315,13 @@ Add it to your MCP client's configuration as a stdio transport server pointing a
 ## Development
 
 ```bash
-make build    # build binary (with git version embedded)
-make mcp      # build MCP server
-make test     # run unit tests
-make docker   # build Docker image
-make up       # docker compose up -d
-make down     # docker compose down
+make build         # build binary (with git version embedded)
+make mcp           # build MCP server
+make test          # run unit tests
+make docker        # build stable Docker image (viiwork:latest)
+make docker-gfx906 # build experimental Docker image (viiwork:gfx906)
+make up            # docker compose up -d
+make down          # docker compose down
 
 go test -v -tags=integration  # integration tests (mock backends, no GPU needed)
 go test -v -run TestName ./internal/package  # single test

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -25,7 +26,12 @@ var healthClient = &http.Client{
 }
 
 type Backend struct {
-	GPUID         int
+	GPUID         int   // -1 if TensorSplit (the backend spans multiple GPUs)
+	GPUIDs        []int // populated only when TensorSplit; the device list
+	TensorSplit   bool
+	SplitMode     string    // "layer" or "row"; ignored if !TensorSplit
+	SplitWeights  []float64 // optional per-GPU split fractions; default even
+	MainGPU       int       // for SplitMode="row"; ignored otherwise
 	ModelPath     string
 	Port          int
 	ContextSize   int
@@ -38,6 +44,41 @@ type Backend struct {
 	State           *balancer.BackendState
 	LogWriter     io.Writer
 	cmd           *exec.Cmd
+}
+
+// label returns a human-readable identifier for log lines: "gpu-4" for a
+// single-GPU replica backend, or "ts-4,5,6,7" for a tensor-split aggregate.
+func (b *Backend) label() string {
+	if b.TensorSplit {
+		return "ts-" + joinInts(b.GPUIDs, ",")
+	}
+	return "gpu-" + strconv.Itoa(b.GPUID)
+}
+
+func joinInts(xs []int, sep string) string {
+	parts := make([]string, len(xs))
+	for i, x := range xs {
+		parts[i] = strconv.Itoa(x)
+	}
+	return strings.Join(parts, sep)
+}
+
+func joinFloats(xs []float64, sep string) string {
+	parts := make([]string, len(xs))
+	for i, x := range xs {
+		parts[i] = strconv.FormatFloat(x, 'f', -1, 64)
+	}
+	return strings.Join(parts, sep)
+}
+
+// evenWeights returns "1,1,1,..." with n copies, used as the default
+// --tensor-split argument when no explicit weights are configured.
+func evenWeights(n int) string {
+	parts := make([]string, n)
+	for i := range parts {
+		parts[i] = "1"
+	}
+	return strings.Join(parts, ",")
 }
 
 func (b *Backend) buildArgs() []string {
@@ -54,24 +95,58 @@ func (b *Backend) buildArgs() []string {
 		"--slots",        // enable /slots endpoint for context monitoring
 		"--log-disable",  // suppress per-request logging (viiwork polls /slots every 1s)
 	}
+	if b.TensorSplit {
+		mode := b.SplitMode
+		if mode == "" {
+			mode = "layer"
+		}
+		args = append(args, "--split-mode", mode)
+		if len(b.SplitWeights) > 0 {
+			args = append(args, "--tensor-split", joinFloats(b.SplitWeights, ","))
+		} else {
+			args = append(args, "--tensor-split", evenWeights(len(b.GPUIDs)))
+		}
+		if mode == "row" {
+			args = append(args, "--main-gpu", strconv.Itoa(b.MainGPU))
+		}
+	}
 	args = append(args, b.ExtraArgs...)
 	return args
 }
 
 func (b *Backend) buildEnv() []string {
 	env := os.Environ()
-	env = append(env, fmt.Sprintf("ROCR_VISIBLE_DEVICES=%d", b.GPUID))
+	if b.TensorSplit {
+		env = append(env, "ROCR_VISIBLE_DEVICES="+joinInts(b.GPUIDs, ","))
+	} else {
+		env = append(env, fmt.Sprintf("ROCR_VISIBLE_DEVICES=%d", b.GPUID))
+	}
+	// Reduce glibc malloc fragmentation in long-running llama-server processes:
+	// - MMAP_THRESHOLD: allocations >64KB use mmap, freed immediately via munmap
+	// - TRIM_THRESHOLD: aggressively trim the heap on free
+	// - ARENA_MAX: limit arena count to prevent memory hoarding across threads
+	env = append(env, "MALLOC_MMAP_THRESHOLD_=65536")
+	env = append(env, "MALLOC_TRIM_THRESHOLD_=65536")
+	env = append(env, "MALLOC_ARENA_MAX=4")
 	return env
 }
 
 func (b *Backend) Start() error {
 	b.State.SetStatus(balancer.StatusStarting)
 	if b.PowerLimitWatts > 0 {
-		out, err := exec.Command("rocm-smi", "--setpoweroverdrive", strconv.Itoa(b.PowerLimitWatts), "-d", strconv.Itoa(b.GPUID)).CombinedOutput()
-		if err != nil {
-			log.Printf("[gpu-%d] WARNING: failed to set power limit to %dW: %v (%s)", b.GPUID, b.PowerLimitWatts, err, string(out))
-		} else {
-			log.Printf("[gpu-%d] power limit set to %dW", b.GPUID, b.PowerLimitWatts)
+		// In tensor-split mode the same limit is applied to every device in
+		// the group. In replica mode there's just the one GPUID.
+		ids := []int{b.GPUID}
+		if b.TensorSplit {
+			ids = b.GPUIDs
+		}
+		for _, id := range ids {
+			out, err := exec.Command("rocm-smi", "--setpoweroverdrive", strconv.Itoa(b.PowerLimitWatts), "-d", strconv.Itoa(id)).CombinedOutput()
+			if err != nil {
+				log.Printf("[%s] WARNING: failed to set power limit to %dW on gpu-%d: %v (%s)", b.label(), b.PowerLimitWatts, id, err, string(out))
+			} else {
+				log.Printf("[%s] gpu-%d power limit set to %dW", b.label(), id, b.PowerLimitWatts)
+			}
 		}
 	}
 	b.cmd = exec.Command(b.Binary, b.buildArgs()...)
@@ -81,7 +156,7 @@ func (b *Backend) Start() error {
 		b.cmd.Stderr = b.LogWriter
 	}
 	if err := b.cmd.Start(); err != nil {
-		return fmt.Errorf("starting backend gpu-%d: %w", b.GPUID, err)
+		return fmt.Errorf("starting backend %s: %w", b.label(), err)
 	}
 	return nil
 }

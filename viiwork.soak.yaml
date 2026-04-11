@@ -1,0 +1,55 @@
+# Shared config for the overnight soak A/B test.
+#
+# Used by BOTH docker-compose.soak-prod.yaml (upstream image) and
+# docker-compose.soak-fork.yaml (gfx906 fork image). Only one of those
+# containers is up at any given time -- they share port, GPUs, and
+# config so the only variable across the two phases is the binary.
+#
+# GPU layout for the test bench:
+#   prod viiwork  (port 8080) -> physical GPUs 0,1,2          (untouched)
+#   bench reserve                physical GPU 3               (untouched)
+#   soak A/B      (port 8091) -> physical GPUs 5,6,7,8,9      (this file)
+#
+# GPU 4 stays idle during the soak. The current viiwork-gfx906 instance
+# (which uses GPUs 4,5,6) MUST be stopped before the soak runs - the
+# orchestrator handles that.
+server:
+  host: 0.0.0.0
+  port: 8091
+
+model:
+  path: /models/gemma-4-26B-A4B-it-UD-Q3_K_XL.gguf
+  context_size: 13337
+  n_gpu_layers: -1
+
+gpus:
+  devices: [5, 6, 7, 8, 9]
+  base_port: 9101
+  # power_limit_watts: 180
+
+backend:
+  binary: llama-server
+  extra_args: ["--reasoning-format", "deepseek"]
+
+health:
+  interval: 5s
+  timeout: 3s
+  max_failures: 3
+
+balancer:
+  strategy: adaptive
+  latency_window: 30s
+  # Soak saturation tuning (Option A): with driver concurrency 10 against
+  # 5 GPUs we want each GPU to always have one in-flight AND one queued
+  # behind it, so the handoff gap between requests disappears. The 5+5
+  # smoke at concurrency 5 with cap 1 only delivered ~67 % of single-GPU
+  # peak (28 tok/s vs 42 tok/s) -- the missing 33 % was idle handoff time.
+  #
+  # max_in_flight_per_gpu = 2 lets the proxy queue one request behind the
+  # in-flight one. Slot count inside llama-server stays 1 (-- parallel 1
+  # default), so the memory allocation pattern matches production exactly.
+  # high_load_threshold bumped to 14 (= 5 GPUs * cap 2 + headroom) so the
+  # balancer stays in lowest-latency-idle mode rather than flipping to
+  # least-loaded under steady state.
+  high_load_threshold: 14
+  max_in_flight_per_gpu: 2

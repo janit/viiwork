@@ -85,6 +85,95 @@ func TestValidation(t *testing.T) {
 	}
 }
 
+func TestTensorSplitConfigYAML(t *testing.T) {
+	yaml := `
+model:
+  path: /models/big.gguf
+  context_size: 4096
+  parallel: 4
+gpus:
+  devices: [4, 5, 6, 7]
+  base_port: 8081
+  tensor_split:
+    enabled: true
+    weights: [1.0, 1.0, 1.0, 1.0]
+`
+	f, err := os.CreateTemp("", "viiwork-ts-*.yaml")
+	if err != nil { t.Fatal(err) }
+	defer os.Remove(f.Name())
+	f.WriteString(yaml)
+	f.Close()
+
+	cfg, err := Load(f.Name())
+	if err != nil { t.Fatalf("Load failed: %v", err) }
+	if !cfg.GPUs.TensorSplit.Enabled {
+		t.Error("expected tensor_split.enabled=true")
+	}
+	if cfg.GPUs.TensorSplit.Mode != "layer" {
+		t.Errorf("expected default mode 'layer', got %q", cfg.GPUs.TensorSplit.Mode)
+	}
+	if len(cfg.GPUs.TensorSplit.Weights) != 4 {
+		t.Errorf("expected 4 weights, got %d", len(cfg.GPUs.TensorSplit.Weights))
+	}
+	// parallel must be forced to 1 in tensor-split mode regardless of user setting
+	if cfg.Model.Parallel != 1 {
+		t.Errorf("expected model.parallel forced to 1 in tensor-split mode, got %d", cfg.Model.Parallel)
+	}
+	if cfg.GPUs.Count != 4 {
+		t.Errorf("expected count derived from devices=4, got %d", cfg.GPUs.Count)
+	}
+}
+
+func TestTensorSplitValidationRejects(t *testing.T) {
+	cases := []struct {
+		name string
+		mut  func(*Config)
+	}{
+		{"single device", func(c *Config) {
+			c.GPUs.Devices = []int{4}
+			c.GPUs.TensorSplit.Enabled = true
+		}},
+		{"bad mode", func(c *Config) {
+			c.GPUs.Devices = []int{4, 5}
+			c.GPUs.TensorSplit.Enabled = true
+			c.GPUs.TensorSplit.Mode = "weird"
+		}},
+		{"weights length mismatch", func(c *Config) {
+			c.GPUs.Devices = []int{4, 5, 6}
+			c.GPUs.TensorSplit.Enabled = true
+			c.GPUs.TensorSplit.Weights = []float64{1, 1}
+		}},
+		{"main_gpu out of range", func(c *Config) {
+			c.GPUs.Devices = []int{4, 5}
+			c.GPUs.TensorSplit.Enabled = true
+			c.GPUs.TensorSplit.MainGPU = 5
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Model.Path = "/models/x.gguf"
+			tc.mut(&cfg)
+			if err := cfg.Validate(); err == nil {
+				t.Errorf("expected validation error for %s", tc.name)
+			}
+		})
+	}
+}
+
+func TestTensorSplitDefaultMode(t *testing.T) {
+	cfg := Defaults()
+	cfg.Model.Path = "/models/x.gguf"
+	cfg.GPUs.Devices = []int{4, 5}
+	cfg.GPUs.TensorSplit.Enabled = true
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate failed: %v", err)
+	}
+	if cfg.GPUs.TensorSplit.Mode != "layer" {
+		t.Errorf("expected default mode 'layer', got %q", cfg.GPUs.TensorSplit.Mode)
+	}
+}
+
 func TestCLIOverrides(t *testing.T) {
 	cfg := Defaults()
 	cfg.Model.Path = "/models/test.gguf"
