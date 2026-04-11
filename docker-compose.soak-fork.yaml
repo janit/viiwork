@@ -1,0 +1,29 @@
+# Soak B: gfx906 stripped fork viiwork image on GPUs 5-9, port 8091.
+#
+# Up:    docker compose -f docker-compose.soak-fork.yaml up -d
+# Down:  docker compose -f docker-compose.soak-fork.yaml down
+# Logs:  docker logs -f viiwork-soak-fork
+#
+# IMPORTANT: must NOT run at the same time as docker-compose.soak-prod.yaml
+# (same port, same GPUs). The bench-harness/run_overnight_soak.sh
+# orchestrator brings them up sequentially.
+#
+# Explicit project name keeps this isolated from the default
+# `viiwork-private` project (which owns the production viiwork
+# container) so a `compose down` here cannot sweep production.
+name: viiwork-soak-fork
+services:
+  viiwork-soak-fork:
+    image: viiwork:gfx906
+    container_name: viiwork-soak-fork
+    network_mode: host
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    volumes:
+      - ./models:/models
+      - ./viiwork.soak.yaml:/etc/viiwork/viiwork.yaml
+    group_add:
+      - video
+      - render
+    restart: "no"

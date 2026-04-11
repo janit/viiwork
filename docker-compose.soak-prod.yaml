@@ -1,0 +1,29 @@
+# Soak A: upstream/production viiwork image on GPUs 5-9, port 8091.
+#
+# Up:    docker compose -f docker-compose.soak-prod.yaml up -d
+# Down:  docker compose -f docker-compose.soak-prod.yaml down
+# Logs:  docker logs -f viiwork-soak-prod
+#
+# IMPORTANT: must NOT run at the same time as docker-compose.soak-fork.yaml
+# (same port, same GPUs). The bench-harness/run_overnight_soak.sh
+# orchestrator brings them up sequentially.
+#
+# Explicit project name keeps this isolated from the default
+# `viiwork-private` project (which owns the production viiwork
+# container) so a `compose down` here cannot sweep production.
+name: viiwork-soak-prod
+services:
+  viiwork-soak-prod:
+    image: viiwork:latest
+    container_name: viiwork-soak-prod
+    network_mode: host
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    volumes:
+      - ./models:/models
+      - ./viiwork.soak.yaml:/etc/viiwork/viiwork.yaml
+    group_add:
+      - video
+      - render
+    restart: "no"
