@@ -1,0 +1,48 @@
+# Qwen3.5-35B-A3B bring-up test compose.
+#
+# Coexists with viiwork (8080), viiwork-gfx906 (8090), and any bench
+# container. Uses explicit project name so `down` won't touch prod.
+#
+# Prereqs (run these first, in order):
+#
+#   1. Confirm GPUs 7-9 are free:
+#        rocm-smi --showpids
+#
+#   2. Download model (~22 GB, one time):
+#        ./scripts/download-qwen35.sh
+#
+#   3. Build test image (~10 min, one time):
+#        docker build -t viiwork:qwen-test -f Dockerfile.qwen-test .
+#
+# Run / tear down:
+#
+#   Up:     docker compose -f configs/docker-compose.qwen-test.yaml up -d
+#   Logs:   docker logs -f viiwork-qwen-test
+#   Probe:  curl -s http://localhost:8092/v1/models | jq
+#   Test:   curl -s http://localhost:8092/v1/chat/completions \
+#             -H 'Content-Type: application/json' \
+#             -d '{"model":"Qwen3.5-35B-A3B-Q4_K_M",
+#                  "messages":[{"role":"user","content":"hello"}]}'
+#   Down:   docker compose -f configs/docker-compose.qwen-test.yaml down
+#
+# Expected failure modes to watch for (these are the interesting data):
+#   - "unsupported architecture" -> arch not yet in llama.cpp master
+#   - Load hang on HIP          -> matches open issue #20545 / #18102
+#   - Seg fault on first token  -> ROCm DeltaNet kernel gap
+#   - Slow-as-CPU throughput    -> DeltaNet ops silently on CPU fallback
+name: viiwork-qwen-test
+services:
+  viiwork-qwen-test:
+    image: viiwork:qwen-test
+    container_name: viiwork-qwen-test
+    network_mode: host
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    volumes:
+      - ../models:/models
+      - ./viiwork.qwen-test.yaml:/etc/viiwork/viiwork.yaml
+    group_add:
+      - video
+      - render
+    restart: "no"

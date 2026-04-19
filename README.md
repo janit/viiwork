@@ -94,7 +94,7 @@ Trade-offs vs replica mode:
 
 On the gfx906 mining-rig topology (PCIe gen1 x1 risers), measured tensor-split penalty is -2 to -13% for 2-GPU and -7 to -20% for 4-GPU splits. On PCIe gen3/4/5 the penalty is smaller.
 
-The setup script offers tensor-split models (17-20) and custom tensor-split (91) for any model. See `viiwork.tensor-split.yaml.example` for all options.
+The setup script offers tensor-split models (17-20) and custom tensor-split (91) for any model. See `configs/viiwork.tensor-split.yaml.example` for all options.
 
 ## Configuration
 

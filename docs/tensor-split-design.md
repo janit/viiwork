@@ -215,8 +215,8 @@ No structural changes. The collectors sample all visible GPUs regardless of how 
 ## Migration / backward compat
 
 - Configs without `gpus.tensor_split` continue to work exactly as before (default `enabled=false`).
-- Existing `viiwork.yaml`, `viiwork.gfx906.yaml`, `viiwork.soak.yaml` unchanged.
-- New `viiwork.tensor-split.yaml.example` checked in alongside the existing examples.
+- Existing `viiwork.yaml`, `configs/viiwork.gfx906.yaml`, `configs/viiwork.soak.yaml` unchanged.
+- New `configs/viiwork.tensor-split.yaml.example` checked in alongside the existing examples.
 - `setup-node.sh` gets a new option: "tensor-split mode for one big model" vs the existing "N replicas of one small model". Both produce a docker-compose plus config.
 - The MCP server (`cmd/viiwork-mcp`) needs no changes — it talks to viiwork's HTTP API, which is unchanged.
 

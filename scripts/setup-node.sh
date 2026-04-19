@@ -1009,5 +1009,5 @@ else
     echo "  Replica instances run one llama-server per GPU (N-way concurrency)."
     echo "  Tensor-split instances run one llama-server spanning multiple GPUs"
     echo "  (single-request at a time, but can serve models too large for one GPU)."
-    echo "  See viiwork.tensor-split.yaml.example for tensor-split details."
+    echo "  See configs/viiwork.tensor-split.yaml.example for tensor-split details."
 fi
