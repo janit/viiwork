@@ -4,5 +4,6 @@ bin/
 docker-compose.yaml
 viiwork.yaml
 viiwork-*.yaml
+configs/
 .env
 .git

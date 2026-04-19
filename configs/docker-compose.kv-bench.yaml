@@ -1,0 +1,18 @@
+# KV cache benchmark compose. Config is bind-mounted by the orchestrator
+# via VIIWORK_KV_BENCH_CONFIG env var (defaults to viiwork.kv-bench-baseline.yaml).
+name: viiwork-kv-bench
+services:
+  viiwork-kv-bench:
+    image: viiwork:latest
+    container_name: viiwork-kv-bench
+    network_mode: host
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    volumes:
+      - ../models:/models
+      - ./${VIIWORK_KV_BENCH_CONFIG:-viiwork.kv-bench-baseline.yaml}:/etc/viiwork/viiwork.yaml
+    group_add:
+      - video
+      - render
+    restart: "no"

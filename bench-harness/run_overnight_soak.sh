@@ -48,7 +48,9 @@ BASE_URL="http://localhost:8091"
 CONCURRENCY=10
 INTERVAL="30s"
 
-log() { printf '[%s] %s\n' "$(date -u +%H:%M:%SZ)" "$*" | tee -a "${RUN_DIR}/run.log"; }
+LOG_FILE="${RUN_DIR}/run.log"
+# shellcheck source=common.sh
+source "$(dirname "$0")/common.sh"
 
 teardown_all() {
   log "teardown: stopping any soak containers"
@@ -57,8 +59,8 @@ teardown_all() {
   # project with production and a sweep would kill the prod container.
   # Each soak compose file now sets its own `name:` so this is belt-and-
   # braces, but the rule still stands.
-  (cd "${REPO_DIR}" && docker compose -f docker-compose.soak-prod.yaml down >/dev/null 2>&1 || true)
-  (cd "${REPO_DIR}" && docker compose -f docker-compose.soak-fork.yaml down >/dev/null 2>&1 || true)
+  (cd "${REPO_DIR}" && docker compose -f configs/docker-compose.soak-prod.yaml down >/dev/null 2>&1 || true)
+  (cd "${REPO_DIR}" && docker compose -f configs/docker-compose.soak-fork.yaml down >/dev/null 2>&1 || true)
 }
 
 wait_healthy() {
@@ -67,31 +69,16 @@ wait_healthy() {
   # cluster needs ~5-6 min to reach all-healthy. 600 s timeout gives
   # plenty of headroom.
   local name="$1"
-  local deadline=$(( $(date +%s) + 600 ))
-  log "waiting for ${name} to report all 5 backends healthy via ${BASE_URL}/v1/status (up to 600s)"
-  while (( $(date +%s) < deadline )); do
-    if status_json=$(curl -fsS --max-time 3 "${BASE_URL}/v1/status" 2>/dev/null); then
-      healthy=$(printf '%s' "$status_json" | python3 -c '
-import json, sys
-d = json.load(sys.stdin)
-print(d.get("healthy_backends", 0))
-')
-      if [[ "$healthy" -ge 5 ]]; then
-        log "${name}: ${healthy}/5 backends healthy"
-        return 0
-      fi
-      log "${name}: ${healthy}/5 backends healthy, waiting..."
-    fi
-    sleep 10
-  done
-  log "ERROR: ${name} did not reach 5/5 healthy within 600s"
+  if wait_healthy_viiwork "${BASE_URL}" 5 600 "${name}"; then
+    return 0
+  fi
   docker logs --tail 200 "${name}" 2>&1 | tee -a "${RUN_DIR}/run.log" || true
   return 1
 }
 
 run_phase() {
   local phase="$1"        # prod | fork
-  local compose="$2"      # docker-compose.soak-prod.yaml
+  local compose="$2"      # configs/docker-compose.soak-prod.yaml
   local container="$3"    # viiwork-soak-prod
   local csv_label="$4"    # prod | fork
   local csv_out="$5"
@@ -138,14 +125,14 @@ log "GPU pool: ${GPUS[*]}; backend ports: ${BACKEND_PORTS[*]}; concurrency=${CON
 # and any leftover soak containers. Production viiwork (GPUs 0-2) untouched.
 if docker ps --format '{{.Names}}' | grep -qx viiwork-gfx906; then
   log "stopping legacy viiwork-gfx906 (uses GPUs 4-6, overlaps soak pool)"
-  (cd "${REPO_DIR}" && docker compose -f docker-compose.gfx906.yaml down)
+  (cd "${REPO_DIR}" && docker compose -f configs/docker-compose.gfx906.yaml down)
 fi
 teardown_all
 
-run_phase prod docker-compose.soak-prod.yaml viiwork-soak-prod prod \
+run_phase prod configs/docker-compose.soak-prod.yaml viiwork-soak-prod prod \
   "${PROD_CSV}" "${PROD_LOG}" "${PROD_CONTAINER_LOG}"
 
-run_phase fork docker-compose.soak-fork.yaml viiwork-soak-fork fork \
+run_phase fork configs/docker-compose.soak-fork.yaml viiwork-soak-fork fork \
   "${FORK_CSV}" "${FORK_LOG}" "${FORK_CONTAINER_LOG}"
 
 log "writing comparison summary"

@@ -7,3 +7,4 @@ viiwork-*.yaml
 .env
 .worktrees/
 bench-harness/__pycache__/
+bench-harness/results/

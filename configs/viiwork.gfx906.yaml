@@ -17,7 +17,7 @@ gpus:
 
 backend:
   binary: llama-server
-  extra_args: ["--reasoning-format", "deepseek"]
+  extra_args: ["--reasoning-format", "deepseek", "-fa", "on", "--cache-type-k", "q4_0", "--cache-type-v", "q4_0"]
 
 health:
   interval: 5s

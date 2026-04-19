@@ -1,0 +1,49 @@
+# Alternative: Qwen3.5-35B-A3B Q3_K_M on GPUs 7-9.
+#
+# Motivation: Q4_K_M (22 GB) oversizes the 16 GB gfx906 VRAM; the 2026-04-18
+# bench showed aggregate throughput stuck at ~15 tok/s regardless of
+# concurrency (1 req 13.77, 3 reqs 5.05 each -> 15.14 aggregate) because
+# weights stream from host RAM for each inference step.
+#
+# Q3_K_M (~16 GB on disk) should fit fully resident in VRAM after KV-cache
+# allocation -> no streaming -> expected multi-GPU linear scaling.
+#
+# Download:
+#   hf download unsloth/Qwen3.5-35B-A3B-GGUF Qwen3.5-35B-A3B-Q3_K_M.gguf \
+#     --local-dir models
+#
+# Run:
+#   docker compose -f configs/docker-compose.qwen-test-q3km.yaml up -d
+server:
+  host: 0.0.0.0
+  port: 8093
+
+model:
+  path: /models/Qwen3.5-35B-A3B-Q3_K_M.gguf
+  context_size: 32768
+  n_gpu_layers: -1
+
+gpus:
+  # GPUs 4-6 so this can run alongside the Q4_K_M variant (GPUs 7-9).
+  devices: [4, 5, 6]
+  base_port: 9301
+
+backend:
+  binary: llama-server
+  # KV quantization halves KV cache size. Combined with the smaller weight
+  # footprint this should give headroom to extend context toward 32k.
+  extra_args: ["--cache-type-k", "q4_0", "--cache-type-v", "q4_0"]
+
+health:
+  interval: 5s
+  timeout: 10s
+  max_failures: 3
+
+balancer:
+  strategy: adaptive
+  latency_window: 30s
+  # 3 GPUs x 2 in-flight = 6 concurrent max. Threshold 8 keeps the balancer
+  # in lowest-latency-idle mode under steady state, matching the tuning
+  # from viiwork.soak.yaml that gave the 4h soak PASS.
+  high_load_threshold: 8
+  max_in_flight_per_gpu: 2
