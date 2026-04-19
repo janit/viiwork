@@ -1,0 +1,28 @@
+# KV cache benchmark: q4_0 KV quantization
+server:
+  host: 0.0.0.0
+  port: 8091
+
+model:
+  path: /models/gemma-4-26B-A4B-it-UD-Q3_K_XL.gguf
+  context_size: 13337
+  n_gpu_layers: -1
+
+gpus:
+  devices: [5, 6, 7, 8, 9]
+  base_port: 9101
+
+backend:
+  binary: llama-server
+  extra_args: ["--reasoning-format", "deepseek", "--cache-type-k", "q4_0", "--cache-type-v", "q4_0"]
+
+health:
+  interval: 5s
+  timeout: 3s
+  max_failures: 3
+
+balancer:
+  strategy: adaptive
+  latency_window: 30s
+  high_load_threshold: 14
+  max_in_flight_per_gpu: 2

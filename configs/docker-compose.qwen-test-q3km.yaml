@@ -1,0 +1,19 @@
+# Qwen3.5-35B-A3B Q3_K_M variant compose. Runs alongside or instead of
+# configs/docker-compose.qwen-test.yaml (different project name, different port,
+# SAME GPUs -- bring down the Q4 variant first).
+name: viiwork-qwen-test-q3km
+services:
+  viiwork-qwen-test-q3km:
+    image: viiwork:qwen-test
+    container_name: viiwork-qwen-test-q3km
+    network_mode: host
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    volumes:
+      - ../models:/models
+      - ./viiwork.qwen-test-q3km.yaml:/etc/viiwork/viiwork.yaml
+    group_add:
+      - video
+      - render
+    restart: "no"

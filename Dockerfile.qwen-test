@@ -1,0 +1,60 @@
+# Dedicated image for Qwen3.5-35B-A3B bring-up testing.
+#
+# Why a separate image:
+#   - viiwork:gfx906 (fork) has Qwen3.5/hybrid-DeltaNet archs deleted
+#     by phase1 step3 (only llama, qwen2/3/3moe, gemma* retained).
+#   - viiwork:latest pins LLAMA_CPP_VERSION=b8660, which predates the
+#     DeltaNet ops merges (GGML_OP_GATED_DELTA_NET landed in issue
+#     #19504, GGML_OP_DELTA_NET in #20091, both post-b8660).
+#
+# This image pulls recent upstream llama.cpp master so the Qwen3.5-A3B
+# arch is available. Production images are untouched.
+#
+# Build:
+#   docker build -t viiwork:qwen-test -f Dockerfile.qwen-test .
+#
+# Test on a fresh-enough tag; bump when needed. Pin intentionally to
+# catch regressions rather than silently drifting.
+#
+# Reference open issue: #18102 (ggml-cuda: Delta-Net linear attention
+# for Qwen3-Next) and #20545 (Eval bug: Infinite wait on rocm 7.2,
+# qwen 3.5 35ba3b) - this image is the vehicle for reproducing them.
+
+# Stage 1: Build llama.cpp master with ROCm/gfx906
+FROM rocm/dev-ubuntu-24.04:6.2.4-complete AS llama-build
+RUN apt-get update && apt-get install -y cmake git
+# master tip known to include DeltaNet + Qwen3.5 arch support
+# (bump to a specific b-tag once we confirm a good one)
+ARG LLAMA_CPP_REF=master
+RUN git clone --depth 1 --branch ${LLAMA_CPP_REF} \
+    https://github.com/ggml-org/llama.cpp /llama.cpp
+WORKDIR /llama.cpp
+# gfx906 FP8 header workaround (same as prod Dockerfile)
+RUN sed -i 's/#if HIP_VERSION >= 60200000/#if HIP_VERSION >= 99999999/' \
+    ggml/src/ggml-cuda/vendors/hip.h || true
+RUN cmake -B build -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx906 \
+    && cmake --build build --target llama-server llama-cli -j$(nproc)
+RUN ldd /llama.cpp/build/bin/llama-server && /llama.cpp/build/bin/llama-server --help > /dev/null
+RUN ldd /llama.cpp/build/bin/llama-cli    && /llama.cpp/build/bin/llama-cli    --help > /dev/null
+
+# Stage 2: Build viiwork (unchanged)
+FROM golang:1.23.6 AS go-build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ARG VERSION=qwen-test
+RUN CGO_ENABLED=0 go build -ldflags "-X main.version=${VERSION}" -o /viiwork ./cmd/viiwork
+
+# Stage 3: Runtime
+FROM rocm/dev-ubuntu-24.04:6.2.4-complete
+RUN apt-get update && apt-get install -y --no-install-recommends ipmitool && rm -rf /var/lib/apt/lists/*
+COPY --from=llama-build /llama.cpp/build/bin/llama-server /usr/local/bin/
+COPY --from=llama-build /llama.cpp/build/bin/llama-cli    /usr/local/bin/
+COPY --from=llama-build /llama.cpp/build /tmp/llama-build/
+RUN find /tmp/llama-build -name '*.so*' -exec cp {} /usr/local/lib/ \; && rm -rf /tmp/llama-build && ldconfig
+COPY --from=go-build /viiwork /usr/local/bin/
+ENV HSA_OVERRIDE_GFX_VERSION=9.0.6
+EXPOSE 8080
+ENTRYPOINT ["viiwork"]
+CMD ["--config", "/etc/viiwork/viiwork.yaml"]

@@ -1,7 +1,7 @@
 # Shared config for the overnight soak A/B test.
 #
-# Used by BOTH docker-compose.soak-prod.yaml (upstream image) and
-# docker-compose.soak-fork.yaml (gfx906 fork image). Only one of those
+# Used by BOTH configs/docker-compose.soak-prod.yaml (upstream image) and
+# configs/docker-compose.soak-fork.yaml (gfx906 fork image). Only one of those
 # containers is up at any given time -- they share port, GPUs, and
 # config so the only variable across the two phases is the binary.
 #

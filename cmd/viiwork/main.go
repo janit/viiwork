@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"flag"
 	"fmt"
 	"log"
@@ -17,7 +18,6 @@ import (
 	"github.com/janit/viiwork/internal/config"
 	"github.com/janit/viiwork/internal/cost"
 	"github.com/janit/viiwork/internal/gpu"
-	"github.com/janit/viiwork/internal/identity"
 	"github.com/janit/viiwork/internal/logging"
 	"github.com/janit/viiwork/internal/model"
 	"github.com/janit/viiwork/internal/peer"
@@ -28,6 +28,12 @@ import (
 )
 
 var version = "dev"
+
+func generateNodeID() string {
+	b := make([]byte, 8)
+	rand.Read(b)
+	return fmt.Sprintf("viiwork-%x", b)
+}
 
 func main() {
 	proxy.Version = version
@@ -73,7 +79,7 @@ func main() {
 		log.Printf("pipeline '%s' loaded with %d locales, %d steps", name, len(p.Locales), len(p.Steps))
 	}
 
-	nodeID := identity.GenerateNodeID()
+	nodeID := generateNodeID()
 	log.Printf("viiwork %s starting with %d GPUs, model: %s", nodeID, cfg.GPUs.Count, cfg.Model.Path)
 
 	sampler := power.NewSampler()

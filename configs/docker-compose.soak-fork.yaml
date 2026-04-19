@@ -1,10 +1,10 @@
 # Soak B: gfx906 stripped fork viiwork image on GPUs 5-9, port 8091.
 #
-# Up:    docker compose -f docker-compose.soak-fork.yaml up -d
-# Down:  docker compose -f docker-compose.soak-fork.yaml down
+# Up:    docker compose -f configs/docker-compose.soak-fork.yaml up -d
+# Down:  docker compose -f configs/docker-compose.soak-fork.yaml down
 # Logs:  docker logs -f viiwork-soak-fork
 #
-# IMPORTANT: must NOT run at the same time as docker-compose.soak-prod.yaml
+# IMPORTANT: must NOT run at the same time as configs/docker-compose.soak-prod.yaml
 # (same port, same GPUs). The bench-harness/run_overnight_soak.sh
 # orchestrator brings them up sequentially.
 #
@@ -21,7 +21,7 @@ services:
       - /dev/kfd:/dev/kfd
       - /dev/dri:/dev/dri
     volumes:
-      - ./models:/models
+      - ../models:/models
       - ./viiwork.soak.yaml:/etc/viiwork/viiwork.yaml
     group_add:
       - video

@@ -5,9 +5,9 @@
 #   ports 9011-9013   llama-server backends (vs 9001-9003)
 #   physical GPUs 4-6 (visible inside the container as 0-2 via ROCR_VISIBLE_DEVICES)
 #
-# Up:    docker compose -f docker-compose.gfx906.yaml up -d
-# Down:  docker compose -f docker-compose.gfx906.yaml down
-# Logs:  docker compose -f docker-compose.gfx906.yaml logs -f
+# Up:    docker compose -f configs/docker-compose.gfx906.yaml up -d
+# Down:  docker compose -f configs/docker-compose.gfx906.yaml down
+# Logs:  docker compose -f configs/docker-compose.gfx906.yaml logs -f
 services:
   viiwork-gfx906:
     image: viiwork:gfx906
@@ -22,7 +22,7 @@ services:
     # gpus.devices list, so the children land directly on physical
     # GPUs 4, 5, 6.
     volumes:
-      - ./models:/models
+      - ../models:/models
       - ./viiwork.gfx906.yaml:/etc/viiwork/viiwork.yaml
     group_add:
       - video

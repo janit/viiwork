@@ -1,0 +1,57 @@
+# Qwen3.5-35B-A3B bring-up test config.
+#
+# Purpose: first-load test of hybrid Gated-DeltaNet + MoE arch on gfx906
+# via a recent upstream llama.cpp (not the stripped fork). Paired with
+# Dockerfile.qwen-test and configs/docker-compose.qwen-test.yaml.
+#
+# Layout on gb1 (10 GPUs total):
+#   GPUs 0-2  : production viiwork (port 8080)     -- untouched
+#   GPU  3    : bench reserve                       -- untouched
+#   GPUs 4-6  : viiwork:gfx906 playground (8090)   -- stop if collides
+#   GPUs 7-9  : THIS test (port 8092)              -- Q4_K_M across 3 GPUs
+#
+# GPU math for Q4_K_M (~22 GB weights):
+#   22 GB / 3 GPUs = ~7.3 GB/GPU weights
+#   + ~0.5 GB KV at 8192 ctx (20 KB/tok, ~10 quadratic-attn layers of 40)
+#   = ~8 GB / 16 GB per Radeon VII, ample headroom
+#
+# Before starting, confirm GPUs 7-9 are free (the "other session" may be
+# on 5-9 if it's a kv-bench run). Adjust gpus.devices if needed.
+server:
+  host: 0.0.0.0
+  port: 8092
+
+model:
+  path: /models/Qwen3.5-35B-A3B-Q4_K_M.gguf
+  # Start small. Model supports 262k native / 1M YaRN, but first we
+  # just want to confirm it loads and emits tokens.
+  context_size: 8192
+  n_gpu_layers: -1
+
+gpus:
+  devices: [7, 8, 9]
+  base_port: 9201
+  # 180W per-GPU cap set manually on host (2026-04-17 host trip lesson).
+  # Not re-setting here since the host cap is persistent.
+
+backend:
+  binary: llama-server
+  # NOTE: intentionally no --reasoning-format here. Qwen3 uses its own
+  # <think>...</think> chat-template handling baked into the GGUF;
+  # deepseek format may not apply. Add later if we need raw tags in
+  # the OpenAI response body.
+  #
+  # Not passing --flash-attn either: hybrid DeltaNet + gated-attn
+  # interaction with FA is unproven on ROCm. Baseline first.
+  extra_args: []
+
+health:
+  interval: 5s
+  timeout: 10s   # bumped from 3s -- 35B cold-load on 3 GPUs takes longer
+  max_failures: 3
+
+balancer:
+  strategy: adaptive
+  latency_window: 30s
+  high_load_threshold: 7
+  max_in_flight_per_gpu: 1
