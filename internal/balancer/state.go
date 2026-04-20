@@ -32,6 +32,7 @@ func (s BackendStatus) String() string {
 
 type BackendState struct {
 	GPUID   int
+	GPUIDs  []int // populated in tensor-split mode; empty otherwise
 	Addr    string
 	inFlight atomic.Int64
 	status   atomic.Int32

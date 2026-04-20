@@ -92,6 +92,7 @@ func NewManager(cfg *config.Config, logWriter io.Writer, sampler PowerSampler, t
 			State:           balancer.NewBackendState(-1, addr),
 			LogWriter:       logWriter,
 		}}
+		m.Backends[0].State.GPUIDs = append([]int(nil), devices...)
 	} else {
 		m.Backends = make([]*Backend, len(devices))
 		for i, gpuID := range devices {

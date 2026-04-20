@@ -17,6 +17,8 @@ func (s PeerStatus) String() string {
 
 type StatusResponse struct {
 	NodeID          string        `json:"node_id"`
+	Hostname        string        `json:"hostname,omitempty"`
+	ListenAddr      string        `json:"listen_addr,omitempty"`
 	Models          []string      `json:"models"`
 	Backends        []BackendInfo `json:"backends"`
 	TotalInFlight   int64         `json:"total_in_flight"`
@@ -32,6 +34,7 @@ type StatusResponse struct {
 
 type BackendInfo struct {
 	GPUID    int    `json:"gpu_id"`
+	GPUIDs   []int  `json:"gpu_ids,omitempty"` // populated in tensor-split mode
 	Model    string `json:"model"`
 	Status   string `json:"status"`
 	InFlight int64  `json:"in_flight"`
@@ -50,8 +53,11 @@ type PeerState struct {
 
 	mu              sync.RWMutex
 	nodeID          string
+	hostname        string
+	listenAddr      string
 	status          PeerStatus
 	models          []string
+	backends        []BackendInfo
 	totalInFlight   int64
 	healthyBackends int
 	totalBackends   int
@@ -70,8 +76,11 @@ func (p *PeerState) Update(resp StatusResponse) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.nodeID = resp.NodeID
+	p.hostname = resp.Hostname
+	p.listenAddr = resp.ListenAddr
 	p.status = StatusReachable
 	p.models = resp.Models
+	p.backends = append(p.backends[:0], resp.Backends...)
 	p.totalInFlight = resp.TotalInFlight
 	p.healthyBackends = resp.HealthyBackends
 	p.totalBackends = resp.TotalBackends
@@ -87,6 +96,7 @@ func (p *PeerState) MarkUnreachable() {
 	defer p.mu.Unlock()
 	p.status = StatusUnreachable
 	p.models = nil
+	p.backends = nil
 	p.powerWatts = 0
 	p.powerAvailable = false
 	p.costAvailable = false
@@ -118,3 +128,12 @@ func (p *PeerState) PowerAvailable() bool {
 func (p *PeerState) CostAvailable() bool { p.mu.RLock(); defer p.mu.RUnlock(); return p.costAvailable }
 func (p *PeerState) CostEURPerHour() float64 { p.mu.RLock(); defer p.mu.RUnlock(); return p.costEURPerHour }
 func (p *PeerState) CostTodayEUR() float64 { p.mu.RLock(); defer p.mu.RUnlock(); return p.costTodayEUR }
+func (p *PeerState) Hostname() string { p.mu.RLock(); defer p.mu.RUnlock(); return p.hostname }
+func (p *PeerState) ListenAddr() string { p.mu.RLock(); defer p.mu.RUnlock(); return p.listenAddr }
+func (p *PeerState) Backends() []BackendInfo {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	out := make([]BackendInfo, len(p.backends))
+	copy(out, p.backends)
+	return out
+}

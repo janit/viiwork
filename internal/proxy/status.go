@@ -12,16 +12,30 @@ import (
 	"github.com/janit/viiwork/internal/peer"
 )
 
-func NewStatusHandler(nodeID string, localModel string, backends []*balancer.BackendState, power peer.PowerReader, cost peer.CostReader) http.Handler {
+// StatusLocation carries the hostname and listen addr this node publishes in
+// /v1/status. Zero-value is fine; peers that leave it empty will fall back to
+// the address the registry probes them at.
+type StatusLocation struct {
+	Hostname   string
+	ListenAddr string
+}
+
+func NewStatusHandler(nodeID string, localModel string, backends []*balancer.BackendState, power peer.PowerReader, cost peer.CostReader, loc StatusLocation) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := peer.StatusResponse{
 			NodeID:        nodeID,
+			Hostname:      loc.Hostname,
+			ListenAddr:    loc.ListenAddr,
 			Models:        []string{localModel},
 			TotalBackends: len(backends),
 		}
 		for _, b := range backends {
+			var gpuIDs []int
+			if len(b.GPUIDs) > 0 {
+				gpuIDs = append(gpuIDs, b.GPUIDs...)
+			}
 			resp.Backends = append(resp.Backends, peer.BackendInfo{
-				GPUID: b.GPUID, Model: localModel, Status: b.Status().String(), InFlight: b.InFlight(),
+				GPUID: b.GPUID, GPUIDs: gpuIDs, Model: localModel, Status: b.Status().String(), InFlight: b.InFlight(),
 			})
 			resp.TotalInFlight += b.InFlight()
 			if b.Status() == balancer.StatusHealthy { resp.HealthyBackends++ }

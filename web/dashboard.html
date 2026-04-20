@@ -34,7 +34,8 @@
 </style>
 </head>
 <body>
-<h1>viiwork mesh</h1>
+<h1 id="title">viiwork</h1>
+<div id="topology" style="color:#8b949e;font-size:0.85rem;margin:-8px 0 16px"></div>
 <div id="error"></div>
 <div id="summary" class="summary"></div>
 <div id="peers-section"></div>
@@ -85,47 +86,111 @@ async function refresh() {
   }
 }
 
+function hostOf(addr) { return (addr || '').split(':')[0]; }
+function portOf(addr) { const p = (addr || '').split(':')[1]; return p || ''; }
+function gpuCountOf(b) { return (b && b.gpu_ids && b.gpu_ids.length) ? b.gpu_ids.length : 1; }
+function gpuLabelOf(b) {
+  if (!b) return '';
+  if (b.gpu_ids && b.gpu_ids.length > 0) return b.gpu_ids.map(id => 'gpu-' + id).join(' + ');
+  return 'gpu-' + b.gpu_id;
+}
+
 function render(data) {
-  const totalGPUs = data.local.backends.length +
-    (data.peers || []).reduce((s, p) => s + (p.healthy_backends || 0), 0);
-  const healthyGPUs = data.local.backends.filter(b => b.status === 'healthy').length +
-    (data.peers || []).reduce((s, p) => s + (p.healthy_backends || 0), 0);
+  const peers = data.peers || [];
+  const localBackends = data.local.backends || [];
+  const localHostFromBrowser = window.location.hostname;
+  const localPort = portOf(data.local.listen_addr) ||
+    window.location.port || (window.location.protocol === 'https:' ? '443' : '80');
+  const hostname = data.hostname || localHostFromBrowser;
+  const singleHost = !!data.single_host;
+
+  // GPU totals include tensor-split aggregates: one BackendInfo with 2 gpu_ids
+  // counts as 2 GPUs, not 1.
+  const localGPUCount = localBackends.reduce((s, b) => s + gpuCountOf(b), 0);
+  const localHealthyGPUs = localBackends.filter(b => b.status === 'healthy').reduce((s, b) => s + gpuCountOf(b), 0);
+  let peerGPUCount = 0;
+  let peerHealthyGPUs = 0;
+  for (const p of peers) {
+    if (p.status !== 'reachable') continue;
+    if (p.backends && p.backends.length > 0) {
+      for (const b of p.backends) {
+        peerGPUCount += gpuCountOf(b);
+        if (b.status === 'healthy') peerHealthyGPUs += gpuCountOf(b);
+      }
+    } else {
+      // fallback for older peers without BackendInfos
+      peerGPUCount += (p.healthy_backends || 0);
+      peerHealthyGPUs += (p.healthy_backends || 0);
+    }
+  }
+  const totalGPUs = localGPUCount + peerGPUCount;
+  const healthyGPUs = localHealthyGPUs + peerHealthyGPUs;
+
   const totalPower = (data.local.power_available ? data.local.power_watts : 0) +
-    (data.peers || []).reduce((s, p) => s + (p.power_available ? p.power_watts : 0), 0);
+    peers.reduce((s, p) => s + (p.power_available ? p.power_watts : 0), 0);
   const clusterCost = data.cluster_cost_eur_per_hour || 0;
   const clusterCostToday = data.cluster_cost_today_eur || 0;
 
+  const instanceCount = 1 + peers.length;
+  const reachableInstances = 1 + peers.filter(p => p.status === 'reachable').length;
+
+  const titleEl = document.getElementById('title');
+  const topoEl = document.getElementById('topology');
+  if (singleHost) {
+    titleEl.textContent = `viiwork \u2014 ${hostname}`;
+    topoEl.textContent = `single host \u00B7 ${instanceCount} instances sharing ${totalGPUs} GPU${totalGPUs === 1 ? '' : 's'} on one machine`;
+  } else if (peers.length > 0) {
+    titleEl.textContent = 'viiwork mesh';
+    const uniqueHosts = new Set(peers.map(p => hostOf(p.addr))).size + 1;
+    topoEl.textContent = `distributed \u00B7 ${instanceCount} instances across ${uniqueHosts} hosts`;
+  } else {
+    titleEl.textContent = 'viiwork';
+    topoEl.textContent = `standalone \u00B7 ${hostname}:${localPort}`;
+  }
+
+  const instLabel = singleHost ? 'Instances' : 'Peers';
+  const instValue = singleHost
+    ? `<strong>${reachableInstances}/${instanceCount} on ${escapeHtml(hostname)}</strong>`
+    : `<strong>${reachableInstances - 1}/${peers.length} reachable</strong>`;
+
   document.getElementById('summary').innerHTML = `
-    <div><span>Node:</span> <strong>${escapeHtml(data.node_id)}</strong></div>
+    <div><span>Node:</span> <strong>${escapeHtml(data.node_id)}</strong> <span style="color:#484f58">:${localPort}</span></div>
     <div><span>Models:</span> <strong>${(data.models || []).length}</strong></div>
     <div><span>GPUs:</span> <strong>${healthyGPUs}/${totalGPUs} healthy</strong></div>
-    <div><span>Peers:</span> <strong>${(data.peers || []).filter(p => p.status === 'reachable').length}/${(data.peers || []).length} reachable</strong></div>
+    <div><span>${instLabel}:</span> ${instValue}</div>
     <div><span>Power:</span> <strong>${totalPower > 0 ? totalPower + 'W' : 'N/A'}</strong></div>
     <div><span>Cost:</span> <strong>${clusterCost > 0 ? clusterCost.toFixed(2) + ' EUR/h' : 'N/A'}</strong></div>
     <div><span>Today:</span> <strong>${clusterCostToday > 0 ? clusterCostToday.toFixed(2) + ' EUR' : 'N/A'}</strong></div>
   `;
 
   // Local Backends → right column (merged with backend stats)
-  let backendsHtml = '<h2>Local Backends (' + data.local.model + ')';
+  const localHeading = singleHost ? `This instance :${localPort} (${data.local.model})` : `Local Backends (${data.local.model})`;
+  let backendsHtml = `<h2>${escapeHtml(localHeading)}`;
   if (data.local.power_available) backendsHtml += ' \u2014 ' + data.local.power_watts + 'W';
   if (data.local.cost_available) backendsHtml += ' \u2014 ' + data.local.cost_eur_per_hour.toFixed(2) + ' EUR/h';
   backendsHtml += '</h2><div class="card"><table>';
   backendsHtml += '<tr><th></th><th>GPU</th><th>In-Flight</th><th>RSS</th><th>GPU%</th><th>VRAM</th><th>Context Use</th></tr>';
   for (const b of data.local.backends) {
-    const gpuColor = GPU_COLORS[b.gpu_id % GPU_COLORS.length];
-    const gpuKey = String(b.gpu_id);
+    // For tensor-split backends, gpu_id is -1 and gpu_ids lists the devices.
+    // Display and per-GPU metrics should fan out across all devices in the set.
+    const gpuIds = (b.gpu_ids && b.gpu_ids.length > 0) ? b.gpu_ids : [b.gpu_id];
+    const rssKey = (b.gpu_ids && b.gpu_ids.length > 0) ? ('ts-' + b.gpu_ids.join(',')) : String(b.gpu_id);
+    const gpuLabelParts = gpuIds.map(id => {
+      const c = GPU_COLORS[((id % GPU_COLORS.length) + GPU_COLORS.length) % GPU_COLORS.length];
+      return `<span style="color:${c}">gpu-${id}</span>`;
+    });
     backendsHtml += `<tr>`;
     backendsHtml += `<td><span class="status ${b.status}"></span></td>`;
-    backendsHtml += `<td style="color:${gpuColor}">gpu-${b.gpu_id}</td>`;
+    backendsHtml += `<td>${gpuLabelParts.join(' + ')}</td>`;
     backendsHtml += `<td>${b.in_flight || 0}</td>`;
 
     if (b.rss_mb) {
-      if (!backendRSSHistory[b.gpu_id]) backendRSSHistory[b.gpu_id] = [];
-      backendRSSHistory[b.gpu_id].push({t: Math.floor(Date.now()/1000), rss: b.rss_mb});
-      if (backendRSSHistory[b.gpu_id].length > RSS_HISTORY_MAX)
-        backendRSSHistory[b.gpu_id] = backendRSSHistory[b.gpu_id].slice(-RSS_HISTORY_MAX);
+      if (!backendRSSHistory[rssKey]) backendRSSHistory[rssKey] = [];
+      backendRSSHistory[rssKey].push({t: Math.floor(Date.now()/1000), rss: b.rss_mb});
+      if (backendRSSHistory[rssKey].length > RSS_HISTORY_MAX)
+        backendRSSHistory[rssKey] = backendRSSHistory[rssKey].slice(-RSS_HISTORY_MAX);
       const rssLabel = b.rss_mb >= 1024 ? (b.rss_mb / 1024).toFixed(1) + 'G' : b.rss_mb + 'M';
-      const history = backendRSSHistory[b.gpu_id];
+      const history = backendRSSHistory[rssKey];
       let trend = '\u2192', trendColor = '#8b949e';
       if (history.length >= 10) {
         const half = Math.floor(history.length / 2);
@@ -140,25 +205,43 @@ function render(data) {
       backendsHtml += `<td></td>`;
     }
 
-    // GPU utilization from metrics stream
-    const gpuSamples = metricsData[gpuKey];
-    if (gpuSamples && gpuSamples.length > 0) {
-      const latest = gpuSamples[gpuSamples.length - 1];
-      const util = Math.round(latest.util);
+    // GPU utilization: aggregate across the backend's GPU set (max when
+    // tensor-split, since they move in lockstep anyway).
+    const utilParts = [];
+    let maxUtil = null;
+    for (const id of gpuIds) {
+      const samples = metricsData[String(id)];
+      if (samples && samples.length > 0) {
+        const u = Math.round(samples[samples.length - 1].util);
+        utilParts.push(u);
+        if (maxUtil === null || u > maxUtil) maxUtil = u;
+      }
+    }
+    if (maxUtil !== null) {
       let utilColor = '#8b949e';
-      if (util > 80) utilColor = '#f85149';
-      else if (util > 40) utilColor = '#d29922';
-      else if (util > 0) utilColor = '#3fb950';
-      backendsHtml += `<td style="color:${utilColor}">${util}%</td>`;
+      if (maxUtil > 80) utilColor = '#f85149';
+      else if (maxUtil > 40) utilColor = '#d29922';
+      else if (maxUtil > 0) utilColor = '#3fb950';
+      const utilText = utilParts.length > 1 ? utilParts.join('/') : String(maxUtil);
+      backendsHtml += `<td style="color:${utilColor}">${utilText}%</td>`;
     } else {
       backendsHtml += `<td></td>`;
     }
 
-    // VRAM usage from metrics stream
-    if (gpuSamples && gpuSamples.length > 0) {
-      const latest = gpuSamples[gpuSamples.length - 1];
-      const vramGB = (latest.vram_used_mb / 1024).toFixed(1);
-      const totalGB = ((vramTotalMB[gpuKey] || 16368) / 1024).toFixed(0);
+    // VRAM: sum across the backend's GPU set (useful for tensor-split).
+    let vramUsed = 0, vramTotal = 0, haveVRAM = false;
+    for (const id of gpuIds) {
+      const samples = metricsData[String(id)];
+      if (samples && samples.length > 0) {
+        const latest = samples[samples.length - 1];
+        vramUsed += latest.vram_used_mb;
+        vramTotal += (vramTotalMB[String(id)] || 16368);
+        haveVRAM = true;
+      }
+    }
+    if (haveVRAM) {
+      const vramGB = (vramUsed / 1024).toFixed(1);
+      const totalGB = (vramTotal / 1024).toFixed(0);
       backendsHtml += `<td>${vramGB}/${totalGB}G</td>`;
     } else {
       backendsHtml += `<td></td>`;
@@ -190,11 +273,66 @@ function render(data) {
   backendsHtml += '</table></div>';
   document.getElementById('backends-section').innerHTML = backendsHtml;
 
-  // Peers → full width above the two-col
+  // Peers / unified instance view
   let peersHtml = '';
-  if (data.peers && data.peers.length > 0) {
+  if (singleHost) {
+    // One table listing every instance on this host (local first, then siblings).
+    // Rows are minimal: port, GPU set, status, in-flight, model.
+    peersHtml += `<h2>Instances on ${escapeHtml(hostname)} (${instanceCount} instances \u00B7 ${totalGPUs} GPUs)</h2>`;
+    peersHtml += '<div class="card"><table>';
+    peersHtml += '<tr><th></th><th>Port</th><th>GPUs</th><th>Model</th><th>In-Flight</th><th>Node ID</th></tr>';
+    // Local row — highlight with a marker so the viewer knows "this is me".
+    for (const b of localBackends) {
+      peersHtml += `<tr style="background:#1f6feb11">`;
+      peersHtml += `<td><span class="status ${b.status}"></span></td>`;
+      peersHtml += `<td><strong>:${localPort}</strong> <span style="color:#58a6ff;font-size:0.75rem">\u2190 you</span></td>`;
+      peersHtml += `<td>${gpuLabelOf(b)}</td>`;
+      peersHtml += `<td style="color:#8b949e">${escapeHtml(data.local.model)}</td>`;
+      peersHtml += `<td>${b.in_flight || 0}</td>`;
+      peersHtml += `<td style="color:#484f58;font-size:0.8rem">${escapeHtml(data.node_id)}</td>`;
+      peersHtml += '</tr>';
+    }
+    for (const p of peers) {
+      const port = portOf(p.addr);
+      const backends = p.backends || [];
+      if (p.status !== 'reachable') {
+        peersHtml += `<tr>`;
+        peersHtml += `<td><span class="status ${escapeHtml(p.status)}"></span></td>`;
+        peersHtml += `<td><strong>:${escapeHtml(port)}</strong></td>`;
+        peersHtml += `<td style="color:#8b949e">\u2014</td>`;
+        peersHtml += `<td style="color:#8b949e">\u2014</td>`;
+        peersHtml += `<td style="color:#8b949e">\u2014</td>`;
+        peersHtml += `<td style="color:#f85149;font-size:0.8rem">${escapeHtml(p.status)}</td>`;
+        peersHtml += '</tr>';
+        continue;
+      }
+      if (backends.length === 0) {
+        peersHtml += `<tr>`;
+        peersHtml += `<td><span class="status reachable"></span></td>`;
+        peersHtml += `<td><strong>:${escapeHtml(port)}</strong></td>`;
+        peersHtml += `<td style="color:#8b949e">${p.healthy_backends || 0} GPU${p.healthy_backends === 1 ? '' : 's'}</td>`;
+        peersHtml += `<td style="color:#8b949e">${(p.models || []).map(escapeHtml).join(', ')}</td>`;
+        peersHtml += `<td>${p.total_in_flight || 0}</td>`;
+        peersHtml += `<td style="color:#484f58;font-size:0.8rem">${escapeHtml(p.node_id || '')}</td>`;
+        peersHtml += '</tr>';
+        continue;
+      }
+      for (let i = 0; i < backends.length; i++) {
+        const b = backends[i];
+        peersHtml += `<tr>`;
+        peersHtml += `<td><span class="status ${escapeHtml(b.status)}"></span></td>`;
+        peersHtml += i === 0 ? `<td><strong>:${escapeHtml(port)}</strong></td>` : '<td></td>';
+        peersHtml += `<td>${gpuLabelOf(b)}</td>`;
+        peersHtml += i === 0 ? `<td style="color:#8b949e">${(p.models || []).map(escapeHtml).join(', ')}</td>` : '<td></td>';
+        peersHtml += `<td>${b.in_flight || 0}</td>`;
+        peersHtml += i === 0 ? `<td style="color:#484f58;font-size:0.8rem">${escapeHtml(p.node_id || '')}</td>` : '<td></td>';
+        peersHtml += '</tr>';
+      }
+    }
+    peersHtml += '</table></div>';
+  } else if (peers.length > 0) {
     peersHtml += '<h2>Peers</h2>';
-    for (const p of data.peers) {
+    for (const p of peers) {
       peersHtml += '<div class="card"><table>';
       peersHtml += `<tr><td><span class="status ${escapeHtml(p.status)}"></span><strong>${escapeHtml(p.addr)}</strong></td><td>${escapeHtml(p.status)}</td>`;
       if (p.status === 'reachable') {
