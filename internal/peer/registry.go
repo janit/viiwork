@@ -9,11 +9,19 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/janit/viiwork/internal/balancer"
 	"github.com/janit/viiwork/internal/model"
 )
+
+func hostOfAddr(addr string) string {
+	if i := strings.LastIndex(addr, ":"); i >= 0 {
+		return addr[:i]
+	}
+	return addr
+}
 
 type PowerReader interface {
 	Watts() float64
@@ -41,6 +49,8 @@ type Registry struct {
 	client     *http.Client
 	power      PowerReader
 	cost       CostReader
+	listenAddr string
+	hostname   string
 }
 
 func NewRegistry(nodeID string, localModel string, backends []*balancer.BackendState, peers []*PeerState, timeout time.Duration) *Registry {
@@ -69,6 +79,16 @@ func (r *Registry) IsKnownPeer(nodeID string) bool {
 func (r *Registry) SetPowerReader(p PowerReader) {
 	r.power = p
 }
+
+// SetLocation records the host:port this viiwork node listens on so it can
+// be surfaced in /v1/status and used by peers to detect co-located instances.
+// Hostname should be os.Hostname() or a DNS-resolvable name (not 0.0.0.0).
+func (r *Registry) SetLocation(hostname, listenAddr string) {
+	r.hostname = hostname
+	r.listenAddr = listenAddr
+}
+func (r *Registry) Hostname() string   { return r.hostname }
+func (r *Registry) ListenAddr() string { return r.listenAddr }
 
 func (r *Registry) Power() PowerReader {
 	return r.power
@@ -157,6 +177,8 @@ func (r *Registry) AllModels() []model.ModelEntry {
 type ClusterResponse struct {
 	NodeID                string            `json:"node_id"`
 	Version               string            `json:"version,omitempty"`
+	Hostname              string            `json:"hostname,omitempty"`
+	SingleHost            bool              `json:"single_host,omitempty"`
 	Local                 ClusterLocalInfo  `json:"local"`
 	Peers                 []ClusterPeerInfo `json:"peers"`
 	Models                []string          `json:"models"`
@@ -166,6 +188,7 @@ type ClusterResponse struct {
 
 type ClusterLocalInfo struct {
 	Model          string               `json:"model"`
+	ListenAddr     string               `json:"listen_addr,omitempty"`
 	PowerWatts     float64              `json:"power_watts"`
 	PowerAvailable bool                 `json:"power_available"`
 	Backends       []ClusterBackendInfo `json:"backends"`
@@ -178,6 +201,7 @@ type ClusterLocalInfo struct {
 
 type ClusterBackendInfo struct {
 	GPUID      int    `json:"gpu_id"`
+	GPUIDs     []int  `json:"gpu_ids,omitempty"`
 	Status     string `json:"status"`
 	InFlight   int64  `json:"in_flight"`
 	RSSMB      int64  `json:"rss_mb,omitempty"`
@@ -189,21 +213,23 @@ type ClusterBackendInfo struct {
 }
 
 type ClusterPeerInfo struct {
-	Addr            string   `json:"addr"`
-	Status          string   `json:"status"`
-	NodeID          string   `json:"node_id,omitempty"`
-	Models          []string `json:"models,omitempty"`
-	TotalInFlight   int64    `json:"total_in_flight,omitempty"`
-	HealthyBackends int      `json:"healthy_backends,omitempty"`
-	PowerWatts      float64  `json:"power_watts,omitempty"`
-	PowerAvailable  bool     `json:"power_available,omitempty"`
-	CostAvailable   bool     `json:"cost_available,omitempty"`
-	CostEURPerHour  float64  `json:"cost_eur_per_hour,omitempty"`
-	CostTodayEUR    float64  `json:"cost_today_eur,omitempty"`
+	Addr            string               `json:"addr"`
+	Hostname        string               `json:"hostname,omitempty"`
+	Status          string               `json:"status"`
+	NodeID          string               `json:"node_id,omitempty"`
+	Models          []string             `json:"models,omitempty"`
+	Backends        []ClusterBackendInfo `json:"backends,omitempty"`
+	TotalInFlight   int64                `json:"total_in_flight,omitempty"`
+	HealthyBackends int                  `json:"healthy_backends,omitempty"`
+	PowerWatts      float64              `json:"power_watts,omitempty"`
+	PowerAvailable  bool                 `json:"power_available,omitempty"`
+	CostAvailable   bool                 `json:"cost_available,omitempty"`
+	CostEURPerHour  float64              `json:"cost_eur_per_hour,omitempty"`
+	CostTodayEUR    float64              `json:"cost_today_eur,omitempty"`
 }
 
 func (r *Registry) ClusterState() ClusterResponse {
-	resp := ClusterResponse{NodeID: r.nodeID, Local: ClusterLocalInfo{Model: r.localModel}}
+	resp := ClusterResponse{NodeID: r.nodeID, Hostname: r.hostname, Local: ClusterLocalInfo{Model: r.localModel, ListenAddr: r.listenAddr}}
 	if r.power != nil {
 		resp.Local.PowerWatts = r.power.Watts()
 		resp.Local.PowerAvailable = r.power.Available()
@@ -216,16 +242,27 @@ func (r *Registry) ClusterState() ClusterResponse {
 		resp.ClusterCostTodayEUR += r.cost.TodayEUR()
 	}
 	for _, b := range r.backends {
+		var gpuIDs []int
+		if len(b.GPUIDs) > 0 {
+			gpuIDs = append(gpuIDs, b.GPUIDs...)
+		}
 		resp.Local.Backends = append(resp.Local.Backends, ClusterBackendInfo{
-			GPUID: b.GPUID, Status: b.Status().String(), InFlight: b.InFlight(),
+			GPUID: b.GPUID, GPUIDs: gpuIDs, Status: b.Status().String(), InFlight: b.InFlight(),
 			RSSMB: b.RSSMB(), SlotCtx: b.SlotCtx(), SlotCount: b.SlotCount(), SlotActive: b.SlotActive(),
 			TokDecoded: b.TokDecoded(), TokRemain: b.TokRemain(),
 		})
 	}
 	modelSet := map[string]bool{r.localModel: true}
+	// Count reachable peers whose host (from p.Addr) matches our hostname.
+	// single_host is true when: hostname known AND we have peers AND every
+	// reachable peer shares that hostname. Unreachable peers don't disqualify
+	// the topology — they're just temporarily down.
+	singleHost := r.hostname != "" && len(r.peers) > 0
+	reachableCount := 0
 	for _, p := range r.peers {
-		info := ClusterPeerInfo{Addr: p.Addr, Status: p.Status().String()}
+		info := ClusterPeerInfo{Addr: p.Addr, Hostname: hostOfAddr(p.Addr), Status: p.Status().String()}
 		if p.Status() == StatusReachable {
+			reachableCount++
 			info.NodeID = p.NodeID()
 			info.Models = p.Models()
 			info.TotalInFlight = p.TotalInFlight()
@@ -235,14 +272,27 @@ func (r *Registry) ClusterState() ClusterResponse {
 			info.CostAvailable = p.CostAvailable()
 			info.CostEURPerHour = p.CostEURPerHour()
 			info.CostTodayEUR = p.CostTodayEUR()
+			for _, pb := range p.Backends() {
+				info.Backends = append(info.Backends, ClusterBackendInfo{
+					GPUID: pb.GPUID, GPUIDs: append([]int(nil), pb.GPUIDs...),
+					Status: pb.Status, InFlight: pb.InFlight,
+				})
+			}
 			if p.CostAvailable() {
 				resp.ClusterCostEURPerHour += p.CostEURPerHour()
 				resp.ClusterCostTodayEUR += p.CostTodayEUR()
 			}
 			for _, m := range info.Models { modelSet[m] = true }
+			if info.Hostname != r.hostname {
+				singleHost = false
+			}
 		}
 		resp.Peers = append(resp.Peers, info)
 	}
+	if reachableCount == 0 {
+		singleHost = false
+	}
+	resp.SingleHost = singleHost
 	for m := range modelSet { resp.Models = append(resp.Models, m) }
 	sort.Strings(resp.Models)
 	return resp

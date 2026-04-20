@@ -19,7 +19,7 @@ func TestStatusEndpoint(t *testing.T) {
 	backends[1].SetStatus(balancer.StatusHealthy)
 	backends[0].IncrInFlight()
 
-	h := NewStatusHandler("viiwork-test", "test-model", backends, nil, nil)
+	h := NewStatusHandler("viiwork-test", "test-model", backends, nil, nil, StatusLocation{})
 	req := httptest.NewRequest("GET", "/v1/status", nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -45,7 +45,7 @@ func TestStatusEndpointWithPower(t *testing.T) {
 	backends := []*balancer.BackendState{balancer.NewBackendState(0, "localhost:9001")}
 	backends[0].SetStatus(balancer.StatusHealthy)
 	pw := &mockPowerReader{watts: 280.0, available: true}
-	h := NewStatusHandler("viiwork-test", "test-model", backends, pw, nil)
+	h := NewStatusHandler("viiwork-test", "test-model", backends, pw, nil, StatusLocation{})
 	req := httptest.NewRequest("GET", "/v1/status", nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -58,7 +58,7 @@ func TestStatusEndpointWithPower(t *testing.T) {
 func TestStatusEndpointNoPower(t *testing.T) {
 	backends := []*balancer.BackendState{balancer.NewBackendState(0, "localhost:9001")}
 	backends[0].SetStatus(balancer.StatusHealthy)
-	h := NewStatusHandler("viiwork-test", "test-model", backends, nil, nil)
+	h := NewStatusHandler("viiwork-test", "test-model", backends, nil, nil, StatusLocation{})
 	req := httptest.NewRequest("GET", "/v1/status", nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -84,7 +84,7 @@ func TestStatusEndpointWithCost(t *testing.T) {
 	backends[0].SetStatus(balancer.StatusHealthy)
 	pw := &mockPowerReader{watts: 280.0, available: true}
 	cr := &mockCostReader{}
-	h := NewStatusHandler("viiwork-test", "test-model", backends, pw, cr)
+	h := NewStatusHandler("viiwork-test", "test-model", backends, pw, cr, StatusLocation{})
 	req := httptest.NewRequest("GET", "/v1/status", nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)

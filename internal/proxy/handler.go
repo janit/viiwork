@@ -51,7 +51,7 @@ func NewMeshHandler(bal *balancer.Balancer, reg *peer.Registry, latencyWindow ti
 		balancer:       bal,
 		registry:       reg,
 		latencyWindow:  latencyWindow,
-		statusHandler:  NewStatusHandler(reg.NodeID(), reg.LocalModel(), reg.Backends(), reg.Power(), reg.Cost()),
+		statusHandler:  NewStatusHandler(reg.NodeID(), reg.LocalModel(), reg.Backends(), reg.Power(), reg.Cost(), StatusLocation{Hostname: reg.Hostname(), ListenAddr: reg.ListenAddr()}),
 		clusterHandler: NewClusterHandler(reg),
 	}
 }
