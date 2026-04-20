@@ -142,6 +142,8 @@ func main() {
 	if tracker != nil {
 		reg.SetCostReader(tracker)
 	}
+	hostname, _ := os.Hostname()
+	reg.SetLocation(hostname, fmt.Sprintf("%s:%d", hostname, cfg.Server.Port))
 	handler := proxy.NewMeshHandler(bal, reg, cfg.Balancer.LatencyWindow.Duration)
 	handler.SetMetrics(hist, bcast, collector.Available)
 	handler.SetActivity(actLog)
