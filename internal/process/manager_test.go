@@ -85,6 +85,75 @@ func TestManagerTensorSplitSingleBackend(t *testing.T) {
 	}
 }
 
+func TestManagerTensorSplitGroups(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Model.Path = "/models/big.gguf"
+	cfg.GPUs.Devices = []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}
+	cfg.GPUs.BasePort = 9401
+	cfg.GPUs.TensorSplit.Enabled = true
+	cfg.GPUs.TensorSplit.GroupSize = 2
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+
+	m := NewManager(&cfg, nil, nil, nil, nil, nil)
+	if len(m.Backends) != 5 {
+		t.Fatalf("expected 5 backends (10 devices / group_size 2), got %d", len(m.Backends))
+	}
+	for i, b := range m.Backends {
+		if !b.TensorSplit {
+			t.Errorf("backend %d: expected TensorSplit=true", i)
+		}
+		if b.GPUID != -1 {
+			t.Errorf("backend %d: expected sentinel GPUID=-1, got %d", i, b.GPUID)
+		}
+		wantGPUs := []int{i * 2, i*2 + 1}
+		if len(b.GPUIDs) != 2 || b.GPUIDs[0] != wantGPUs[0] || b.GPUIDs[1] != wantGPUs[1] {
+			t.Errorf("backend %d: expected GPUIDs=%v, got %v", i, wantGPUs, b.GPUIDs)
+		}
+		if b.Port != 9401+i {
+			t.Errorf("backend %d: expected port %d, got %d", i, 9401+i, b.Port)
+		}
+		if b.Parallel != 1 {
+			t.Errorf("backend %d: expected parallel=1 (forced), got %d", i, b.Parallel)
+		}
+	}
+}
+
+func TestManagerTensorSplitGroupsValidation(t *testing.T) {
+	cases := []struct {
+		name      string
+		devices   []int
+		groupSize int
+		wantErr   bool
+	}{
+		{"even_split_ok", []int{0, 1, 2, 3}, 2, false},
+		{"group_size_zero_single_group", []int{0, 1, 2, 3}, 0, false},
+		{"group_size_equals_devices", []int{0, 1}, 2, false},
+		{"uneven_rejected", []int{0, 1, 2}, 2, true},
+		{"group_size_one_rejected", []int{0, 1, 2, 3}, 1, true},
+		{"group_size_too_big_rejected", []int{0, 1}, 4, true},
+		{"group_size_negative_rejected", []int{0, 1}, -1, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Model.Path = "/models/x.gguf"
+			cfg.GPUs.Devices = tc.devices
+			cfg.GPUs.BasePort = 9001
+			cfg.GPUs.TensorSplit.Enabled = true
+			cfg.GPUs.TensorSplit.GroupSize = tc.groupSize
+			err := cfg.Validate()
+			if tc.wantErr && err == nil {
+				t.Errorf("expected validation error, got nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("unexpected validation error: %v", err)
+			}
+		})
+	}
+}
+
 func TestManagerReplicaModeUnchanged(t *testing.T) {
 	// Sanity check: configs without tensor_split still produce N backends.
 	cfg := config.Defaults()

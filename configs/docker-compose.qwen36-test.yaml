@@ -1,0 +1,58 @@
+# Qwen3.6-27B bring-up test compose.
+#
+# Reuses viiwork:qwen-test (upstream llama.cpp master + ROCm 6.2.4 + gfx906).
+# Coexists at the compose-project level with viiwork (8080), viiwork-gfx906
+# (8090), and viiwork-qwen-test* (8092/8093) -- but NOT at the GPU runtime
+# level: HSA/KFD on gfx906 only allows one ROCm-initialized container at a
+# time (2026-04-18 memory). Bring down any other qwen-test container first.
+#
+# Prereqs (run these first, in order):
+#
+#   1. Confirm GPUs 7-9 are free:
+#        rocm-smi --showpids
+#
+#   2. Bring down any other viiwork-qwen-test* container:
+#        docker compose -f configs/docker-compose.qwen-test.yaml       down 2>/dev/null
+#        docker compose -f configs/docker-compose.qwen-test-q3km.yaml  down 2>/dev/null
+#
+#   3. Download model (~16.8 GB, one time):
+#        ./scripts/download-qwen36.sh
+#
+#   4. (Re)build test image -- Dockerfile.qwen-test pulls llama.cpp
+#      master at build time, so rebuild if last built before Qwen3.6
+#      arch support landed upstream:
+#        docker build --no-cache -t viiwork:qwen-test -f Dockerfile.qwen-test .
+#
+# Run / tear down:
+#
+#   Up:     docker compose -f configs/docker-compose.qwen36-test.yaml up -d
+#   Logs:   docker logs -f viiwork-qwen36-test
+#   Probe:  curl -s http://localhost:8094/v1/models | jq
+#   Test:   curl -s http://localhost:8094/v1/chat/completions \
+#             -H 'Content-Type: application/json' \
+#             -d '{"model":"Qwen3.6-27B-Q4_K_M",
+#                  "messages":[{"role":"user","content":"hello"}]}'
+#   Down:   docker compose -f configs/docker-compose.qwen36-test.yaml down
+#
+# Expected failure modes to watch for:
+#   - "unsupported architecture"         -> llama.cpp master predates Qwen3.6 arch;
+#                                           rebuild image with --no-cache
+#   - Load hang on HIP / CPU fallback    -> DeltaNet ROCm kernel gap (related to #18102)
+#   - "no ROCm-capable device detected"  -> HSA cross-container bug; another
+#                                           qwen-test container still up
+name: viiwork-qwen36-test
+services:
+  viiwork-qwen36-test:
+    image: viiwork:qwen-test
+    container_name: viiwork-qwen36-test
+    network_mode: host
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    volumes:
+      - ../models:/models
+      - ./viiwork.qwen36-test.yaml:/etc/viiwork/viiwork.yaml
+    group_add:
+      - video
+      - render
+    restart: "no"

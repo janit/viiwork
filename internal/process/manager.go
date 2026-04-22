@@ -65,34 +65,47 @@ func NewManager(cfg *config.Config, logWriter io.Writer, sampler PowerSampler, t
 	}
 	devices := cfg.GPUs.ResolvedDevices()
 	if cfg.GPUs.TensorSplit.Enabled {
-		// Tensor-split mode: a single backend spans all devices and serves on
-		// gpus.base_port. The model lives partitioned across the GPUs in the
-		// device list. Concurrency is single-slot — Model.Parallel is forced
-		// to 1 by config.Validate.
-		port := cfg.GPUs.BasePort
-		addr := fmt.Sprintf("localhost:%d", port)
-		// State.GPUID is the sentinel -1 meaning "tensor-split aggregate".
-		// Downstream code that displays per-GPU labels should branch on this.
-		m.Backends = []*Backend{{
-			GPUID:           -1,
-			GPUIDs:          devices,
-			TensorSplit:     true,
-			SplitMode:       cfg.GPUs.TensorSplit.Mode,
-			SplitWeights:    cfg.GPUs.TensorSplit.Weights,
-			MainGPU:         cfg.GPUs.TensorSplit.MainGPU,
-			ModelPath:       cfg.Model.Path,
-			Port:            port,
-			ContextSize:     cfg.Model.ContextSize,
-			NGPULayers:      cfg.Model.NGPULayers,
-			Parallel:        1,
-			Binary:          cfg.Backend.Binary,
-			ExtraArgs:       cfg.Backend.ExtraArgs,
-			HealthTimeout:   cfg.Health.Timeout.Duration,
-			PowerLimitWatts: cfg.GPUs.PowerLimitWatts,
-			State:           balancer.NewBackendState(-1, addr),
-			LogWriter:       logWriter,
-		}}
-		m.Backends[0].State.GPUIDs = append([]int(nil), devices...)
+		// Tensor-split mode: partition devices into consecutive groups of
+		// TensorSplit.GroupSize; spawn one backend per group on
+		// base_port+i. group_size=0 (legacy) means a single group spanning
+		// every device. Each backend serves a single slot — Model.Parallel
+		// is forced to 1 by config.Validate. Multiple groups give the
+		// balancer N tensor-split backends to route across, identical in
+		// behavior to N replica backends but with per-request speed scaled
+		// by the group's combined compute.
+		groupSize := cfg.GPUs.TensorSplit.GroupSize
+		if groupSize == 0 {
+			groupSize = len(devices)
+		}
+		nGroups := len(devices) / groupSize
+		m.Backends = make([]*Backend, nGroups)
+		for i := 0; i < nGroups; i++ {
+			group := devices[i*groupSize : (i+1)*groupSize]
+			port := cfg.GPUs.BasePort + i
+			addr := fmt.Sprintf("localhost:%d", port)
+			// State.GPUID is the sentinel -1 meaning "tensor-split backend".
+			// Downstream code that displays per-GPU labels branches on this.
+			m.Backends[i] = &Backend{
+				GPUID:           -1,
+				GPUIDs:          append([]int(nil), group...),
+				TensorSplit:     true,
+				SplitMode:       cfg.GPUs.TensorSplit.Mode,
+				SplitWeights:    cfg.GPUs.TensorSplit.Weights,
+				MainGPU:         cfg.GPUs.TensorSplit.MainGPU,
+				ModelPath:       cfg.Model.Path,
+				Port:            port,
+				ContextSize:     cfg.Model.ContextSize,
+				NGPULayers:      cfg.Model.NGPULayers,
+				Parallel:        1,
+				Binary:          cfg.Backend.Binary,
+				ExtraArgs:       cfg.Backend.ExtraArgs,
+				HealthTimeout:   cfg.Health.Timeout.Duration,
+				PowerLimitWatts: cfg.GPUs.PowerLimitWatts,
+				State:           balancer.NewBackendState(-1, addr),
+				LogWriter:       logWriter,
+			}
+			m.Backends[i].State.GPUIDs = append([]int(nil), group...)
+		}
 	} else {
 		m.Backends = make([]*Backend, len(devices))
 		for i, gpuID := range devices {

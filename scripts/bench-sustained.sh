@@ -7,9 +7,10 @@ set -euo pipefail
 URL="${1:-http://gb1:8080}"
 CONC="${2:-11}"
 DURATION="${3:-60}"
-MODEL="qwen2.5-coder-14b-instruct-q6_k"
+MODEL="${MODEL:-qwen2.5-coder-14b-instruct-q6_k}"
+MAX_TOKENS="${MAX_TOKENS:-256}"
+PROMPT="${PROMPT:-Write a Python function that implements merge sort with detailed comments explaining each step.}"
 RESULTS_DIR=$(mktemp -d)
-PROMPT="Write a Python function that implements merge sort with detailed comments explaining each step."
 
 COUNTER=0
 OK_COUNT=0
@@ -35,7 +36,7 @@ request() {
         -d '{
             "model": "'"${MODEL}"'",
             "messages": [{"role": "user", "content": "'"${PROMPT}"'"}],
-            "max_tokens": 256,
+            "max_tokens": '"${MAX_TOKENS}"',
             "temperature": 0.7
         }' 2>/dev/null) || true
 

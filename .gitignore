@@ -8,3 +8,5 @@ viiwork-*.yaml
 .worktrees/
 bench-harness/__pycache__/
 bench-harness/results/
+.claude/
+*.swp
