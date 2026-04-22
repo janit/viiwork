@@ -65,12 +65,28 @@ gpus:
     #   ALSO BROKEN ON THE GFX906 FORK as of 2026-04-09. Don't use it.
     mode: layer
 
-    # Optional explicit per-GPU split weights. If omitted, even weights (1,1,1,...)
-    # are used. Useful when GPUs have different free VRAM (other tenants) and you
-    # want to bias the split.
-    # weights: [1.0, 1.0, 1.0, 1.0]
+    # Optional per-group split weights. If omitted, even weights (1,1,...)
+    # are used. Length must equal group_size when set; the same pattern is
+    # applied to every group.
+    # weights: [1.0, 1.0]
 
-    # main_gpu: 0   # only used when mode="row" — index into the devices list
+    # main_gpu: 0   # only used when mode="row" — index within a group (0..group_size-1)
+
+    # group_size: partition `devices` into consecutive groups of this size,
+    # each becoming its own tensor-split backend on base_port+i.
+    #
+    #   0  (default): single group across every device — one big backend.
+    #                 Use when the model doesn't fit in one GPU's VRAM and
+    #                 you need every GPU to hold part of it.
+    #   >=2        : multiple groups. Use when the model DOES fit in a
+    #                group's combined VRAM and you want N concurrent
+    #                streams, each with tensor-split single-stream speed.
+    #                devices length must be divisible by group_size.
+    #
+    # Example: devices=[0..9], group_size=2 → 5 backends of 2 GPUs each,
+    # on ports base_port..base_port+4. The balancer routes across them
+    # exactly like it does across replica backends.
+    # group_size: 2
 
 backend:
   binary: llama-server

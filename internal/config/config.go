@@ -48,16 +48,21 @@ type GPUConfig struct {
 	TensorSplit     TensorSplitConfig `yaml:"tensor_split"`
 }
 
-// TensorSplitConfig configures llama.cpp tensor parallelism: a single
-// llama-server process spans multiple GPUs and the model is split across them.
-// When Enabled, viiwork starts ONE backend bound to all the devices in
-// GPUConfig.Devices, instead of one backend per GPU. This is for models that
-// don't fit on a single GPU's VRAM.
+// TensorSplitConfig configures llama.cpp tensor parallelism: a llama-server
+// process spans multiple GPUs and the model is split across them. When
+// Enabled, viiwork partitions GPUConfig.Devices into one or more groups of
+// GroupSize and spawns one backend per group. With GroupSize=0 (default) all
+// devices form a single group, giving the original "one big backend across
+// every GPU" behavior. GroupSize>=2 produces multiple tensor-split backends,
+// each replicating the full model across its group — used when the model
+// fits in a group's combined VRAM and you want several concurrent streams
+// with the single-stream speed of tensor parallelism.
 type TensorSplitConfig struct {
-	Enabled bool      `yaml:"enabled"`
-	Mode    string    `yaml:"mode"`     // "layer" (default) or "row"
-	Weights []float64 `yaml:"weights"`  // optional per-GPU split fractions; default: even
-	MainGPU int       `yaml:"main_gpu"` // only used when mode="row"; default 0
+	Enabled   bool      `yaml:"enabled"`
+	Mode      string    `yaml:"mode"`       // "layer" (default) or "row"
+	Weights   []float64 `yaml:"weights"`    // optional per-group split fractions; default: even. Length must equal the group size when set; the same pattern applies to every group.
+	MainGPU   int       `yaml:"main_gpu"`   // only used when mode="row"; default 0. Index within a group (0..group_size-1).
+	GroupSize int       `yaml:"group_size"` // 0 = all devices in one group (legacy). >=2 = split devices into consecutive groups of this size, each becoming its own backend on base_port+i.
 }
 
 // ResolvedDevices returns the explicit GPU device IDs to use.
@@ -174,14 +179,31 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("health.max_failures must be >= 1")
 	}
 	if c.GPUs.TensorSplit.Enabled {
-		// Tensor-split mode: ONE backend on a single port spanning all devices.
-		// We don't reserve a port range, so the base_port+count check below
-		// would over-restrict; just verify the single port is in range.
-		if c.GPUs.BasePort < 1 || c.GPUs.BasePort > 65535 {
-			return fmt.Errorf("gpus.base_port must be 1-65535")
-		}
-		if c.GPUs.Count < 2 {
+		// Tensor-split mode: one or more backends, each spanning GroupSize
+		// devices on consecutive ports starting at BasePort.
+		devices := c.GPUs.ResolvedDevices()
+		if len(devices) < 2 {
 			return fmt.Errorf("gpus.tensor_split.enabled requires at least 2 devices")
+		}
+		groupSize := c.GPUs.TensorSplit.GroupSize
+		if groupSize < 0 {
+			return fmt.Errorf("gpus.tensor_split.group_size must be >= 0 (0 = single group across all devices)")
+		}
+		if groupSize == 0 {
+			groupSize = len(devices)
+		}
+		if groupSize < 2 {
+			return fmt.Errorf("gpus.tensor_split.group_size must be 0 or >= 2, got %d", groupSize)
+		}
+		if groupSize > len(devices) {
+			return fmt.Errorf("gpus.tensor_split.group_size (%d) exceeds device count (%d)", groupSize, len(devices))
+		}
+		if len(devices)%groupSize != 0 {
+			return fmt.Errorf("gpus.tensor_split.group_size (%d) must evenly divide device count (%d)", groupSize, len(devices))
+		}
+		nGroups := len(devices) / groupSize
+		if c.GPUs.BasePort < 1 || c.GPUs.BasePort+nGroups-1 > 65535 {
+			return fmt.Errorf("gpus.base_port must be 1-65535 and base_port+nGroups-1 must not exceed 65535")
 		}
 		if c.GPUs.TensorSplit.Mode == "" {
 			c.GPUs.TensorSplit.Mode = "layer"
@@ -189,17 +211,20 @@ func (c *Config) Validate() error {
 		if c.GPUs.TensorSplit.Mode != "layer" && c.GPUs.TensorSplit.Mode != "row" {
 			return fmt.Errorf("gpus.tensor_split.mode must be 'layer' or 'row', got %q", c.GPUs.TensorSplit.Mode)
 		}
-		if len(c.GPUs.TensorSplit.Weights) > 0 && len(c.GPUs.TensorSplit.Weights) != c.GPUs.Count {
-			return fmt.Errorf("gpus.tensor_split.weights length (%d) must match number of devices (%d)",
-				len(c.GPUs.TensorSplit.Weights), c.GPUs.Count)
+		// Weights apply within a group (same pattern replicated to every group).
+		if len(c.GPUs.TensorSplit.Weights) > 0 && len(c.GPUs.TensorSplit.Weights) != groupSize {
+			return fmt.Errorf("gpus.tensor_split.weights length (%d) must match group_size (%d)",
+				len(c.GPUs.TensorSplit.Weights), groupSize)
 		}
-		if c.GPUs.TensorSplit.MainGPU < 0 || c.GPUs.TensorSplit.MainGPU >= c.GPUs.Count {
+		if c.GPUs.TensorSplit.MainGPU < 0 || c.GPUs.TensorSplit.MainGPU >= groupSize {
 			return fmt.Errorf("gpus.tensor_split.main_gpu (%d) must be a valid index 0..%d",
-				c.GPUs.TensorSplit.MainGPU, c.GPUs.Count-1)
+				c.GPUs.TensorSplit.MainGPU, groupSize-1)
 		}
-		// llama.cpp tensor-split serves a single slot — concurrent requests
-		// queue at the slot. Force parallel=1 regardless of user setting; the
-		// proxy still queues at the front via balancer max_in_flight.
+		// llama.cpp tensor-split serves a single slot per backend — concurrent
+		// requests queue at the slot. Force parallel=1 regardless of user
+		// setting; the proxy still queues at the front via balancer
+		// max_in_flight. With multiple groups the balancer routes across
+		// groups exactly like it does across replica backends.
 		c.Model.Parallel = 1
 	} else {
 		// Replica mode: one process per GPU on consecutive ports.
