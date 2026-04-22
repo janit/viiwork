@@ -1,0 +1,32 @@
+# Qwen3.6-27B 5-pair tensor-split compose.
+#
+# Replaces the 5 bare llama-server containers (qwen36-ts-g01..g89) with
+# one viiwork process managing all 5 tensor-split backends, giving dashboard,
+# adaptive balancing, health checks, and power/cost tracking for free.
+#
+# Prereqs:
+#   - viiwork:qwen-test image built from source that includes tensor_split.group_size
+#   - GPUs 0-9 free: tear down any other GPU-owning container first
+#   - Model file present: models/Qwen3.6-27B-Q4_K_M.gguf
+#
+# Run / inspect / tear down:
+#   docker compose -f configs/docker-compose.qwen36-5pairs.yaml up -d
+#   docker logs -f viiwork-qwen36-5pairs
+#   curl -s http://localhost:8094/v1/status | jq
+#   docker compose -f configs/docker-compose.qwen36-5pairs.yaml down
+name: viiwork-qwen36-5pairs
+services:
+  viiwork-qwen36-5pairs:
+    image: viiwork:qwen-test
+    container_name: viiwork-qwen36-5pairs
+    network_mode: host
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    volumes:
+      - ../models:/models
+      - ./viiwork.qwen36-5pairs.yaml:/etc/viiwork/viiwork.yaml
+    group_add:
+      - video
+      - render
+    restart: "no"

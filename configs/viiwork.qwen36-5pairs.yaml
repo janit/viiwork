@@ -1,0 +1,42 @@
+# Qwen3.6-27B across 5 tensor-split pairs on gb1 (10×Radeon VII).
+#
+# Each pair holds a full replica of the 27B Q4_K_M model, split layer-wise
+# across 2 GPUs. The viiwork balancer routes across the 5 backends like it
+# would across 5 replica backends — but each backend runs at tensor-split
+# single-stream speed (~12.7 tok/s measured) instead of 1.6 tok/s single-GPU.
+#
+# Requires viiwork with tensor_split.group_size support (added 2026-04-22).
+server:
+  host: 0.0.0.0
+  port: 8094
+
+model:
+  path: /models/Qwen3.6-27B-Q4_K_M.gguf
+  context_size: 8192
+  n_gpu_layers: -1
+
+gpus:
+  devices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  base_port: 9401
+  tensor_split:
+    enabled: true
+    mode: layer
+    group_size: 2
+  # 180W per-GPU cap is persistent on host.
+
+backend:
+  binary: llama-server
+  extra_args: []
+
+health:
+  interval: 5s
+  timeout: 10s   # 27B cold-load per pair is ~5-6 min
+  max_failures: 3
+
+balancer:
+  latency_window: 30s
+  # 5 backends × 2 in-flight = 10 concurrent max. Threshold 8 keeps the
+  # balancer in lowest-latency-idle mode under steady state (matches the
+  # 4h soak PASS tuning from viiwork.soak.yaml).
+  high_load_threshold: 8
+  max_in_flight_per_gpu: 2

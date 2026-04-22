@@ -1,0 +1,60 @@
+# Qwen3.6-27B bring-up test config.
+#
+# Purpose: first-load test of the 27B dense hybrid (Gated-DeltaNet +
+# Gated-Attention) VLM on gfx906. Same arch family as Qwen3.5-35B-A3B,
+# so reuses the viiwork:qwen-test image (upstream llama.cpp master).
+# Unlike 3.5-A3B this is a *dense* 27B model -- all params participate
+# per token -> compute-bound, not streaming-bound.
+#
+# Text-only path: llama-server does not load the vision tower, so image
+# inputs are not exercised here even though the model is multimodal.
+#
+# Layout on gb1 (10 GPUs total):
+#   GPUs 0-2  : production viiwork (8080)            -- untouched
+#   GPU  3    : bench reserve                        -- untouched
+#   GPUs 4-6  : Qwen3.5-A3B Q3_K_M qwen-test (8093)  -- MUST DOWN first
+#                                                       (HSA cross-container bug)
+#   GPUs 7-9  : THIS test (port 8094)                -- Q4_K_M across 3 GPUs
+#
+# GPU math for Q4_K_M (~16.8 GB weights):
+#   16.8 GB / 3 GPUs = ~5.6 GB/GPU weights (tensor-split even)
+#   + ~0.7 GB KV at 8192 ctx (quadratic-attn layers are 1/4 of 64 = 16)
+#   = ~6.3 GB / 16 GB per Radeon VII, ample headroom for context growth
+#
+# If GPUs 7-9 are occupied, adjust `devices` to any three free ones. If
+# only two free GPUs are available, switch to Q3_K_M (13.6 GB) and use
+# the alternate config viiwork.qwen36-test-q3km.yaml (not yet created).
+server:
+  host: 0.0.0.0
+  port: 8094
+
+model:
+  path: /models/Qwen3.6-27B-Q4_K_M.gguf
+  # Start small. Model advertises 262k native / 1M YaRN; first confirm
+  # load + token emission, then push context in follow-up runs.
+  context_size: 8192
+  n_gpu_layers: -1
+
+gpus:
+  devices: [0,1]
+  base_port: 9401
+  # 180W per-GPU cap is persistent on host (2026-04-17 trip lesson).
+
+backend:
+  binary: llama-server
+  # Baseline run: no --flash-attn (hybrid DeltaNet + gated-attn + FA on
+  # ROCm is unproven), no --reasoning-format (Qwen3 uses baked-in
+  # <think> template handling). Add KV quantization later if context
+  # scaling needs it.
+  extra_args: []
+
+health:
+  interval: 5s
+  timeout: 10s   # 27B cold-load across 3 GPUs takes longer than 3s default
+  max_failures: 3
+
+balancer:
+  strategy: adaptive
+  latency_window: 30s
+  high_load_threshold: 7
+  max_in_flight_per_gpu: 1
