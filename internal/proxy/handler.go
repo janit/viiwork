@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/janit/viiwork/internal/activity"
@@ -143,6 +144,30 @@ func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request) {
 // maxRequestBodySize limits inference request bodies to 32 MB.
 const maxRequestBodySize = 32 << 20
 
+// HeaderTask is a fallback for clients whose SDKs forbid non-standard JSON fields.
+const HeaderTask = "X-Viiwork-Task"
+
+// maxTaskIDLen caps the task tag length — the dashboard badge needs to stay readable.
+const maxTaskIDLen = 32
+
+// sanitizeTaskID trims whitespace, strips non-printable runes, and truncates to maxTaskIDLen.
+func sanitizeTaskID(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	b := make([]rune, 0, len(s))
+	for _, r := range s {
+		if r >= 0x20 && r != 0x7f {
+			b = append(b, r)
+		}
+	}
+	if len(b) > maxTaskIDLen {
+		b = b[:maxTaskIDLen]
+	}
+	return strings.TrimSpace(string(b))
+}
+
 func (h *Handler) handleProxy(w http.ResponseWriter, r *http.Request) {
 	// Read and buffer body to extract model and think parameters
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
@@ -155,14 +180,39 @@ func (h *Handler) handleProxy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":{"message":"failed to read request","type":"invalid_request"}}`, http.StatusBadRequest)
 		return
 	}
-	r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 
 	var reqBody struct {
 		Model string `json:"model"`
 		Think *bool  `json:"think"`
+		Task  string `json:"task"`
 	}
 	json.Unmarshal(bodyBytes, &reqBody)
 	thinkDisabled := reqBody.Think == nil || !*reqBody.Think
+
+	// Resolve task ID: body "task" wins, else X-Viiwork-Task header.
+	taskID := sanitizeTaskID(reqBody.Task)
+	if taskID == "" {
+		taskID = sanitizeTaskID(r.Header.Get(HeaderTask))
+	}
+
+	// Strip "task" from the body before forwarding so backends never see it.
+	if reqBody.Task != "" {
+		var generic map[string]json.RawMessage
+		if err := json.Unmarshal(bodyBytes, &generic); err == nil {
+			if _, present := generic["task"]; present {
+				delete(generic, "task")
+				if rewritten, err := json.Marshal(generic); err == nil {
+					bodyBytes = rewritten
+				}
+			}
+		}
+	}
+	// Propagate task to peers via header (body has been stripped).
+	if taskID != "" {
+		r.Header.Set(HeaderTask, taskID)
+	}
+	r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+	r.ContentLength = int64(len(bodyBytes))
 
 	// Pipeline interception
 	if h.pipelineResolver != nil {
@@ -185,7 +235,7 @@ func (h *Handler) handleProxy(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, `{"error":{"message":"no user message found","type":"invalid_request"}}`, http.StatusBadRequest)
 				return
 			}
-			h.handlePipeline(w, r, p, locale, localeKey, sourceText, reqBody.Model)
+			h.handlePipeline(w, r, p, locale, localeKey, sourceText, reqBody.Model, taskID)
 			return
 		}
 		// Unknown locale in a pipeline model name
@@ -250,28 +300,28 @@ func (h *Handler) handleProxy(w http.ResponseWriter, r *http.Request) {
 	if route.Type == peer.RouteLocal {
 		log.Printf("[debug] %s → gpu-%d (in_flight=%d)", model, route.Backend.GPUID, route.Backend.InFlight())
 		if h.activity != nil {
-			h.activity.EmitRequest(rid, route.Backend.GPUID, "%s → gpu-%d", model, route.Backend.GPUID)
+			h.activity.EmitRequestTask(rid, route.Backend.GPUID, taskID, "%s → gpu-%d", model, route.Backend.GPUID)
 		}
 		aborted := proxyRequest(w, r, route.Backend, h.latencyWindow, thinkDisabled)
 		elapsed := time.Since(start).Round(time.Millisecond)
 		log.Printf("[debug] %s → gpu-%d finished (elapsed=%s aborted=%v in_flight=%d)", model, route.Backend.GPUID, elapsed, aborted, route.Backend.InFlight())
 		if h.activity != nil {
 			if aborted {
-				h.activity.EmitRequest(rid, route.Backend.GPUID, "%s → gpu-%d aborted by client (%s)", model, route.Backend.GPUID, elapsed)
+				h.activity.EmitRequestTask(rid, route.Backend.GPUID, taskID, "%s → gpu-%d aborted by client (%s)", model, route.Backend.GPUID, elapsed)
 			} else {
-				h.activity.EmitRequest(rid, route.Backend.GPUID, "%s → gpu-%d done (%s)", model, route.Backend.GPUID, elapsed)
+				h.activity.EmitRequestTask(rid, route.Backend.GPUID, taskID, "%s → gpu-%d done (%s)", model, route.Backend.GPUID, elapsed)
 			}
 		}
 	} else {
 		log.Printf("[debug] %s → peer %s", model, route.Addr)
 		if h.activity != nil {
-			h.activity.EmitRequest(rid, -1, "%s → peer %s", model, route.Addr)
+			h.activity.EmitRequestTask(rid, -1, taskID, "%s → peer %s", model, route.Addr)
 		}
 		proxyToPeer(w, r, route.Addr, h.registry.NodeID(), thinkDisabled)
 		elapsed := time.Since(start).Round(time.Millisecond)
 		log.Printf("[debug] %s → peer %s finished (elapsed=%s)", model, route.Addr, elapsed)
 		if h.activity != nil {
-			h.activity.EmitRequest(rid, -1, "%s → peer %s done (%s)", model, route.Addr, elapsed)
+			h.activity.EmitRequestTask(rid, -1, taskID, "%s → peer %s done (%s)", model, route.Addr, elapsed)
 		}
 	}
 }

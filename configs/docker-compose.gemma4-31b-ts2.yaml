@@ -1,0 +1,33 @@
+# Gemma 4 31B-it Q5_K_S TS=2 compose.
+#
+# Prereqs:
+#   - viiwork:qwen-test image (upstream llama.cpp master with gemma4 arch)
+#   - GPUs 0, 1 free
+#   - Model present at /mnt/p3700/llm-models/gemma-4-31B-it-Q5_K_S.gguf
+#
+# Run / inspect / tear down:
+#   docker compose -f configs/docker-compose.gemma4-31b-ts2.yaml up -d
+#   docker logs -f viiwork-gemma4-31b-ts2
+#   curl -s http://localhost:8094/v1/status | jq
+#   docker compose -f configs/docker-compose.gemma4-31b-ts2.yaml down
+#
+# This is the "prose" half of a two-container split with the EuroLLM
+# translator on port 8095. ipc: host is included as a (per-memory untested)
+# HSA workaround that lets two ROCm containers coexist on gb1.
+name: viiwork-gemma4-31b-ts2
+services:
+  viiwork-gemma4-31b-ts2:
+    image: viiwork:qwen-test
+    container_name: viiwork-gemma4-31b-ts2
+    network_mode: host
+    ipc: host
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    volumes:
+      - /mnt/p3700/llm-models:/models:ro
+      - ./viiwork.gemma4-31b-ts2.yaml:/etc/viiwork/viiwork.yaml
+    group_add:
+      - video
+      - render
+    restart: unless-stopped

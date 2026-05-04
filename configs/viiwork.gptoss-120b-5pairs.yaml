@@ -1,0 +1,46 @@
+# gpt-oss-120b MXFP4_MOE — 2× TS=5 backends on gb1 (10×Radeon VII).
+#
+# 117B total / ~5.1B active MoE in OpenAI's native MXFP4 release format.
+# Each TS=5 group holds a full replica of the ~63.4GB model split across
+# 5 GPUs (~12.7GB each). viiwork's adaptive balancer routes across the
+# 2 backends like replicas; each backend runs at tensor-split single-stream
+# speed.
+#
+# Mirrors the validated qwen36-5pairs pattern (15min conc=10 stress PASS).
+#
+# gpt-oss is reasoning-enabled: callers should set system prompt with
+# `Reasoning: low` (or 'medium'/'high') to control depth. Default mode
+# emits a "thinking" channel before the answer (harmony format).
+server:
+  host: 0.0.0.0
+  port: 8094
+
+model:
+  # llama-server auto-loads the second part from the same directory.
+  path: /models/openai_gpt-oss-120b-MXFP4_MOE-00001-of-00002.gguf
+  context_size: 16384
+  n_gpu_layers: -1
+
+gpus:
+  devices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  base_port: 9501
+  tensor_split:
+    enabled: true
+    mode: layer
+    group_size: 5
+  # 180W per-GPU cap is persistent on host.
+
+backend:
+  binary: llama-server
+  extra_args: []
+
+health:
+  interval: 5s
+  timeout: 10s
+  max_failures: 3
+
+balancer:
+  latency_window: 30s
+  # 2 backends × 2 in-flight = 4 concurrent max.
+  high_load_threshold: 8
+  max_in_flight_per_gpu: 2

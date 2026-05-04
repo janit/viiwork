@@ -103,17 +103,17 @@ func (h *Handler) SetPipelines(resolver *PipelineResolver, exec *pipeline.Execut
 	h.pipelineExecutor = exec
 }
 
-func (h *Handler) handlePipeline(w http.ResponseWriter, r *http.Request, p *pipeline.Pipeline, locale *pipeline.LocaleConfig, localeKey string, sourceText string, modelName string) {
+func (h *Handler) handlePipeline(w http.ResponseWriter, r *http.Request, p *pipeline.Pipeline, locale *pipeline.LocaleConfig, localeKey string, sourceText string, modelName string, taskID string) {
 	rid := activity.NewRequestID()
 	if h.activity != nil {
-		h.activity.EmitRequest(rid, -1, "[pipeline] %s started", modelName)
+		h.activity.EmitRequestTask(rid, -1, taskID, "[pipeline] %s started", modelName)
 	}
 
 	start := time.Now()
 	result, err := h.pipelineExecutor.Run(r.Context(), p, locale, sourceText)
 	if err != nil {
 		if h.activity != nil {
-			h.activity.EmitRequest(rid, -1, "[pipeline] %s failed: %v", modelName, err)
+			h.activity.EmitRequestTask(rid, -1, taskID, "[pipeline] %s failed: %v", modelName, err)
 		}
 		if stepErr, ok := err.(*pipeline.StepError); ok && stepErr.Status == http.StatusServiceUnavailable {
 			w.Header().Set("Retry-After", "5")
@@ -141,7 +141,7 @@ func (h *Handler) handlePipeline(w http.ResponseWriter, r *http.Request, p *pipe
 		for _, st := range result.StepTimings {
 			parts = append(parts, fmt.Sprintf("%s:%s", st.Name, st.Duration.Round(time.Millisecond)))
 		}
-		h.activity.EmitRequest(rid, -1, "[pipeline] %s done (%s) [%s]", modelName, elapsed.Round(time.Millisecond), strings.Join(parts, ","))
+		h.activity.EmitRequestTask(rid, -1, taskID, "[pipeline] %s done (%s) [%s]", modelName, elapsed.Round(time.Millisecond), strings.Join(parts, ","))
 	}
 
 	// Pipeline headers

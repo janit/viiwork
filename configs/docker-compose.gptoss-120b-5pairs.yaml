@@ -1,0 +1,33 @@
+# gpt-oss-120b MXFP4_MOE 2× TS=5 compose.
+#
+# Replaces the single-backend gptoss-120b-ts5 with one viiwork process
+# managing two tensor-split backends across all 10 GPUs.
+#
+# Prereqs:
+#   - viiwork:qwen-test image (upstream llama.cpp master; gpt-oss arch supported since Aug 2025)
+#   - GPUs 0-9 free: tear down the gptoss-120b-ts5 container first
+#   - Both parts present at /mnt/p3700/llm-models/openai_gpt-oss-120b-MXFP4_MOE-00001-of-00002.gguf
+#                       and /mnt/p3700/llm-models/openai_gpt-oss-120b-MXFP4_MOE-00002-of-00002.gguf
+#
+# Run / inspect / tear down:
+#   docker compose -f configs/docker-compose.gptoss-120b-5pairs.yaml up -d
+#   docker logs -f viiwork-gptoss-120b-5pairs
+#   curl -s http://localhost:8094/v1/status | jq
+#   docker compose -f configs/docker-compose.gptoss-120b-5pairs.yaml down
+name: viiwork-gptoss-120b-5pairs
+services:
+  viiwork-gptoss-120b-5pairs:
+    image: viiwork:qwen-test
+    container_name: viiwork-gptoss-120b-5pairs
+    network_mode: host
+    ipc: host
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    volumes:
+      - /mnt/p3700/llm-models:/models:ro
+      - ./viiwork.gptoss-120b-5pairs.yaml:/etc/viiwork/viiwork.yaml
+    group_add:
+      - video
+      - render
+    restart: unless-stopped

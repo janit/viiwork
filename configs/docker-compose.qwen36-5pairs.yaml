@@ -7,7 +7,7 @@
 # Prereqs:
 #   - viiwork:qwen-test image built from source that includes tensor_split.group_size
 #   - GPUs 0-9 free: tear down any other GPU-owning container first
-#   - Model file present: models/Qwen3.6-27B-Q4_K_M.gguf
+#   - Model file present: models_local/Qwen3.6-27B-Q4_K_M.gguf  (kept on local NVMe — Qwen3.6 is the go-to local agent, NAS-independent)
 #
 # Run / inspect / tear down:
 #   docker compose -f configs/docker-compose.qwen36-5pairs.yaml up -d
@@ -24,9 +24,9 @@ services:
       - /dev/kfd:/dev/kfd
       - /dev/dri:/dev/dri
     volumes:
-      - ../models:/models
+      - ../models_local:/models
       - ./viiwork.qwen36-5pairs.yaml:/etc/viiwork/viiwork.yaml
     group_add:
       - video
       - render
-    restart: "no"
+    restart: unless-stopped

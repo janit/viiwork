@@ -1,0 +1,18 @@
+# L3 bench compose: Qwen3.6-35B-A3B UD-Q3_K_M + KV-q4 replicas on GPUs 0-4.
+name: viiwork-qwen36-a3b-bench
+services:
+  viiwork-qwen36-a3b-bench:
+    image: viiwork:qwen-test
+    container_name: viiwork-qwen36-a3b-bench
+    network_mode: host
+    ipc: host
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    volumes:
+      - ../models:/models
+      - ./viiwork.qwen36-a3b-bench.yaml:/etc/viiwork/viiwork.yaml
+    group_add:
+      - video
+      - render
+    restart: "no"

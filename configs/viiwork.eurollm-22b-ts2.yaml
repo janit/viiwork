@@ -1,0 +1,43 @@
+# EuroLLM-22B-Instruct-2512 Q5_K_M — single TS=2 backend on gb1.
+#
+# 22.6B dense Llama-recipe model purpose-trained on the 24 official EU
+# languages plus Norwegian, Icelandic, Russian. Used here for the
+# translation step (English prose from the Gemma peer → target locale).
+#
+# TS=2 splits ~16GB weights across two Radeon VII (~8GB each).
+server:
+  host: 0.0.0.0
+  port: 8095
+
+model:
+  path: /models/EuroLLM-22B-Instruct-2512-Q5_K_M.gguf
+  context_size: 16384
+  n_gpu_layers: -1
+
+gpus:
+  devices: [5, 6]
+  base_port: 9601
+  tensor_split:
+    enabled: true
+    mode: layer
+    group_size: 2
+  # 180W per-GPU cap is persistent on host.
+
+backend:
+  binary: llama-server
+  extra_args: []
+
+health:
+  interval: 5s
+  timeout: 10s
+
+balancer:
+  latency_window: 30s
+  high_load_threshold: 8
+  max_in_flight_per_gpu: 2
+
+peers:
+  hosts:
+    - localhost:8094
+  poll_interval: 10s
+  timeout: 5s

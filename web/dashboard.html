@@ -582,7 +582,8 @@ function appendActivity(ev) {
   const time = new Date(ev.t * 1000).toLocaleTimeString();
   const color = ACT_COLORS[ev.type] || '#8b949e';
   const gpuTag = ev.gpu_id >= 0 ? `<span style="color:${GPU_COLORS[ev.gpu_id % GPU_COLORS.length]}">gpu-${ev.gpu_id}</span> ` : '';
-  line.innerHTML = `<span style="color:#484f58">${time}</span> <span style="color:${color}">[${ev.type}]</span> ${gpuTag}${escapeHtml(ev.message)}`;
+  const taskTag = ev.task_id ? `<span style="color:#bc8cff">[${escapeHtml(ev.task_id)}]</span> ` : '';
+  line.innerHTML = `<span style="color:#484f58">${time}</span> <span style="color:${color}">[${ev.type}]</span> ${gpuTag}${taskTag}${escapeHtml(ev.message)}`;
   activityLog.insertBefore(line, activityLog.firstChild);
   while (activityLog.children.length > MAX_ACTIVITY_LINES) activityLog.removeChild(activityLog.lastChild);
 }
@@ -641,7 +642,7 @@ function handleInflightEvent(ev) {
   const el = document.createElement('div');
   el.style.padding = '3px 0';
   el.style.borderBottom = '1px solid #21262d';
-  inflightRequests.set(key, {startTime: ev.t * 1000, el, label: msg});
+  inflightRequests.set(key, {startTime: ev.t * 1000, el, label: msg, taskID: ev.task_id || ''});
   inflightList.appendChild(el);
   inflightSection.style.display = '';
 }
@@ -660,7 +661,8 @@ function updateInflightTimers() {
     const targetHtml = gpuMatch
       ? `<span style="color:${gpuColor}">${escapeHtml(target)}</span>`
       : escapeHtml(target);
-    req.el.innerHTML = `<span style="color:${color};font-weight:bold;min-width:50px;display:inline-block">${display}</span> ${escapeHtml(model)} \u2192 ${targetHtml}`;
+    const taskTag = req.taskID ? `<span style="color:#bc8cff">[${escapeHtml(req.taskID)}]</span> ` : '';
+    req.el.innerHTML = `<span style="color:${color};font-weight:bold;min-width:50px;display:inline-block">${display}</span> ${taskTag}${escapeHtml(model)} \u2192 ${targetHtml}`;
   }
   requestAnimationFrame(updateInflightTimers);
 }

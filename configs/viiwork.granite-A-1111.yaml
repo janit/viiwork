@@ -1,0 +1,36 @@
+# Granite 4.1-8B Layout A: 4× single-GPU replicas (1+1+1+1).
+#
+# 4 backends, each pinned to one Radeon VII running 8B Q4_K_M (~5 GB).
+# Plenty of VRAM headroom (16 GB - 5 GB - KV) for 16k context.
+#
+# Pairs with docker-compose.granite-A-1111.yaml.
+server:
+  host: 0.0.0.0
+  port: 8095
+
+model:
+  path: /models/granite-4.1-8b.Q4_K_M.gguf
+  context_size: 16384
+  n_gpu_layers: -1
+
+gpus:
+  devices: [0, 1, 2, 3]
+  base_port: 9301
+  # 180W per-GPU host cap is persistent (set 2026-04-17).
+
+backend:
+  binary: llama-server
+  extra_args:
+    - --flash-attn
+    - "on"
+
+health:
+  interval: 5s
+  timeout: 10s
+  max_failures: 3
+
+balancer:
+  latency_window: 30s
+  # 4 backends × 2 in-flight = 8 concurrent max.
+  high_load_threshold: 6
+  max_in_flight_per_gpu: 2

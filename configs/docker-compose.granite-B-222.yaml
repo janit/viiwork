@@ -1,0 +1,24 @@
+# Granite 4.1-30B Layout B: 3× tensor-split-pair replicas.
+#
+# Run / probe:
+#   Up:     docker compose -f configs/docker-compose.granite-B-222.yaml up -d
+#   Logs:   docker logs -f viiwork-granite-b
+#   Probe:  curl -s http://localhost:8095/v1/models | jq
+#   Status: curl -s http://localhost:8095/v1/status | jq
+#   Down:   docker compose -f configs/docker-compose.granite-B-222.yaml down
+name: viiwork-granite-b
+services:
+  viiwork-granite-b:
+    image: viiwork:granite-test
+    container_name: viiwork-granite-b
+    network_mode: host
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    volumes:
+      - ../models:/models
+      - ./viiwork.granite-B-222.yaml:/etc/viiwork/viiwork.yaml
+    group_add:
+      - video
+      - render
+    restart: "no"
