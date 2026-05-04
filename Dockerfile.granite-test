@@ -1,0 +1,52 @@
+# Dedicated image for Granite 4.1 bring-up testing.
+#
+# Why a separate image:
+#   - viiwork:gfx906 (fork) deleted the `granite` arch in commit 1cea7c4
+#     (only llama, qwen2/3/3moe, gemma* retained). Granite GGUFs will
+#     fail to load with "unsupported architecture".
+#   - viiwork:latest pins LLAMA_CPP_VERSION=b8660. Granite dense has
+#     been in upstream for a while, but pulling fresh master ensures
+#     4.1 tokenizer/template fixups land too.
+#
+# 4.1 is dense decoder-only (GQA + RoPE + SwiGLU + RMSNorm) -- NOT the
+# 4.0 Mamba-2 hybrid. So no SSM op risk on gfx906.
+#
+# Build:
+#   docker build -t viiwork:granite-test -f Dockerfile.granite-test .
+
+# Stage 1: Build llama.cpp master with ROCm/gfx906
+FROM rocm/dev-ubuntu-24.04:6.2.4-complete AS llama-build
+RUN apt-get update && apt-get install -y cmake git
+ARG LLAMA_CPP_REF=master
+RUN git clone --depth 1 --branch ${LLAMA_CPP_REF} \
+    https://github.com/ggml-org/llama.cpp /llama.cpp
+WORKDIR /llama.cpp
+# gfx906 FP8 header workaround (same as prod Dockerfile)
+RUN sed -i 's/#if HIP_VERSION >= 60200000/#if HIP_VERSION >= 99999999/' \
+    ggml/src/ggml-cuda/vendors/hip.h || true
+RUN cmake -B build -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx906 \
+    && cmake --build build --target llama-server llama-cli -j$(nproc)
+RUN ldd /llama.cpp/build/bin/llama-server && /llama.cpp/build/bin/llama-server --help > /dev/null
+RUN ldd /llama.cpp/build/bin/llama-cli    && /llama.cpp/build/bin/llama-cli    --help > /dev/null
+
+# Stage 2: Build viiwork
+FROM golang:1.23.6 AS go-build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ARG VERSION=granite-test
+RUN CGO_ENABLED=0 go build -ldflags "-X main.version=${VERSION}" -o /viiwork ./cmd/viiwork
+
+# Stage 3: Runtime
+FROM rocm/dev-ubuntu-24.04:6.2.4-complete
+RUN apt-get update && apt-get install -y --no-install-recommends ipmitool && rm -rf /var/lib/apt/lists/*
+COPY --from=llama-build /llama.cpp/build/bin/llama-server /usr/local/bin/
+COPY --from=llama-build /llama.cpp/build/bin/llama-cli    /usr/local/bin/
+COPY --from=llama-build /llama.cpp/build /tmp/llama-build/
+RUN find /tmp/llama-build -name '*.so*' -exec cp {} /usr/local/lib/ \; && rm -rf /tmp/llama-build && ldconfig
+COPY --from=go-build /viiwork /usr/local/bin/
+ENV HSA_OVERRIDE_GFX_VERSION=9.0.6
+EXPOSE 8080
+ENTRYPOINT ["viiwork"]
+CMD ["--config", "/etc/viiwork/viiwork.yaml"]

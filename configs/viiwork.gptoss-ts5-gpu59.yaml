@@ -1,0 +1,39 @@
+# Phase 2 partner: gpt-oss-120b TS=5 on GPUs 5-9, port 8095.
+# Pairs with the coding-side winner running on GPUs 0-4 / port 8094.
+server:
+  host: 0.0.0.0
+  port: 8095
+
+model:
+  path: /models/openai_gpt-oss-120b-MXFP4_MOE-00001-of-00002.gguf
+  context_size: 131072
+  n_gpu_layers: -1
+
+gpus:
+  devices: [5, 6, 7, 8, 9]
+  base_port: 9701
+  power_limit_watts: 180  # re-applies host-level cap on backend startup; protects gb1 PSU under unbounded multi-GPU load
+  tensor_split:
+    enabled: true
+    mode: layer
+    group_size: 5
+
+backend:
+  binary: llama-server
+  extra_args: []
+
+health:
+  interval: 5s
+  timeout: 10s
+  max_failures: 3
+
+balancer:
+  latency_window: 30s
+  high_load_threshold: 4
+  max_in_flight_per_gpu: 2
+
+peers:
+  hosts:
+    - localhost:8094
+  poll_interval: 10s
+  timeout: 5s

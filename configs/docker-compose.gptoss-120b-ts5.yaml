@@ -1,0 +1,33 @@
+# gpt-oss-120b MXFP4_MOE TS=5 compose.
+#
+# Prereqs:
+#   - viiwork:qwen-test image (upstream llama.cpp master; gpt-oss arch supported since Aug 2025)
+#   - GPUs 0-4 free
+#   - Both parts present at /mnt/p3700/llm-models/openai_gpt-oss-120b-MXFP4_MOE-00001-of-00002.gguf
+#                       and /mnt/p3700/llm-models/openai_gpt-oss-120b-MXFP4_MOE-00002-of-00002.gguf
+#
+# Run / inspect / tear down:
+#   docker compose -f configs/docker-compose.gptoss-120b-ts5.yaml up -d
+#   docker logs -f viiwork-gptoss-120b-ts5
+#   curl -s http://localhost:8094/v1/status | jq
+#   docker compose -f configs/docker-compose.gptoss-120b-ts5.yaml down
+#
+# `ipc: host` is required for two-container ROCm coexistence on gb1
+# (verified workaround for the HSA single-init bug, 2026-05-03).
+name: viiwork-gptoss-120b-ts5
+services:
+  viiwork-gptoss-120b-ts5:
+    image: viiwork:qwen-test
+    container_name: viiwork-gptoss-120b-ts5
+    network_mode: host
+    ipc: host
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    volumes:
+      - /mnt/p3700/llm-models:/models:ro
+      - ./viiwork.gptoss-120b-ts5.yaml:/etc/viiwork/viiwork.yaml
+    group_add:
+      - video
+      - render
+    restart: unless-stopped

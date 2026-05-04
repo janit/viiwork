@@ -21,6 +21,7 @@ type Event struct {
 	Message   string `json:"message"`
 	GPUID     int    `json:"gpu_id,omitempty"`
 	RequestID int64  `json:"rid,omitempty"`
+	TaskID    string `json:"task_id,omitempty"`
 }
 
 const maxEvents = 200
@@ -49,12 +50,17 @@ func (l *Log) Emit(typ string, gpuID int, format string, args ...any) {
 }
 
 func (l *Log) EmitRequest(rid int64, gpuID int, format string, args ...any) {
+	l.EmitRequestTask(rid, gpuID, "", format, args...)
+}
+
+func (l *Log) EmitRequestTask(rid int64, gpuID int, taskID string, format string, args ...any) {
 	l.emit(Event{
 		Time:      time.Now().Unix(),
 		Type:      "request",
 		Message:   fmt.Sprintf(format, args...),
 		GPUID:     gpuID,
 		RequestID: rid,
+		TaskID:    taskID,
 	})
 }
 

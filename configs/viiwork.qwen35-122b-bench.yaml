@@ -1,0 +1,47 @@
+# L2 bench config: Qwen3.5-122B-A10B Q4_K_M, single TS=5 backend on GPUs 0-4.
+#
+# 122B / 10B-active MoE in two-part GGUF (~71 GB total). TS=5 puts ~14.2 GB
+# of weights per Radeon VII (16 GB), leaving room for KV cache.
+# Single backend = serial requests at tensor-parallel speed.
+#
+# This is the "dark horse" — bigger than Qwen3.5-35B-A3B (3.3× active params,
+# 2× total) and untested on this hardware. Coding-quality candidate.
+server:
+  host: 0.0.0.0
+  port: 8094
+
+model:
+  path: /models/Qwen3.5-122B-A10B-GGUF/Qwen_Qwen3.5-122B-A10B-Q4_K_M/Qwen_Qwen3.5-122B-A10B-Q4_K_M-00001-of-00002.gguf
+  context_size: 65536
+  n_gpu_layers: -1
+
+gpus:
+  devices: [0, 1, 2, 3, 4]
+  base_port: 9501
+  power_limit_watts: 180  # re-applies host-level cap on backend startup; protects gb1 PSU under unbounded multi-GPU load
+  tensor_split:
+    enabled: true
+    mode: layer
+    group_size: 5
+
+backend:
+  binary: llama-server
+  extra_args:
+    - --flash-attn
+    - "on"
+
+health:
+  interval: 5s
+  timeout: 10s
+  max_failures: 3
+
+balancer:
+  latency_window: 30s
+  high_load_threshold: 4
+  max_in_flight_per_gpu: 2
+
+peers:
+  hosts:
+    - localhost:8095
+  poll_interval: 10s
+  timeout: 5s

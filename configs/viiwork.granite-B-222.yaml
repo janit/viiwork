@@ -1,0 +1,41 @@
+# Granite 4.1-30B Layout B: 3× tensor-split-pair replicas (2+2+2).
+#
+# 3 backends, each spanning 2 GPUs via tensor_split.group_size=2.
+# Per replica: 17.8 GB / 2 = ~8.9 GB weights/GPU + KV at 8k ctx.
+#
+# Same pattern as viiwork.qwen36-5pairs.yaml, but only 3 pairs over 6 GPUs
+# instead of 5 over 10.
+server:
+  host: 0.0.0.0
+  port: 8095
+
+model:
+  path: /models/ibm-granite_granite-4.1-30b-Q4_K_M.gguf
+  context_size: 8192
+  n_gpu_layers: -1
+
+gpus:
+  devices: [0, 1, 2, 3, 4, 5]
+  base_port: 9401
+  tensor_split:
+    enabled: true
+    mode: layer
+    group_size: 2
+  # 180W per-GPU host cap is persistent (set 2026-04-17).
+
+backend:
+  binary: llama-server
+  extra_args:
+    - --flash-attn
+    - "on"
+
+health:
+  interval: 5s
+  timeout: 10s   # 30B cold-load per pair takes several minutes
+  max_failures: 3
+
+balancer:
+  latency_window: 30s
+  # 3 pairs × 2 in-flight = 6 concurrent max.
+  high_load_threshold: 4
+  max_in_flight_per_gpu: 2

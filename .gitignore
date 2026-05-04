@@ -1,4 +1,5 @@
 bin/
+models
 models/
 opencode.json
 docker-compose.yaml

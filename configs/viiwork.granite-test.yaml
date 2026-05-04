@@ -1,0 +1,40 @@
+# Granite 4.1-8B bring-up test config.
+#
+# Pairs with Dockerfile.granite-test and docker-compose.granite-test.yaml.
+# 8B Q4_K_M is ~5 GB weights -- trivially single-GPU on a Radeon VII (16 GB).
+# Plenty of headroom for a generous KV cache.
+#
+# IMPORTANT (HSA single-container constraint, 2026-04-18):
+#   Two viiwork containers cannot both init ROCm on gb1 even on disjoint
+#   GPUs. Stop production viiwork (8080) before bringing this up, or
+#   the second container will fall back to CPU.
+server:
+  host: 0.0.0.0
+  port: 8095
+
+model:
+  path: /models/granite-4.1-8b.Q4_K_M.gguf
+  context_size: 16384
+  n_gpu_layers: -1
+
+gpus:
+  devices: [9]
+  base_port: 9301
+  # 180W per-GPU host cap is persistent (set 2026-04-17).
+
+backend:
+  binary: llama-server
+  extra_args:
+    - --flash-attn
+    - "on"
+
+health:
+  interval: 5s
+  timeout: 10s
+  max_failures: 3
+
+balancer:
+  strategy: adaptive
+  latency_window: 30s
+  high_load_threshold: 4
+  max_in_flight_per_gpu: 2

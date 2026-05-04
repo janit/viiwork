@@ -196,51 +196,48 @@ viiwork is designed for trusted local networks and has no built-in authenticatio
 
 ## Recommended Models
 
-**Single-GPU models** fit in 16GB VRAM (Radeon VII) with full GPU offload. The safe VRAM ceiling is ~13GB after accounting for KV cache and ROCm runtime overhead. **Large models** use tensor-split mode across 2+ GPUs — higher quality quants at the cost of serial-only inference.
+The list below is grounded in what's actually deployed on the reference fleet (10× Radeon VII) and what's been stress-tested — numbers are measured throughput, not estimated. The shape of these recommendations is driven by one hard constraint: any model whose weights + KV cache don't fit in a single 16 GB card pays a ~3× throughput tax (validated on Qwen3.5-A3B Q4_K_M vs Q3_K_M on the same GPU). For models above that line, tensor-split across 2+ GPUs avoids the tax at the cost of single-stream parallelism.
 
-### Coding
+> **Build note.** Hybrid-attention models (Qwen3.5-A3B, Qwen3.6, anything using DeltaNet / linear attention) need an upstream-current `llama.cpp` — build a fresh image from `Dockerfile`. The `viiwork:gfx906` fork is pruned to `llama / qwen2 / qwen3 / qwen3moe / gemma / gemma2 / gemma3 / gemma3n / gemma4` and will reject hybrid archs at load time. Standard transformer models run on either build.
 
-| Model | Quant | VRAM | Best For |
-|-------|-------|------|----------|
-| Qwen2.5-Coder-14B | Q6_K | ~12.1GB | Best quality coding model for 16GB |
-| Devstral-Small-24B | Q3_K_M | ~11.5GB | Multi-file frontend tasks, agent workflows |
-| DeepSeek-R1-Distill-Qwen-14B | Q4_K_M | ~9GB | Algorithmic reasoning |
-| Qwen2.5-Coder-32B | Q2_K | ~12.3GB | Largest coder, aggressive quant |
+### Validated production deployments
 
-### Text Generation & Reasoning
+These configs ship in `configs/` with stress-test data behind them.
 
-| Model | Quant | VRAM | Best For |
-|-------|-------|------|----------|
-| Qwen3-32B | UD-Q2_K_XL | ~12.8GB | General reasoning, thinking mode |
-| Gemma-3-27B-IT | Q3_K_S | ~12.2GB | Factual summarization, structured-to-prose |
-| Mistral-Small-3.1-24B | IQ4_XS | ~12.8GB | Multilingual text generation, instruction following |
+**General all-rounder pick: `gpt-oss-120b` 5-pairs.** If you have 10 GPUs and want a single deploy that's both fast (≥40 tok/s single-stream) and high quality across coding, prose, translation, and reasoning, run `configs/viiwork.gptoss-120b-5pairs.yaml`. The 117B / 5.1B-active MoE is large enough to be smart and sparse enough to be quick on this hardware. Set `Reasoning: low` for snappy chat, `high` for harder problems.
 
-### Gemma 4
+| Model | Quant | Mode | Measured |
+|---|---|---|---|
+| **gpt-oss-120b (MoE, 5.1B active)** — *all-rounder* | MXFP4_MOE (native) | 2× TS=5 (10 GPUs) | **41 tok/s** single-stream, **73 tok/s** aggregate at conc=4 (5-min sustained, 120/120 success). Per-request decode held flat under load (40.9 → 40.3 tok/s). Latency p50/p95: 4.9 / 6.7 s single, 10.2 / 12.2 s at conc=4. Reasoning-enabled (harmony format) — set `Reasoning: low/medium/high`. |
+| Gemma-4-26B-A4B-IT (MoE, 4B active) | UD-Q3_K_XL + KV-q4 | replica × 5 | **142 tok/s** aggregate at conc=10 (5.5h KV bench, 0 fail). KV-q4 vs fp16 is +9.2% throughput, -2 GB VRAM, 7/7 functional eval matches baseline. Highest aggregate throughput on this hardware. |
+| Qwen3.6-27B (dense hybrid) | Q4_K_M | 5× pair tensor-split (`group_size: 2`) | **76 tok/s** aggregate at conc=10 across all 10 GPUs (15-min stress, 0 fail). Single-pair single-stream: 16.9 tok/s. |
+| Qwen3.5-35B-A3B (MoE hybrid, 3B active) | Q3_K_M + KV-q4 | replica per GPU | **40.7 tok/s** sustained at conc=9 (15-min stress, 0 fail). 2.8× faster than Q4_K_M because weights fit fully in VRAM. |
+| Gemma-4-31B-IT (33B dense) | Q5_K_S | TS=2 single backend | ~21.5 GB across 2 GPUs; used as the prose generator in the localization pipeline. |
+| EuroLLM-22B-Instruct-2512 | Q5_K_M | TS=2 single backend | ~16 GB across 2 GPUs; purpose-trained on 24 EU languages + Norwegian / Icelandic / Russian — the translator step in the localization pipeline. |
+| Granite-4.1-8B | Q4_K_M | single-GPU replica × N | ~5 GB weights, generous KV headroom for 16k context. Run with `-fa on`. IBM's enterprise/utility model — strong instruction following, function/tool calling, RAG / structured-output workflows, multilingual; well-suited to back-office automation, doc Q&A, and embedding into agentic loops where you want a small, predictable, English-leaning helper next to a heavier reasoning model on the mesh. |
 
-| Model | Quant | VRAM | Best For |
-|-------|-------|------|----------|
-| Gemma-4-26B-A4B-IT | UD-Q3_K_M | ~12.5GB | MoE with only 4B active params, best quality that fits |
-| Gemma-4-26B-A4B-IT | UD-IQ3_S | ~11.2GB | MoE, extra KV cache headroom |
-| Gemma-4-E4B-IT | Q8_0 | ~8.2GB | 8B multimodal, near-lossless quant |
-| Gemma-4-E2B-IT | Q8_0 | ~5GB | 5B multimodal, ultra-lightweight |
+### Single-GPU picks (≤16 GB)
 
-### Data Science & Analytics
+For lightweight / multi-replica setups. Q3_K_M is the practical ceiling on a Radeon VII for the 30B class — anything heavier triggers the VRAM-fit tax.
 
-| Model | Quant | VRAM | Best For |
-|-------|-------|------|----------|
-| DeepSeek-R1-Distill-Qwen-32B | Q2_K | ~12.3GB | Chain-of-thought reasoning, math, complex analysis |
-| DeepSeek-R1-Distill-Qwen-14B | Q4_K_M | ~9GB | Reasoning at higher quant quality |
+| Model | Quant | Approx VRAM | Notes |
+|---|---|---|---|
+| Gemma-4-26B-A4B-IT | UD-Q3_K_XL | ~12.5 GB | Best general-purpose pick on 16 GB. Default args: `-fa on --cache-type-k q4_0 --cache-type-v q4_0`. |
+| Gemma-4-E4B-IT | Q8_0 | ~8.2 GB | 8B multimodal at near-lossless quant. |
+| Granite-4.1-8B | Q4_K_M | ~5 GB | Strong instruction following, tool calling, RAG / structured-output workflows. Use as a fast utility model alongside a heavier reasoner. |
 
-### Large Models (tensor-split, 2+ GPUs)
+### Tensor-split picks (multi-GPU)
 
-These models are too large for a single 16GB GPU at reasonable quant levels. Use tensor-split mode to split them across 2 or more GPUs.
+For models above the single-GPU ceiling. Layer-mode tensor split costs roughly 2-13% per extra GPU on the reference fleet's PCIe-gen1-x1 mining-rig topology (measured on the gfx906 fork 6h stress). On modern PCIe gen3/4/5 the penalty is smaller.
 
-| Model | Quant | Size | Min GPUs | Best For |
-|-------|-------|------|----------|----------|
-| Gemma-4-31B-IT | Q4_K_M | ~18GB | 2 | Full 31B dense model, higher quality than the 26B MoE |
-| Qwen3-32B | Q4_K_M | ~19GB | 2 | General reasoning at full quality (vs Q2_K single-GPU) |
-| DeepSeek-R1-Distill-Qwen-32B | Q4_K_M | ~19GB | 2 | Reasoning at full quality (vs Q2_K single-GPU) |
-| Qwen2.5-Coder-32B | Q4_K_M | ~19GB | 2 | Largest coder at full quality (vs Q2_K single-GPU) |
+| Model | Quant | Min GPUs | Why tensor-split |
+|---|---|---|---|
+| Gemma-4-31B-IT | Q5_K_S | 2 | Full-quality 33B dense; higher prose quality than the 26B MoE. |
+| EuroLLM-22B | Q5_K_M | 2 | 22B dense translator; doesn't fit comfortably at Q5 on one card. |
+| Qwen3.6-27B | Q4_K_M | 2 (per pair, scale with `group_size`) | Hybrid dense at single-stream tensor-parallel speed; 5-pair layout gives both per-request latency and aggregate throughput. |
+| gpt-oss-120b | MXFP4_MOE | 5 (per group, scale with `group_size: 5`) | 117B / 5.1B-active MoE; the all-rounder pick on a 10-GPU node — see the validated row above for measured throughput. |
+
+> Other 30-32B models (Qwen3-32B, DeepSeek-R1-Distill, Qwen2.5-Coder, etc.) load on this hardware but aren't currently part of the reference fleet — drop them into `configs/` and run `scripts/bench-sustained.sh` to add measured numbers.
 
 ## Builds
 

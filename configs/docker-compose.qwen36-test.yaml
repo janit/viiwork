@@ -50,7 +50,7 @@ services:
       - /dev/kfd:/dev/kfd
       - /dev/dri:/dev/dri
     volumes:
-      - ../models:/models
+      - ../models_local:/models
       - ./viiwork.qwen36-test.yaml:/etc/viiwork/viiwork.yaml
     group_add:
       - video

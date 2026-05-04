@@ -1,0 +1,49 @@
+# gpt-oss-120b MXFP4_MOE — single TS=5 backend on gb1.
+#
+# 117B total / ~5.1B active MoE in OpenAI's native MXFP4 release format.
+# TS=5 splits the ~63.4GB model across 5 Radeon VII (~12.7GB each) with
+# room for a small KV cache (GQA + few full-attn layers keep KV tiny).
+#
+# Used here as the prose generator for the weather/road/works pipeline.
+# Translation lives on the EuroLLM peer at localhost:8095.
+#
+# gpt-oss is reasoning-enabled: callers should set system prompt with
+# `Reasoning: low` (or 'medium'/'high') to control depth. Default mode
+# emits a "thinking" channel before the answer (harmony format).
+server:
+  host: 0.0.0.0
+  port: 8094
+
+model:
+  # llama-server auto-loads the second part from the same directory.
+  path: /models/openai_gpt-oss-120b-MXFP4_MOE-00001-of-00002.gguf
+  context_size: 16384
+  n_gpu_layers: -1
+
+gpus:
+  devices: [0, 1, 2, 3, 4]
+  base_port: 9501
+  tensor_split:
+    enabled: true
+    mode: layer
+    group_size: 5
+  # 180W per-GPU cap is persistent on host.
+
+backend:
+  binary: llama-server
+  extra_args: []
+
+health:
+  interval: 5s
+  timeout: 10s
+
+balancer:
+  latency_window: 30s
+  high_load_threshold: 8
+  max_in_flight_per_gpu: 2
+
+peers:
+  hosts:
+    - localhost:8095
+  poll_interval: 10s
+  timeout: 5s
