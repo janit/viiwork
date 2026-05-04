@@ -1,0 +1,38 @@
+# L3 bench config: Qwen3.6-35B-A3B UD-Q3_K_M + KV-q4, replica × 5 on GPUs 0-4.
+#
+# 35B-A3B hybrid MoE (3B active, DeltaNet + Gated-Attention family).
+# Mirrors the 2026-04-18 Qwen3.5-A3B Q3_K_M+KV-q4 stress layout that hit
+# 40.7 tok/s sustained. UD-Q3_K_M @ ~14 GB plus KV-q4 fits comfortably
+# on a single 16 GB Radeon VII per replica, giving 5-way concurrency.
+server:
+  host: 0.0.0.0
+  port: 8094
+
+model:
+  path: /models/Qwen3.6-35B-A3B-UD-Q3_K_M.gguf
+  context_size: 16384
+  n_gpu_layers: -1
+
+gpus:
+  devices: [0, 1, 2, 3, 4]
+  base_port: 9601
+
+backend:
+  binary: llama-server
+  extra_args:
+    - --flash-attn
+    - "on"
+    - --cache-type-k
+    - q4_0
+    - --cache-type-v
+    - q4_0
+
+health:
+  interval: 5s
+  timeout: 10s
+  max_failures: 3
+
+balancer:
+  latency_window: 30s
+  high_load_threshold: 8
+  max_in_flight_per_gpu: 2

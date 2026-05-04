@@ -46,8 +46,8 @@ type Manager struct {
 	cfg           *config.Config
 	logger        *log.Logger
 	mu            sync.Mutex
-	failureCounts map[int]int
-	respawnCounts map[int]int
+	failureCounts map[string]int
+	respawnCounts map[string]int
 	sampler       PowerSampler
 	tracker       CostTracker
 	collector     GPUCollector
@@ -60,7 +60,7 @@ func NewManager(cfg *config.Config, logWriter io.Writer, sampler PowerSampler, t
 	}
 	m := &Manager{
 		cfg: cfg, logger: log.New(os.Stdout, "[manager] ", log.LstdFlags),
-		failureCounts: make(map[int]int), respawnCounts: make(map[int]int),
+		failureCounts: make(map[string]int), respawnCounts: make(map[string]int),
 		sampler: sampler, tracker: tracker, collector: collector, activity: actLog,
 	}
 	devices := cfg.GPUs.ResolvedDevices()
@@ -409,32 +409,36 @@ func (m *Manager) checkAndManage(ctx context.Context, b *Backend) {
 	healthy := b.CheckHealth(ctx)
 	b.State.SetRSSMB(b.ReadRSSMB())
 
+	// Key failure/respawn counters by label() not GPUID: tensor-split backends
+	// all carry GPUID=-1, so keying by GPUID would collide and let any healthy
+	// pair zero a dead pair's counter — preventing respawn forever.
+	key := b.label()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if healthy {
-		m.failureCounts[b.GPUID] = 0
+		m.failureCounts[key] = 0
 		if b.State.Status() != balancer.StatusHealthy {
 			b.State.SetStatus(balancer.StatusHealthy)
-			m.respawnCounts[b.GPUID] = 0
+			m.respawnCounts[key] = 0
 			m.logger.Printf("%s recovered", b.label())
 			m.activity.Emit("backend", b.GPUID, "recovered")
 		}
 		return
 	}
-	m.failureCounts[b.GPUID]++
+	m.failureCounts[key]++
 	b.State.SetStatus(balancer.StatusUnhealthy)
-	m.logger.Printf("%s health check failed (%d/%d)", b.label(), m.failureCounts[b.GPUID], m.cfg.Health.MaxFailures)
-	if m.failureCounts[b.GPUID] >= m.cfg.Health.MaxFailures {
-		m.failureCounts[b.GPUID] = 0
-		m.respawnCounts[b.GPUID]++
-		if m.respawnCounts[b.GPUID] >= maxRespawnAttempts {
+	m.logger.Printf("%s health check failed (%d/%d)", b.label(), m.failureCounts[key], m.cfg.Health.MaxFailures)
+	if m.failureCounts[key] >= m.cfg.Health.MaxFailures {
+		m.failureCounts[key] = 0
+		m.respawnCounts[key]++
+		if m.respawnCounts[key] >= maxRespawnAttempts {
 			b.State.SetStatus(balancer.StatusDead)
 			m.logger.Printf("ERROR: %s marked DEAD after %d respawn attempts", b.label(), maxRespawnAttempts)
 			m.activity.Emit("backend", b.GPUID, "marked DEAD after %d respawn attempts", maxRespawnAttempts)
 			return
 		}
-		m.logger.Printf("respawning %s (attempt %d/%d)", b.label(), m.respawnCounts[b.GPUID], maxRespawnAttempts)
-		m.activity.Emit("backend", b.GPUID, "respawning (attempt %d/%d)", m.respawnCounts[b.GPUID], maxRespawnAttempts)
+		m.logger.Printf("respawning %s (attempt %d/%d)", b.label(), m.respawnCounts[key], maxRespawnAttempts)
+		m.activity.Emit("backend", b.GPUID, "respawning (attempt %d/%d)", m.respawnCounts[key], maxRespawnAttempts)
 		b.Kill()
 		b.Wait()
 		if err := b.Start(); err != nil {

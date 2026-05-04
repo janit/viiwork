@@ -1,0 +1,27 @@
+# L1 bench compose: Qwen3.6-27B 2× pair-TS=2 on GPUs 0-3.
+#
+# Mounts ../models -> /models (NFS-backed via the models symlink).
+# `ipc: host` set so this can later coexist with a second viiwork
+# container on disjoint GPUs (HSA cross-container fix from 2026-05-03).
+#
+# Run / inspect / tear down:
+#   docker compose -f configs/docker-compose.qwen36-2pairs-bench.yaml up -d
+#   docker logs -f viiwork-qwen36-2pairs-bench
+#   docker compose -f configs/docker-compose.qwen36-2pairs-bench.yaml down
+name: viiwork-qwen36-2pairs-bench
+services:
+  viiwork-qwen36-2pairs-bench:
+    image: viiwork:qwen-test
+    container_name: viiwork-qwen36-2pairs-bench
+    network_mode: host
+    ipc: host
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    volumes:
+      - ../models:/models
+      - ./viiwork.qwen36-2pairs-bench.yaml:/etc/viiwork/viiwork.yaml
+    group_add:
+      - video
+      - render
+    restart: "no"

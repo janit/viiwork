@@ -1,0 +1,18 @@
+# Phase 2 partner: gpt-oss-120b TS=5 on GPUs 5-9, port 8095.
+name: viiwork-gptoss-ts5-gpu59
+services:
+  viiwork-gptoss-ts5-gpu59:
+    image: viiwork:qwen-test
+    container_name: viiwork-gptoss-ts5-gpu59
+    network_mode: host
+    ipc: host
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    volumes:
+      - ../models:/models
+      - ./viiwork.gptoss-ts5-gpu59.yaml:/etc/viiwork/viiwork.yaml
+    group_add:
+      - video
+      - render
+    restart: unless-stopped

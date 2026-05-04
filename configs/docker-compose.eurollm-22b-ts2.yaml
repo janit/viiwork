@@ -1,0 +1,35 @@
+# EuroLLM-22B Q5_K_M TS=2 translator compose.
+#
+# Prereqs:
+#   - viiwork:qwen-test image (upstream llama.cpp master; EuroLLM is `llama` arch)
+#   - GPUs 2, 3 free
+#   - Model present at /mnt/p3700/llm-models/EuroLLM-22B-Instruct-2512-Q5_K_M.gguf
+#
+# Run / inspect / tear down:
+#   docker compose -f configs/docker-compose.eurollm-22b-ts2.yaml up -d
+#   docker logs -f viiwork-eurollm-22b-ts2
+#   curl -s http://localhost:8095/v1/status | jq
+#   docker compose -f configs/docker-compose.eurollm-22b-ts2.yaml down
+#
+# Translator half of the two-container split (Gemma 4 prose on 8094 +
+# EuroLLM translator on 8095). ipc: host is the (untested per memory)
+# HSA workaround that lets two ROCm containers coexist on gb1. If the
+# container falls back to CPU on bring-up, retry by setting
+# `privileged: true` instead of (or in addition to) `ipc: host`.
+name: viiwork-eurollm-22b-ts2
+services:
+  viiwork-eurollm-22b-ts2:
+    image: viiwork:qwen-test
+    container_name: viiwork-eurollm-22b-ts2
+    network_mode: host
+    ipc: host
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    volumes:
+      - /mnt/p3700/llm-models:/models:ro
+      - ./viiwork.eurollm-22b-ts2.yaml:/etc/viiwork/viiwork.yaml
+    group_add:
+      - video
+      - render
+    restart: unless-stopped

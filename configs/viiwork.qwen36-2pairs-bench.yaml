@@ -1,0 +1,37 @@
+# L1 bench config: Qwen3.6-27B Q4_K_M, 2× pair-TS=2 on GPUs 0-3.
+#
+# Coding-side candidate to pair with gpt-oss-120b TS=5 on GPUs 5-9.
+# 4 GPUs used; 10th GPU (idle here) reserved for future utility model.
+#
+# Throughput target: ~17 tok/s single-stream per pair, ~30 tok/s aggregate
+# at conc=4 (2 backends × max_in_flight_per_gpu=2).
+server:
+  host: 0.0.0.0
+  port: 8094
+
+model:
+  path: /models/Qwen3.6-27B-Q4_K_M.gguf
+  context_size: 65536
+  n_gpu_layers: -1
+
+gpus:
+  devices: [0, 1, 2, 3]
+  base_port: 9401
+  tensor_split:
+    enabled: true
+    mode: layer
+    group_size: 2
+
+backend:
+  binary: llama-server
+  extra_args: []
+
+health:
+  interval: 5s
+  timeout: 10s
+  max_failures: 3
+
+balancer:
+  latency_window: 30s
+  high_load_threshold: 8
+  max_in_flight_per_gpu: 2

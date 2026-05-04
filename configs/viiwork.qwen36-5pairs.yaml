@@ -12,7 +12,7 @@ server:
 
 model:
   path: /models/Qwen3.6-27B-Q4_K_M.gguf
-  context_size: 8192
+  context_size: 65536
   n_gpu_layers: -1
 
 gpus:

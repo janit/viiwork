@@ -3,7 +3,9 @@
 #
 # Source: unsloth/Qwen3.6-27B-GGUF
 # Size:   ~16.8 GB (Q4_K_M)
-# Target: ./models/Qwen3.6-27B-Q4_K_M.gguf
+# Target: ./models_local/Qwen3.6-27B-Q4_K_M.gguf
+#         (local NVMe, not the NFS-backed models/ — Qwen3.6 is the go-to
+#         local agent and must stay reachable when the NAS is down)
 #
 # Qwen3.6-27B is a 27B dense hybrid model (Gated-DeltaNet + Gated-Attention,
 # same arch family as 3.5-A3B). Unlike 3.5-A3B (MoE, 3B active), all 27B
@@ -15,7 +17,7 @@ set -euo pipefail
 
 REPO="unsloth/Qwen3.6-27B-GGUF"
 FILE="Qwen3.6-27B-Q4_K_M.gguf"
-DEST_DIR="$(cd "$(dirname "$0")/.." && pwd)/models"
+DEST_DIR="$(cd "$(dirname "$0")/.." && pwd)/models_local"
 
 mkdir -p "$DEST_DIR"
 
