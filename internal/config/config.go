@@ -220,12 +220,11 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("gpus.tensor_split.main_gpu (%d) must be a valid index 0..%d",
 				c.GPUs.TensorSplit.MainGPU, groupSize-1)
 		}
-		// llama.cpp tensor-split serves a single slot per backend — concurrent
-		// requests queue at the slot. Force parallel=1 regardless of user
-		// setting; the proxy still queues at the front via balancer
-		// max_in_flight. With multiple groups the balancer routes across
-		// groups exactly like it does across replica backends.
-		c.Model.Parallel = 1
+		// model.parallel works in tensor-split mode too: llama-server splits
+		// its --ctx-size budget across N slots, each handling one in-flight
+		// request. Tradeoff is per-slot context (total/N) and shared GPU
+		// compute vs. the all-GPUs-idle waste of single-stream TS. Left to
+		// the operator to tune.
 	} else {
 		// Replica mode: one process per GPU on consecutive ports.
 		if c.GPUs.BasePort < 1 || c.GPUs.BasePort+c.GPUs.Count-1 > 65535 {

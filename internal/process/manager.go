@@ -68,11 +68,12 @@ func NewManager(cfg *config.Config, logWriter io.Writer, sampler PowerSampler, t
 		// Tensor-split mode: partition devices into consecutive groups of
 		// TensorSplit.GroupSize; spawn one backend per group on
 		// base_port+i. group_size=0 (legacy) means a single group spanning
-		// every device. Each backend serves a single slot — Model.Parallel
-		// is forced to 1 by config.Validate. Multiple groups give the
-		// balancer N tensor-split backends to route across, identical in
-		// behavior to N replica backends but with per-request speed scaled
-		// by the group's combined compute.
+		// every device. Each backend honors Model.Parallel for in-process
+		// concurrent slots (default 1; bump to share idle GPU compute
+		// across requests at the cost of per-slot context). Multiple
+		// groups give the balancer N tensor-split backends to route
+		// across, identical in behavior to N replica backends but with
+		// per-request speed scaled by the group's combined compute.
 		groupSize := cfg.GPUs.TensorSplit.GroupSize
 		if groupSize == 0 {
 			groupSize = len(devices)
@@ -96,7 +97,7 @@ func NewManager(cfg *config.Config, logWriter io.Writer, sampler PowerSampler, t
 				Port:            port,
 				ContextSize:     cfg.Model.ContextSize,
 				NGPULayers:      cfg.Model.NGPULayers,
-				Parallel:        1,
+				Parallel:        cfg.Model.Parallel,
 				Binary:          cfg.Backend.Binary,
 				ExtraArgs:       cfg.Backend.ExtraArgs,
 				HealthTimeout:   cfg.Health.Timeout.Duration,

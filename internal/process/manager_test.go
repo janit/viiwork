@@ -53,6 +53,7 @@ func TestManagerTensorSplitSingleBackend(t *testing.T) {
 	cfg.GPUs.BasePort = 9001
 	cfg.GPUs.TensorSplit.Enabled = true
 	cfg.GPUs.TensorSplit.Mode = "layer"
+	cfg.Model.Parallel = 3
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
 	}
@@ -77,8 +78,8 @@ func TestManagerTensorSplitSingleBackend(t *testing.T) {
 	if b.Port != 9001 {
 		t.Errorf("expected port 9001 (single port in tensor-split mode), got %d", b.Port)
 	}
-	if b.Parallel != 1 {
-		t.Errorf("expected parallel=1 (forced), got %d", b.Parallel)
+	if b.Parallel != 3 {
+		t.Errorf("expected parallel=3 (from cfg.Model.Parallel), got %d", b.Parallel)
 	}
 	if b.State == nil {
 		t.Error("expected non-nil State")
@@ -92,6 +93,7 @@ func TestManagerTensorSplitGroups(t *testing.T) {
 	cfg.GPUs.BasePort = 9401
 	cfg.GPUs.TensorSplit.Enabled = true
 	cfg.GPUs.TensorSplit.GroupSize = 2
+	cfg.Model.Parallel = 2
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
 	}
@@ -114,8 +116,8 @@ func TestManagerTensorSplitGroups(t *testing.T) {
 		if b.Port != 9401+i {
 			t.Errorf("backend %d: expected port %d, got %d", i, 9401+i, b.Port)
 		}
-		if b.Parallel != 1 {
-			t.Errorf("backend %d: expected parallel=1 (forced), got %d", i, b.Parallel)
+		if b.Parallel != 2 {
+			t.Errorf("backend %d: expected parallel=2 (from cfg.Model.Parallel), got %d", i, b.Parallel)
 		}
 	}
 }
