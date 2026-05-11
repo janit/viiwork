@@ -115,9 +115,9 @@ gpus:
 	if len(cfg.GPUs.TensorSplit.Weights) != 4 {
 		t.Errorf("expected 4 weights, got %d", len(cfg.GPUs.TensorSplit.Weights))
 	}
-	// parallel must be forced to 1 in tensor-split mode regardless of user setting
-	if cfg.Model.Parallel != 1 {
-		t.Errorf("expected model.parallel forced to 1 in tensor-split mode, got %d", cfg.Model.Parallel)
+	// parallel is honored in tensor-split mode (was previously forced to 1)
+	if cfg.Model.Parallel != 4 {
+		t.Errorf("expected model.parallel=4 (user setting) preserved in tensor-split mode, got %d", cfg.Model.Parallel)
 	}
 	if cfg.GPUs.Count != 4 {
 		t.Errorf("expected count derived from devices=4, got %d", cfg.GPUs.Count)

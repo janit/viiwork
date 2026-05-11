@@ -17,8 +17,11 @@ server:
 model:
   # llama-server auto-loads the second part from the same directory.
   path: /models/openai_gpt-oss-120b-MXFP4_MOE-00001-of-00002.gguf
-  context_size: 16384
+  context_size: 102400
   n_gpu_layers: -1
+  # 4 in-process slots; per-slot ctx = 102400/4 = 25600. Trades single-stream
+  # tok/s for filling idle GPU compute when multiple requests are in flight.
+  parallel: 4
 
 gpus:
   devices: [0, 1, 2, 3, 4]
