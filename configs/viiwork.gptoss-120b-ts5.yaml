@@ -43,7 +43,10 @@ health:
 balancer:
   latency_window: 30s
   high_load_threshold: 8
-  max_in_flight_per_gpu: 2
+  # Per-backend cap on routed in-flight requests. Match model.parallel so
+  # the balancer can fill all 4 llama-server slots; higher just queues
+  # inside llama-server (no benefit, adds latency).
+  max_in_flight_per_gpu: 4
 
 peers:
   hosts:

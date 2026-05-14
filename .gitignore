@@ -11,3 +11,5 @@ bench-harness/__pycache__/
 bench-harness/results/
 .claude/
 *.swp
+configs/docker-compose.qwen36-pair-gpu56.yaml
+configs/viiwork.qwen36-pair-gpu56.yaml

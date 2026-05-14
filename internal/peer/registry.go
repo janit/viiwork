@@ -148,7 +148,7 @@ func (r *Registry) FindRoutesForModel(modelName string) []Route {
 		if p.Status() != StatusReachable { continue }
 		for _, m := range p.Models() {
 			if m == modelName {
-				routes = append(routes, Route{Type: RoutePeer, Addr: p.Addr, InFlight: p.TotalInFlight()})
+				routes = append(routes, Route{Type: RoutePeer, Addr: p.Addr, Peer: p, InFlight: p.TotalInFlight()})
 				break
 			}
 		}

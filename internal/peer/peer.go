@@ -1,7 +1,10 @@
 // internal/peer/peer.go
 package peer
 
-import "sync"
+import (
+	"sync"
+	"sync/atomic"
+)
 
 type PeerStatus int
 
@@ -50,6 +53,13 @@ type CostBreakdownJSON struct {
 
 type PeerState struct {
 	Addr string
+
+	// localInFlight tracks requests this node has dispatched to the peer and
+	// not yet received a response for. It's updated write-through on every
+	// peer-bound proxy call so the picker isn't blind between the polls that
+	// refresh totalInFlight (poll interval is typically 10s, much longer than
+	// a burst). Combined with totalInFlight via max() in TotalInFlight().
+	localInFlight atomic.Int64
 
 	mu              sync.RWMutex
 	nodeID          string
@@ -110,7 +120,28 @@ func (p *PeerState) Models() []string {
 	p.mu.RLock(); defer p.mu.RUnlock()
 	out := make([]string, len(p.models)); copy(out, p.models); return out
 }
-func (p *PeerState) TotalInFlight() int64 { p.mu.RLock(); defer p.mu.RUnlock(); return p.totalInFlight }
+
+// TotalInFlight returns the larger of the last-polled in-flight count and the
+// write-through local count. Polled data reflects traffic from all mesh nodes
+// (correct across nodes but stale between polls); local data tracks decisions
+// this node has just made (fresh, but only ours). Max keeps the picker from
+// underestimating load in either dimension.
+func (p *PeerState) TotalInFlight() int64 {
+	p.mu.RLock()
+	polled := p.totalInFlight
+	p.mu.RUnlock()
+	local := p.localInFlight.Load()
+	if local > polled {
+		return local
+	}
+	return polled
+}
+
+// IncLocalInFlight is called by the proxy when a peer-bound request is
+// dispatched. Pair with DecLocalInFlight when the request completes.
+func (p *PeerState) IncLocalInFlight() { p.localInFlight.Add(1) }
+func (p *PeerState) DecLocalInFlight() { p.localInFlight.Add(-1) }
+func (p *PeerState) LocalInFlight() int64 { return p.localInFlight.Load() }
 func (p *PeerState) HealthyBackends() int { p.mu.RLock(); defer p.mu.RUnlock(); return p.healthyBackends }
 
 func (p *PeerState) PowerWatts() float64 {

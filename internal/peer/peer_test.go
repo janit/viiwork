@@ -61,6 +61,38 @@ func TestPeerStatePowerUnavailable(t *testing.T) {
 	}
 }
 
+func TestPeerStateLocalInFlight(t *testing.T) {
+	p := NewPeerState("192.168.1.10:8080")
+	p.Update(StatusResponse{NodeID: "viiwork-x", Models: []string{"m"}, TotalInFlight: 2})
+
+	// max(polled=2, local=0) == 2
+	if got := p.TotalInFlight(); got != 2 {
+		t.Fatalf("expected 2 from polled, got %d", got)
+	}
+
+	// Dispatch three requests this node has not yet seen reflected by the
+	// peer poll. TotalInFlight should reflect the larger local count.
+	p.IncLocalInFlight()
+	p.IncLocalInFlight()
+	p.IncLocalInFlight()
+	if got := p.TotalInFlight(); got != 3 {
+		t.Fatalf("expected 3 from local write-through, got %d (polled=2 local=%d)", got, p.LocalInFlight())
+	}
+
+	// As responses come back, local drains; polled (older) wins again.
+	p.DecLocalInFlight()
+	p.DecLocalInFlight()
+	if got := p.TotalInFlight(); got != 2 {
+		t.Fatalf("expected 2 from polled after drain, got %d", got)
+	}
+
+	// A fresh poll bumps the polled count; max still works.
+	p.Update(StatusResponse{NodeID: "viiwork-x", Models: []string{"m"}, TotalInFlight: 7})
+	if got := p.TotalInFlight(); got != 7 {
+		t.Fatalf("expected 7 after poll, got %d", got)
+	}
+}
+
 func TestPeerStateCostFields(t *testing.T) {
 	p := NewPeerState("192.168.1.10:8080")
 	p.Update(StatusResponse{
