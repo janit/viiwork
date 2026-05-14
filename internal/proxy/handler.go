@@ -317,7 +317,16 @@ func (h *Handler) handleProxy(w http.ResponseWriter, r *http.Request) {
 		if h.activity != nil {
 			h.activity.EmitRequestTask(rid, -1, taskID, "%s → peer %s", model, route.Addr)
 		}
+		// Write-through in-flight: subsequent picks on this node see the
+		// dispatch immediately, before the next poll of /v1/status updates
+		// the peer's reported total.
+		if route.Peer != nil {
+			route.Peer.IncLocalInFlight()
+		}
 		proxyToPeer(w, r, route.Addr, h.registry.NodeID(), thinkDisabled)
+		if route.Peer != nil {
+			route.Peer.DecLocalInFlight()
+		}
 		elapsed := time.Since(start).Round(time.Millisecond)
 		log.Printf("[debug] %s → peer %s finished (elapsed=%s)", model, route.Addr, elapsed)
 		if h.activity != nil {
