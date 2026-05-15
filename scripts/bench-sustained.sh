@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 # Sustained load benchmark for viiwork cluster
 # Usage: ./scripts/bench-sustained.sh [URL] [CONCURRENCY] [DURATION_SECS]
+#
+# Env:
+#   PROMPT_SIZE=short|medium|long   pick a built-in prompt (default: medium)
+#   PROMPT_FILE=path/to/prompt.txt  use a custom prompt from a file
+#   PROMPT="literal string"         use a literal prompt (overrides above)
+#
+# Sustained-load tests are most informative under real prompt sizes — short
+# prompts let backends idle on the GPU and underestimate prompt-eval CPU
+# pressure. Default size is medium; use long when validating production configs.
 
 set -euo pipefail
 
@@ -9,8 +18,55 @@ CONC="${2:-11}"
 DURATION="${3:-60}"
 MODEL="${MODEL:-qwen2.5-coder-14b-instruct-q6_k}"
 MAX_TOKENS="${MAX_TOKENS:-256}"
-PROMPT="${PROMPT:-Write a Python function that implements merge sort with detailed comments explaining each step.}"
+
+PROMPT_SHORT="Write a Python function that implements merge sort with detailed comments explaining each step."
+read -r -d '' PROMPT_MEDIUM <<'EOF' || true
+You are an experienced Python developer. Implement merge sort from scratch in
+idiomatic Python. The function should take a list of comparable items and
+return a new sorted list, leaving the input unchanged. Include detailed
+docstrings, type hints, inline comments at every nontrivial branch, and a
+short main block at the bottom that demonstrates the function on three inputs:
+an already-sorted list, a reverse-sorted list, and a list with duplicates.
+EOF
+read -r -d '' PROMPT_LONG <<'EOF' || true
+You are an experienced Python developer doing a code review for a junior
+colleague. They have written a merge-sort implementation and want feedback on
+correctness, readability, and performance. Please write the merge-sort function
+yourself from scratch first, using idiomatic Python 3. The function should take
+a list of comparable items and return a new sorted list, leaving the input
+unchanged. Then walk through the algorithm step by step, explaining the
+recursion, the merge step, the asymptotic complexity, why merge sort is stable,
+and where it is preferable to quicksort or timsort. Include comprehensive
+docstrings with parameter descriptions, return value, raises, and examples.
+Add type hints throughout. Add inline comments at every nontrivial branch,
+especially in the merge step where readers commonly get confused by the two
+index variables. After the function, include a short main block at the bottom
+that demonstrates the function on six inputs: an already-sorted list, a
+reverse-sorted list, a list with duplicates, an empty list, a single-element
+list, and a list of mixed positive and negative integers.
+EOF
+
+if [[ -z "${PROMPT:-}" ]]; then
+    if [[ -n "${PROMPT_FILE:-}" ]]; then
+        [[ -r "$PROMPT_FILE" ]] || { echo "ERROR: cannot read PROMPT_FILE=$PROMPT_FILE" >&2; exit 1; }
+        PROMPT=$(<"$PROMPT_FILE")
+    else
+        case "${PROMPT_SIZE:-medium}" in
+            short)  PROMPT="$PROMPT_SHORT" ;;
+            medium) PROMPT="$PROMPT_MEDIUM" ;;
+            long)   PROMPT="$PROMPT_LONG" ;;
+            *) echo "ERROR: unknown PROMPT_SIZE=${PROMPT_SIZE} (use short, medium, long)" >&2; exit 1 ;;
+        esac
+    fi
+fi
+
 RESULTS_DIR=$(mktemp -d)
+
+# JSON-escape the prompt once up front: multi-line bodies and embedded quotes
+# would otherwise produce invalid request JSON.
+PROMPT_JSON=$(python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' <<<"$PROMPT" 2>/dev/null \
+    || jq -Rs . <<<"$PROMPT" 2>/dev/null \
+    || printf '%s' "\"$(printf '%s' "$PROMPT" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' ')\"")
 
 COUNTER=0
 OK_COUNT=0
@@ -35,7 +91,7 @@ request() {
         -H "Content-Type: application/json" \
         -d '{
             "model": "'"${MODEL}"'",
-            "messages": [{"role": "user", "content": "'"${PROMPT}"'"}],
+            "messages": [{"role": "user", "content": '"${PROMPT_JSON}"'}],
             "max_tokens": '"${MAX_TOKENS}"',
             "temperature": 0.7
         }' 2>/dev/null) || true
@@ -69,6 +125,7 @@ echo " Target:      ${URL}"
 echo " Model:       ${MODEL}"
 echo " Concurrency: ${CONC}"
 echo " Duration:    ${DURATION}s"
+echo " Prompt:      ${PROMPT_SIZE:-medium} (~${#PROMPT} chars)"
 echo "========================================="
 echo ""
 

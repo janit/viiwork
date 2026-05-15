@@ -22,9 +22,15 @@ func Defaults() Config {
 			ExtraArgs: []string{"--reasoning-format", "deepseek"},
 		},
 		Health: HealthConfig{
-			Interval:    Duration{5 * time.Second},
-			Timeout:     Duration{3 * time.Second},
-			MaxFailures: 3,
+			Interval: Duration{5 * time.Second},
+			// 30s, not 3s: on CPU-bound hosts a busy prompt-eval starves the
+			// llama-server's /health responder, and an aggressive timeout
+			// triggers 3/3 failures → respawn → cold reload → cascade. Field
+			// report on 4-core EPYC 3151 took 502 rate from 40% (3s) to 0%
+			// (30s) at concurrency 16.
+			Timeout:         Duration{30 * time.Second},
+			MaxFailures:     3,
+			RespawnGrace:    Duration{60 * time.Second},
 		},
 		Balancer: BalancerConfig{
 			LatencyWindow:     Duration{30 * time.Second},

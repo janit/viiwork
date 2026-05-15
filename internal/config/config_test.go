@@ -75,6 +75,15 @@ func TestDefaults(t *testing.T) {
 	if cfg.Balancer.MaxInFlightPerGPU != 4 {
 		t.Errorf("expected default max_in_flight 4, got %d", cfg.Balancer.MaxInFlightPerGPU)
 	}
+	if cfg.Health.Timeout.Duration != 30*time.Second {
+		t.Errorf("expected default health.timeout 30s, got %v", cfg.Health.Timeout.Duration)
+	}
+	if cfg.Health.RespawnGrace.Duration != 60*time.Second {
+		t.Errorf("expected default health.respawn_grace 60s, got %v", cfg.Health.RespawnGrace.Duration)
+	}
+	if cfg.Backend.Threads != 0 {
+		t.Errorf("expected default backend.threads 0 (auto-derive), got %d", cfg.Backend.Threads)
+	}
 }
 
 func TestValidation(t *testing.T) {
