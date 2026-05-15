@@ -18,11 +18,22 @@ gpus:
 backend:
   binary: llama-server
   extra_args: ["--reasoning-format", "deepseek"]  # enables <think> tag parsing for thinking models
+  # threads: 0  # 0 = auto-derive max(1, nproc/n_backends). Override to pin a
+  #             # specific count. Bypassed entirely if --threads is in extra_args.
 
 health:
   interval: 5s
-  timeout: 3s
+  # timeout: 30s default. CPU-bound hosts (especially 4-core w/ many backends)
+  # benefit from the generous default — llama-server's /health responder gets
+  # starved during prompt-eval contention and an aggressive timeout triggers
+  # respawn cascades. Lower this only if you're confident in your CPU headroom.
+  timeout: 30s
   max_failures: 3
+  # respawn_grace: max wait for in-flight requests to drain on an unhealthy
+  # backend before forcing respawn. 0 disables (legacy: kill immediately on
+  # MaxFailures). 60s default lets in-flight requests finish so they don't
+  # all get killed by a slow-but-recoverable backend.
+  respawn_grace: 60s
 
 balancer:
   latency_window: 30s

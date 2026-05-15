@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -48,10 +49,17 @@ type Manager struct {
 	mu            sync.Mutex
 	failureCounts map[string]int
 	respawnCounts map[string]int
-	sampler       PowerSampler
-	tracker       CostTracker
-	collector     GPUCollector
-	activity      *activity.Log
+	// respawnDeferredAt tracks the wall-clock time at which a backend first
+	// reached the failure threshold but had in-flight requests. While
+	// nonzero, respawn is deferred so in-flight requests can drain. Cleared
+	// on recover or once grace expires and the respawn proceeds.
+	respawnDeferredAt map[string]time.Time
+	sampler           PowerSampler
+	tracker           CostTracker
+	collector         GPUCollector
+	activity          *activity.Log
+	// now is wall-clock time. Overridable in tests.
+	now func() time.Time
 }
 
 func NewManager(cfg *config.Config, logWriter io.Writer, sampler PowerSampler, tracker CostTracker, collector GPUCollector, actLog *activity.Log) *Manager {
@@ -61,7 +69,12 @@ func NewManager(cfg *config.Config, logWriter io.Writer, sampler PowerSampler, t
 	m := &Manager{
 		cfg: cfg, logger: log.New(os.Stdout, "[manager] ", log.LstdFlags),
 		failureCounts: make(map[string]int), respawnCounts: make(map[string]int),
-		sampler: sampler, tracker: tracker, collector: collector, activity: actLog,
+		respawnDeferredAt: make(map[string]time.Time),
+		sampler:           sampler,
+		tracker:           tracker,
+		collector:         collector,
+		activity:          actLog,
+		now:               time.Now,
 	}
 	devices := cfg.GPUs.ResolvedDevices()
 	if cfg.GPUs.TensorSplit.Enabled {
@@ -100,6 +113,7 @@ func NewManager(cfg *config.Config, logWriter io.Writer, sampler PowerSampler, t
 				Parallel:        cfg.Model.Parallel,
 				Binary:          cfg.Backend.Binary,
 				ExtraArgs:       cfg.Backend.ExtraArgs,
+				Threads:         cfg.Backend.Threads,
 				HealthTimeout:   cfg.Health.Timeout.Duration,
 				PowerLimitWatts: cfg.GPUs.PowerLimitWatts,
 				State:           balancer.NewBackendState(-1, addr),
@@ -116,6 +130,7 @@ func NewManager(cfg *config.Config, logWriter io.Writer, sampler PowerSampler, t
 				GPUID: gpuID, ModelPath: cfg.Model.Path, Port: port,
 				ContextSize: cfg.Model.ContextSize, NGPULayers: cfg.Model.NGPULayers, Parallel: cfg.Model.Parallel,
 				Binary: cfg.Backend.Binary, ExtraArgs: cfg.Backend.ExtraArgs,
+				Threads:         cfg.Backend.Threads,
 				HealthTimeout:   cfg.Health.Timeout.Duration,
 				PowerLimitWatts: cfg.GPUs.PowerLimitWatts,
 				State: balancer.NewBackendState(gpuID, addr), LogWriter: logWriter,
@@ -123,7 +138,54 @@ func NewManager(cfg *config.Config, logWriter io.Writer, sampler PowerSampler, t
 		}
 	}
 	m.maybeAutoNoMmap()
+	m.applyDefaultThreads(runtime.NumCPU())
 	return m
+}
+
+// applyDefaultThreads auto-derives a per-backend --threads value when the
+// user hasn't set one, so N backends don't all default to llama-server's
+// own nproc/2 default and oversubscribe the host. The chosen value is
+// max(1, nproc / n_backends) — a fair-share split of the available
+// logical CPUs. If --threads is already in extra_args, that wins and we
+// don't touch the backend. A startup warning fires if the configured
+// total still exceeds nproc.
+//
+// Field report on 4-core/8-SMT EPYC 3151 with 10 backends saw the default
+// produce ~9 threads/backend × 10 backends = 90 threads on 8 SMT cores;
+// backends thrashed and crashed under real long-prompt load.
+func (m *Manager) applyDefaultThreads(nproc int) {
+	if nproc < 1 || len(m.Backends) == 0 {
+		return
+	}
+	derived := nproc / len(m.Backends)
+	if derived < 1 {
+		derived = 1
+	}
+	totalConfigured := 0
+	autoCount := 0
+	for _, b := range m.Backends {
+		if hasThreadsArg(b.ExtraArgs) {
+			totalConfigured += parseThreadsArg(b.ExtraArgs)
+			continue
+		}
+		if b.Threads == 0 {
+			b.Threads = derived
+			autoCount++
+		}
+		totalConfigured += b.Threads
+	}
+	if autoCount > 0 {
+		m.logger.Printf("auto-set --threads=%d on %d backend(s) (nproc=%d, n_backends=%d). "+
+			"Override with backend.threads in viiwork.yaml or --threads in backend.extra_args.",
+			derived, autoCount, nproc, len(m.Backends))
+	}
+	if totalConfigured > nproc {
+		m.logger.Printf("WARNING: total backend threads = %d exceeds nproc = %d "+
+			"(n_backends=%d). Backends will contend for CPU during prompt-eval, "+
+			"which can starve /health responses and trigger respawn cascades. "+
+			"Lower backend.threads or run fewer backends.",
+			totalConfigured, nproc, len(m.Backends))
+	}
 }
 
 // maybeAutoNoMmap inspects each backend's model file size and host RAM, and
@@ -409,7 +471,13 @@ func (m *Manager) checkAndManage(ctx context.Context, b *Backend) {
 	// Health check outside the lock to avoid holding mutex during network I/O
 	healthy := b.CheckHealth(ctx)
 	b.State.SetRSSMB(b.ReadRSSMB())
+	m.handleHealthResult(b, healthy)
+}
 
+// handleHealthResult is the pure state-machine portion of checkAndManage,
+// split out so the deferral / respawn decision tree can be exercised in
+// tests without a live llama-server subprocess.
+func (m *Manager) handleHealthResult(b *Backend, healthy bool) {
 	// Key failure/respawn counters by label() not GPUID: tensor-split backends
 	// all carry GPUID=-1, so keying by GPUID would collide and let any healthy
 	// pair zero a dead pair's counter — preventing respawn forever.
@@ -418,6 +486,9 @@ func (m *Manager) checkAndManage(ctx context.Context, b *Backend) {
 	defer m.mu.Unlock()
 	if healthy {
 		m.failureCounts[key] = 0
+		if !m.respawnDeferredAt[key].IsZero() {
+			delete(m.respawnDeferredAt, key)
+		}
 		if b.State.Status() != balancer.StatusHealthy {
 			b.State.SetStatus(balancer.StatusHealthy)
 			m.respawnCounts[key] = 0
@@ -430,6 +501,34 @@ func (m *Manager) checkAndManage(ctx context.Context, b *Backend) {
 	b.State.SetStatus(balancer.StatusUnhealthy)
 	m.logger.Printf("%s health check failed (%d/%d)", b.label(), m.failureCounts[key], m.cfg.Health.MaxFailures)
 	if m.failureCounts[key] >= m.cfg.Health.MaxFailures {
+		// shed-before-respawn: if in-flight requests are still draining and
+		// the grace period hasn't expired, defer the kill so those requests
+		// can finish instead of returning 502 to the client. Healthy
+		// backends keep absorbing new requests because Pick filters on
+		// StatusHealthy and this one is already Unhealthy.
+		grace := m.cfg.Health.RespawnGrace.Duration
+		if grace > 0 {
+			inFlight := b.State.InFlight()
+			if inFlight > 0 {
+				deferredAt := m.respawnDeferredAt[key]
+				if deferredAt.IsZero() {
+					deferredAt = m.now()
+					m.respawnDeferredAt[key] = deferredAt
+					m.logger.Printf("%s respawn deferred: %d request(s) in flight, draining (grace %s)",
+						b.label(), inFlight, grace)
+					m.activity.Emit("backend", b.GPUID,
+						"respawn deferred: %d in-flight, draining (grace %s)", inFlight, grace)
+				}
+				if m.now().Sub(deferredAt) < grace {
+					return // keep waiting; will be re-evaluated next tick
+				}
+				m.logger.Printf("%s respawn grace expired (%s) with %d still in flight; forcing respawn",
+					b.label(), grace, inFlight)
+				m.activity.Emit("backend", b.GPUID,
+					"respawn grace expired (%s) with %d still in flight", grace, inFlight)
+			}
+			delete(m.respawnDeferredAt, key)
+		}
 		m.failureCounts[key] = 0
 		m.respawnCounts[key]++
 		if m.respawnCounts[key] >= maxRespawnAttempts {

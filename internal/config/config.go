@@ -81,12 +81,24 @@ func (g *GPUConfig) ResolvedDevices() []int {
 type BackendConfig struct {
 	Binary    string   `yaml:"binary"`
 	ExtraArgs []string `yaml:"extra_args"`
+	// Threads is the per-backend llama-server --threads value. When 0, viiwork
+	// auto-derives max(1, nproc/n_backends) at startup so N backends don't all
+	// default to nproc/2 each and oversubscribe the host. Pass --threads in
+	// extra_args to bypass this entirely (the auto-derive defers to user
+	// args). See field report on 4-core EPYC 3151 hosts running 10 backends.
+	Threads int `yaml:"threads"`
 }
 
 type HealthConfig struct {
 	Interval    Duration `yaml:"interval"`
 	Timeout     Duration `yaml:"timeout"`
 	MaxFailures int      `yaml:"max_failures"`
+	// RespawnGrace is the maximum time to wait for in-flight requests on an
+	// unhealthy backend to drain before forcing a respawn. Setting this >0
+	// prevents the 502 cascade where a slow-but-recoverable backend hits the
+	// failure threshold and gets killed with N requests in flight. Once grace
+	// expires or in-flight reaches 0, the respawn proceeds normally.
+	RespawnGrace Duration `yaml:"respawn_grace"`
 }
 
 type BalancerConfig struct {
@@ -177,6 +189,12 @@ func (c *Config) Validate() error {
 	}
 	if c.Health.MaxFailures < 1 {
 		return fmt.Errorf("health.max_failures must be >= 1")
+	}
+	if c.Health.RespawnGrace.Duration < 0 {
+		return fmt.Errorf("health.respawn_grace must be >= 0")
+	}
+	if c.Backend.Threads < 0 {
+		return fmt.Errorf("backend.threads must be >= 0 (0 = auto-derive max(1, nproc/n_backends))")
 	}
 	if c.GPUs.TensorSplit.Enabled {
 		// Tensor-split mode: one or more backends, each spanning GroupSize
@@ -303,6 +321,18 @@ func (c *Config) ApplyOverrides(overrides map[string]string) error {
 				return fmt.Errorf("invalid health.timeout: %w", err)
 			}
 			c.Health.Timeout = Duration{d}
+		case "health.respawn_grace":
+			d, err := time.ParseDuration(val)
+			if err != nil {
+				return fmt.Errorf("invalid health.respawn_grace: %w", err)
+			}
+			c.Health.RespawnGrace = Duration{d}
+		case "backend.threads":
+			v, err := strconv.Atoi(val)
+			if err != nil {
+				return fmt.Errorf("invalid backend.threads: %w", err)
+			}
+			c.Backend.Threads = v
 		case "balancer.latency_window":
 			d, err := time.ParseDuration(val)
 			if err != nil {

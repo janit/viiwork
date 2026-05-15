@@ -1,9 +1,14 @@
 package process
 
 import (
+	"io"
+	"log"
 	"os"
 	"testing"
+	"time"
 
+	"github.com/janit/viiwork/internal/activity"
+	"github.com/janit/viiwork/internal/balancer"
 	"github.com/janit/viiwork/internal/config"
 )
 
@@ -398,6 +403,276 @@ func TestModelTotalSizeMultiPartWithMissingPart(t *testing.T) {
 	}
 	if got != 200 {
 		t.Errorf("expected 200 (only 2 parts present), got %d", got)
+	}
+}
+
+// resetThreads clears auto-derived Threads on all backends so a follow-up
+// applyDefaultThreads call (with a different nproc) actually re-derives them.
+// NewManager already runs applyDefaultThreads(runtime.NumCPU()) so a freshly
+// constructed manager has Threads set, which would otherwise short-circuit
+// the subsequent explicit-nproc call.
+func resetThreads(m *Manager) {
+	for _, b := range m.Backends {
+		b.Threads = 0
+	}
+}
+
+func TestApplyDefaultThreadsAutoDerives(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Model.Path = "/models/test.gguf"
+	cfg.GPUs.Devices = []int{0, 1, 2, 3}
+	m := NewManager(&cfg, nil, nil, nil, nil, nil)
+	resetThreads(m)
+	// Pretend host has 8 logical CPUs: 8/4 = 2 threads/backend.
+	m.applyDefaultThreads(8)
+	for i, b := range m.Backends {
+		if b.Threads != 2 {
+			t.Errorf("backend %d: expected Threads=2 (8 nproc / 4 backends), got %d", i, b.Threads)
+		}
+	}
+}
+
+func TestApplyDefaultThreadsRespectsExplicitExtraArg(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Model.Path = "/models/test.gguf"
+	cfg.GPUs.Devices = []int{0, 1}
+	cfg.Backend.ExtraArgs = []string{"--threads", "3"}
+	m := NewManager(&cfg, nil, nil, nil, nil, nil)
+	resetThreads(m)
+	m.applyDefaultThreads(8)
+	for i, b := range m.Backends {
+		// Auto-derive should defer to the explicit --threads in extra_args.
+		if b.Threads != 0 {
+			t.Errorf("backend %d: expected Threads=0 (extra_args wins), got %d", i, b.Threads)
+		}
+	}
+}
+
+func TestApplyDefaultThreadsRespectsConfiguredValue(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Model.Path = "/models/test.gguf"
+	cfg.GPUs.Devices = []int{0, 1, 2}
+	cfg.Backend.Threads = 5
+	m := NewManager(&cfg, nil, nil, nil, nil, nil)
+	// Leave Threads alone here: the user explicitly set 5 in cfg, which
+	// propagates to each backend in the constructor. resetThreads would
+	// erase that signal, which is exactly what we DON'T want to test.
+	m.applyDefaultThreads(8)
+	for i, b := range m.Backends {
+		if b.Threads != 5 {
+			t.Errorf("backend %d: expected Threads=5 (user setting), got %d", i, b.Threads)
+		}
+	}
+}
+
+func TestApplyDefaultThreadsFloorsAtOne(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Model.Path = "/models/test.gguf"
+	cfg.GPUs.Devices = []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}
+	m := NewManager(&cfg, nil, nil, nil, nil, nil)
+	resetThreads(m)
+	// 4 nproc / 10 backends would round to 0; floor to 1.
+	m.applyDefaultThreads(4)
+	for i, b := range m.Backends {
+		if b.Threads != 1 {
+			t.Errorf("backend %d: expected Threads=1 (floor), got %d", i, b.Threads)
+		}
+	}
+}
+
+func TestBuildArgsAppendsThreads(t *testing.T) {
+	b := &Backend{
+		ModelPath: "/m.gguf", Port: 9001, ContextSize: 4096, NGPULayers: -1, Parallel: 1,
+		Threads: 2,
+	}
+	args := b.buildArgs()
+	found := false
+	for i, a := range args {
+		if a == "--threads" && i+1 < len(args) && args[i+1] == "2" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected --threads 2 in args, got %v", args)
+	}
+}
+
+func TestBuildArgsSkipsThreadsWhenInExtraArgs(t *testing.T) {
+	b := &Backend{
+		ModelPath: "/m.gguf", Port: 9001, ContextSize: 4096, NGPULayers: -1, Parallel: 1,
+		Threads: 2, ExtraArgs: []string{"--threads", "7"},
+	}
+	args := b.buildArgs()
+	// Only one --threads should be present, and it should be the user's 7.
+	count := 0
+	value := ""
+	for i, a := range args {
+		if a == "--threads" {
+			count++
+			if i+1 < len(args) {
+				value = args[i+1]
+			}
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly one --threads in args, got %d (%v)", count, args)
+	}
+	if value != "7" {
+		t.Errorf("expected --threads 7 (from extra_args), got --threads %s", value)
+	}
+}
+
+// fakeBackend returns a Backend with a State suitable for handleHealthResult
+// tests: no real process, but a valid State so InFlight / SetStatus work.
+// Binary is set to a nonexistent path so Start() fails cleanly (the
+// state-machine tests only assert respawn counters, never actual exec).
+func fakeBackend(label int) *Backend {
+	b := &Backend{
+		GPUID:  label,
+		Binary: "/__viiwork_test_no_such_binary__",
+		State:  balancer.NewBackendState(label, "127.0.0.1:0"),
+	}
+	return b
+}
+
+// newTestManager builds a manager with N fake backends, deterministic clock,
+// and configured grace period. Avoids NewManager so we skip the full
+// constructor side-effects (auto-no-mmap, applyDefaultThreads).
+func newTestManager(t *testing.T, grace time.Duration, backends ...*Backend) *Manager {
+	t.Helper()
+	cfg := config.Defaults()
+	cfg.Model.Path = "/dev/null"
+	cfg.Health.MaxFailures = 3
+	cfg.Health.RespawnGrace = config.Duration{Duration: grace}
+	return &Manager{
+		Backends:          backends,
+		cfg:               &cfg,
+		logger:            log.New(io.Discard, "", 0),
+		failureCounts:     make(map[string]int),
+		respawnCounts:     make(map[string]int),
+		respawnDeferredAt: make(map[string]time.Time),
+		activity:          activity.NewLog(),
+	}
+}
+
+func TestRespawnDeferredWhileInFlight(t *testing.T) {
+	b := fakeBackend(0)
+	b.State.SetStatus(balancer.StatusHealthy)
+	b.State.IncrInFlight() // one in-flight
+	now := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
+	m := newTestManager(t, 60*time.Second, b)
+	m.now = func() time.Time { return now }
+
+	// Three consecutive health failures — without grace, the third would trigger
+	// kill. With grace + in_flight > 0, it should defer instead.
+	m.handleHealthResult(b, false)
+	m.handleHealthResult(b, false)
+	m.handleHealthResult(b, false)
+
+	key := b.label()
+	if _, ok := m.respawnDeferredAt[key]; !ok {
+		t.Error("expected respawnDeferredAt to be set after 3 failures with in-flight=1")
+	}
+	if m.respawnCounts[key] != 0 {
+		t.Errorf("expected respawnCounts=0 (deferred, not yet respawned), got %d", m.respawnCounts[key])
+	}
+	if m.failureCounts[key] != 3 {
+		t.Errorf("expected failureCounts to stay at 3 during deferral, got %d", m.failureCounts[key])
+	}
+}
+
+func TestRespawnDeferralClearedOnRecover(t *testing.T) {
+	b := fakeBackend(0)
+	b.State.SetStatus(balancer.StatusHealthy)
+	b.State.IncrInFlight()
+	now := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
+	m := newTestManager(t, 60*time.Second, b)
+	m.now = func() time.Time { return now }
+
+	m.handleHealthResult(b, false)
+	m.handleHealthResult(b, false)
+	m.handleHealthResult(b, false)
+	key := b.label()
+	if _, ok := m.respawnDeferredAt[key]; !ok {
+		t.Fatal("setup: expected deferral marker after 3 fails")
+	}
+	// Backend recovers — health probe succeeds.
+	m.handleHealthResult(b, true)
+	if _, ok := m.respawnDeferredAt[key]; ok {
+		t.Error("expected respawnDeferredAt to be cleared on recover")
+	}
+	if m.failureCounts[key] != 0 {
+		t.Errorf("expected failureCounts cleared on recover, got %d", m.failureCounts[key])
+	}
+}
+
+func TestRespawnForcedAfterGraceExpires(t *testing.T) {
+	b := fakeBackend(0)
+	b.State.SetStatus(balancer.StatusHealthy)
+	b.State.IncrInFlight() // still in-flight, grace will force kill anyway
+	clock := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
+	m := newTestManager(t, 30*time.Second, b)
+	m.now = func() time.Time { return clock }
+
+	m.handleHealthResult(b, false)
+	m.handleHealthResult(b, false)
+	m.handleHealthResult(b, false)
+	key := b.label()
+	if _, ok := m.respawnDeferredAt[key]; !ok {
+		t.Fatal("setup: expected deferral marker after 3 fails")
+	}
+	// Advance past grace.
+	clock = clock.Add(31 * time.Second)
+	// Next failure tick should expire grace and proceed to respawn.
+	m.handleHealthResult(b, false)
+	// Grace expired and respawn fired: failureCounts reset, respawnCounts incremented,
+	// deferral marker cleared.
+	if m.respawnCounts[key] == 0 {
+		t.Errorf("expected respawn to fire after grace expired, respawnCounts=%d", m.respawnCounts[key])
+	}
+	if _, ok := m.respawnDeferredAt[key]; ok {
+		t.Error("expected respawnDeferredAt cleared once grace expired and respawn fired")
+	}
+}
+
+func TestRespawnImmediateWhenNoInFlight(t *testing.T) {
+	b := fakeBackend(0)
+	b.State.SetStatus(balancer.StatusHealthy)
+	// No in-flight — shed-before-respawn should not engage.
+	now := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
+	m := newTestManager(t, 60*time.Second, b)
+	m.now = func() time.Time { return now }
+
+	m.handleHealthResult(b, false)
+	m.handleHealthResult(b, false)
+	m.handleHealthResult(b, false)
+	key := b.label()
+	if _, ok := m.respawnDeferredAt[key]; ok {
+		t.Error("expected NO deferral when in_flight=0")
+	}
+	if m.respawnCounts[key] == 0 {
+		t.Errorf("expected respawn to fire immediately when in_flight=0, respawnCounts=%d", m.respawnCounts[key])
+	}
+}
+
+func TestRespawnImmediateWhenGraceZero(t *testing.T) {
+	b := fakeBackend(0)
+	b.State.SetStatus(balancer.StatusHealthy)
+	b.State.IncrInFlight() // would normally defer
+	now := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
+	m := newTestManager(t, 0, b) // grace=0 → legacy behavior
+	m.now = func() time.Time { return now }
+
+	m.handleHealthResult(b, false)
+	m.handleHealthResult(b, false)
+	m.handleHealthResult(b, false)
+	key := b.label()
+	if _, ok := m.respawnDeferredAt[key]; ok {
+		t.Error("expected no deferral with grace=0 (legacy mode)")
+	}
+	if m.respawnCounts[key] == 0 {
+		t.Errorf("expected immediate respawn with grace=0, respawnCounts=%d", m.respawnCounts[key])
 	}
 }
 

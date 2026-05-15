@@ -39,6 +39,7 @@ type Backend struct {
 	Parallel      int
 	Binary        string
 	ExtraArgs     []string
+	Threads       int // per-backend --threads; 0 = let llama-server / extra_args decide
 	HealthTimeout   time.Duration
 	PowerLimitWatts int
 	State           *balancer.BackendState
@@ -110,8 +111,38 @@ func (b *Backend) buildArgs() []string {
 			args = append(args, "--main-gpu", strconv.Itoa(b.MainGPU))
 		}
 	}
+	if b.Threads > 0 && !hasThreadsArg(b.ExtraArgs) {
+		args = append(args, "--threads", strconv.Itoa(b.Threads))
+	}
 	args = append(args, b.ExtraArgs...)
 	return args
+}
+
+// hasThreadsArg returns true if --threads (or its short form -t) is present
+// in the args list. Used so the user's explicit override in extra_args wins
+// over the auto-derived per-backend default.
+func hasThreadsArg(args []string) bool {
+	for _, a := range args {
+		if a == "--threads" || a == "-t" {
+			return true
+		}
+	}
+	return false
+}
+
+// parseThreadsArg returns the value of --threads (or -t) in args, or 0 if
+// absent / malformed. Used at startup to compute total thread oversubscription
+// across backends so we can warn the user.
+func parseThreadsArg(args []string) int {
+	for i, a := range args {
+		if (a == "--threads" || a == "-t") && i+1 < len(args) {
+			n, err := strconv.Atoi(args[i+1])
+			if err == nil && n > 0 {
+				return n
+			}
+		}
+	}
+	return 0
 }
 
 func (b *Backend) buildEnv() []string {
