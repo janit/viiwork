@@ -36,6 +36,12 @@ type BackendState struct {
 	Addr    string
 	inFlight atomic.Int64
 	status   atomic.Int32
+	// hardFailure latches when the inference path observes an unambiguous
+	// socket-level failure (EOF / connection refused on a proxied request).
+	// The manager's health loop reads it on the next tick and short-circuits
+	// the failure-count ladder so respawn fires after one failed probe instead
+	// of MaxFailures. Cleared when a probe succeeds.
+	hardFailure atomic.Bool
 	rssMB       atomic.Int64
 	slotCtx     atomic.Int64
 	slotCount   atomic.Int32
@@ -58,6 +64,26 @@ func (s *BackendState) Status() BackendStatus { return BackendStatus(s.status.Lo
 func (s *BackendState) SetStatus(status BackendStatus) { s.status.Store(int32(status)) }
 func (s *BackendState) InFlight() int64 { return s.inFlight.Load() }
 func (s *BackendState) IncrInFlight() { s.inFlight.Add(1) }
+
+// NoteHardFailure marks the backend unhealthy and latches a flag the manager's
+// health-tick will read. Called from the proxy when a request observes EOF or
+// "connection refused" against the backend's listen port — kernel-level signals
+// that the process is definitively gone. The status flip removes the backend
+// from the picker immediately; the latched flag tells the manager to skip the
+// 3-strike ladder and respawn after one failed probe.
+func (s *BackendState) NoteHardFailure() {
+	s.status.Store(int32(StatusUnhealthy))
+	s.hardFailure.Store(true)
+}
+
+// HardFailureSeen reports whether NoteHardFailure has been called since the
+// last successful health probe.
+func (s *BackendState) HardFailureSeen() bool { return s.hardFailure.Load() }
+
+// ClearHardFailure resets the latched flag. Called by the manager on a
+// successful health probe so a transient false-positive doesn't persist into
+// the next respawn cycle.
+func (s *BackendState) ClearHardFailure() { s.hardFailure.Store(false) }
 
 func (s *BackendState) DecrInFlight() {
 	for {

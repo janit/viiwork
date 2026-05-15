@@ -147,6 +147,7 @@ func main() {
 	handler := proxy.NewMeshHandler(bal, reg, cfg.Balancer.LatencyWindow.Duration)
 	handler.SetMetrics(hist, bcast, collector.Available)
 	handler.SetActivity(actLog)
+	handler.SetEvictOnHardFailure(cfg.Health.EvictOnHardFailure)
 
 	if len(pipelines) > 0 {
 		resolver := proxy.NewPipelineResolver(pipelines)

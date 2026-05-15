@@ -2,16 +2,47 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/janit/viiwork/internal/balancer"
 )
+
+// isHardSocketFailure reports whether err from backendClient.Do indicates the
+// backend's listener is definitively gone — io.EOF before a response header
+// (process closed the connection mid-request), or connection-refused/reset from
+// the dialer (port no longer bound). These are kernel-level signals: the
+// inference path can act on them immediately without waiting for /health to
+// also confirm. Context errors are explicitly excluded so client cancellation
+// doesn't false-positive into evicting a healthy backend.
+func isHardSocketFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ECONNRESET) {
+		return true
+	}
+	// net.OpError wraps dial failures; treat any dial-stage error as hard.
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && opErr.Op == "dial" {
+		return true
+	}
+	return false
+}
 
 // hopByHopHeaders are HTTP/1.1 headers that must not be forwarded by proxies (RFC 7230).
 var hopByHopHeaders = map[string]bool{
@@ -36,8 +67,10 @@ var backendClient = &http.Client{
 
 // proxyRequest forwards a request to a backend. When thinkDisabled is true,
 // reasoning_content is rewritten to content with think blocks stripped.
+// When evictOnHardFailure is true, an EOF or connection-refused from the
+// backend marks it unhealthy immediately (see BackendState.NoteHardFailure).
 // Returns true if the client disconnected early.
-func proxyRequest(w http.ResponseWriter, r *http.Request, backend *balancer.BackendState, latencyWindow time.Duration, thinkDisabled bool) (clientAborted bool) {
+func proxyRequest(w http.ResponseWriter, r *http.Request, backend *balancer.BackendState, latencyWindow time.Duration, thinkDisabled, evictOnHardFailure bool) (clientAborted bool) {
 	start := time.Now()
 	defer func() {
 		backend.DecrInFlight()
@@ -65,6 +98,10 @@ func proxyRequest(w http.ResponseWriter, r *http.Request, backend *balancer.Back
 
 	resp, err := backendClient.Do(proxyReq)
 	if err != nil {
+		if evictOnHardFailure && isHardSocketFailure(err) {
+			backend.NoteHardFailure()
+			log.Printf("[manager] gpu-%d evicted: hard socket failure on inference path (%v)", backend.GPUID, err)
+		}
 		log.Printf("[debug] backend gpu-%d (%s) unavailable: %v", backend.GPUID, backend.Addr, err)
 		http.Error(w, "backend unavailable", http.StatusBadGateway)
 		return

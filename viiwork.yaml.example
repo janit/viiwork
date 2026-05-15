@@ -34,6 +34,12 @@ health:
   # MaxFailures). 60s default lets in-flight requests finish so they don't
   # all get killed by a slow-but-recoverable backend.
   respawn_grace: 60s
+  # evict_on_hard_failure: when true (default), an EOF or "connection refused"
+  # from a backend's inference path is treated as a definitive process-gone
+  # signal — the backend is marked unhealthy immediately (so the picker stops
+  # routing to it) and the manager respawns after one failed probe instead of
+  # max_failures. Set false to fall back to v0.5.0 health-ladder-only behavior.
+  evict_on_hard_failure: true
 
 balancer:
   latency_window: 30s
