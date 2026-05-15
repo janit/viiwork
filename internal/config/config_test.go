@@ -84,6 +84,9 @@ func TestDefaults(t *testing.T) {
 	if cfg.Backend.Threads != 0 {
 		t.Errorf("expected default backend.threads 0 (auto-derive), got %d", cfg.Backend.Threads)
 	}
+	if !cfg.Health.EvictOnHardFailure {
+		t.Errorf("expected default health.evict_on_hard_failure=true")
+	}
 }
 
 func TestValidation(t *testing.T) {

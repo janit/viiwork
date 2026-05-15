@@ -656,6 +656,72 @@ func TestRespawnImmediateWhenNoInFlight(t *testing.T) {
 	}
 }
 
+func TestHardFailureSkipsFailureLadder(t *testing.T) {
+	b := fakeBackend(0)
+	b.State.SetStatus(balancer.StatusHealthy)
+	// Proxy observed EOF / connection-refused on the inference path.
+	b.State.NoteHardFailure()
+	now := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
+	m := newTestManager(t, 0, b) // grace=0 so we isolate the ladder bypass
+	m.now = func() time.Time { return now }
+
+	// One failed probe should be enough — no need for MaxFailures=3 ticks.
+	m.handleHealthResult(b, false)
+
+	key := b.label()
+	if m.respawnCounts[key] == 0 {
+		t.Errorf("expected respawn to fire after a single probe when hard-failure latched, respawnCounts=%d", m.respawnCounts[key])
+	}
+	if b.State.HardFailureSeen() {
+		t.Error("expected hard-failure flag cleared after consumed by handleHealthResult")
+	}
+}
+
+func TestHardFailureClearedOnSuccessfulProbe(t *testing.T) {
+	b := fakeBackend(0)
+	b.State.SetStatus(balancer.StatusHealthy)
+	// Proxy saw EOF but the backend is actually fine (e.g. transient).
+	b.State.NoteHardFailure()
+	now := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
+	m := newTestManager(t, 0, b)
+	m.now = func() time.Time { return now }
+
+	// Health probe succeeds before next failure-tick.
+	m.handleHealthResult(b, true)
+
+	if b.State.HardFailureSeen() {
+		t.Error("expected hard-failure flag cleared on successful probe")
+	}
+	if b.State.Status() != balancer.StatusHealthy {
+		t.Errorf("expected status=Healthy after recovery, got %v", b.State.Status())
+	}
+	key := b.label()
+	if m.respawnCounts[key] != 0 {
+		t.Errorf("expected no respawn after recovery, got respawnCounts=%d", m.respawnCounts[key])
+	}
+}
+
+func TestHardFailureWithoutProbeFailDoesNotRespawn(t *testing.T) {
+	// Defensive: even if a hard failure is latched, a successful probe must
+	// short-circuit the respawn path — handleHealthResult should never act on
+	// the latch alone, only on probe-fail confirmation.
+	b := fakeBackend(0)
+	b.State.SetStatus(balancer.StatusHealthy)
+	b.State.NoteHardFailure()
+	now := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
+	m := newTestManager(t, 0, b)
+	m.now = func() time.Time { return now }
+
+	m.handleHealthResult(b, true)
+	key := b.label()
+	if m.failureCounts[key] != 0 {
+		t.Errorf("expected failureCounts=0 after recovery, got %d", m.failureCounts[key])
+	}
+	if m.respawnCounts[key] != 0 {
+		t.Errorf("expected respawnCounts=0 after recovery, got %d", m.respawnCounts[key])
+	}
+}
+
 func TestRespawnImmediateWhenGraceZero(t *testing.T) {
 	b := fakeBackend(0)
 	b.State.SetStatus(balancer.StatusHealthy)

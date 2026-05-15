@@ -489,6 +489,9 @@ func (m *Manager) handleHealthResult(b *Backend, healthy bool) {
 		if !m.respawnDeferredAt[key].IsZero() {
 			delete(m.respawnDeferredAt, key)
 		}
+		// Clear any latched hard-failure flag — a successful probe means the
+		// EOF signal was either stale or the backend has already recovered.
+		b.State.ClearHardFailure()
 		if b.State.Status() != balancer.StatusHealthy {
 			b.State.SetStatus(balancer.StatusHealthy)
 			m.respawnCounts[key] = 0
@@ -497,7 +500,18 @@ func (m *Manager) handleHealthResult(b *Backend, healthy bool) {
 		}
 		return
 	}
-	m.failureCounts[key]++
+	// Hard-failure short-circuit: the proxy already saw a kernel-level
+	// "process is gone" signal (EOF / connection refused) on the inference
+	// path. The health probe just confirmed it. Skip the 3-strike ladder
+	// and proceed to respawn on this tick.
+	hardFail := b.State.HardFailureSeen()
+	if hardFail {
+		m.failureCounts[key] = m.cfg.Health.MaxFailures
+		b.State.ClearHardFailure()
+		m.logger.Printf("%s hard failure confirmed by probe; bypassing failure-count ladder", b.label())
+	} else {
+		m.failureCounts[key]++
+	}
 	b.State.SetStatus(balancer.StatusUnhealthy)
 	m.logger.Printf("%s health check failed (%d/%d)", b.label(), m.failureCounts[key], m.cfg.Health.MaxFailures)
 	if m.failureCounts[key] >= m.cfg.Health.MaxFailures {

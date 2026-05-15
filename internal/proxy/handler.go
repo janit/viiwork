@@ -35,6 +35,7 @@ type Handler struct {
 	activity           *activity.Log
 	pipelineResolver   *PipelineResolver
 	pipelineExecutor   *pipeline.Executor
+	evictOnHardFailure bool
 }
 
 // NewHandler creates a standalone handler (no mesh). Preserved for backward compatibility.
@@ -65,6 +66,13 @@ func (h *Handler) SetMetrics(history *gpu.History, broadcaster *gpu.Broadcaster,
 
 func (h *Handler) SetActivity(actLog *activity.Log) {
 	h.activity = actLog
+}
+
+// SetEvictOnHardFailure enables proxy-path eviction: when set, a hard socket
+// failure (EOF, connection refused) on a backend request flips that backend
+// to unhealthy immediately rather than waiting for the health-check ladder.
+func (h *Handler) SetEvictOnHardFailure(enabled bool) {
+	h.evictOnHardFailure = enabled
 }
 
 
@@ -302,7 +310,7 @@ func (h *Handler) handleProxy(w http.ResponseWriter, r *http.Request) {
 		if h.activity != nil {
 			h.activity.EmitRequestTask(rid, route.Backend.GPUID, taskID, "%s → gpu-%d", model, route.Backend.GPUID)
 		}
-		aborted := proxyRequest(w, r, route.Backend, h.latencyWindow, thinkDisabled)
+		aborted := proxyRequest(w, r, route.Backend, h.latencyWindow, thinkDisabled, h.evictOnHardFailure)
 		elapsed := time.Since(start).Round(time.Millisecond)
 		log.Printf("[debug] %s → gpu-%d finished (elapsed=%s aborted=%v in_flight=%d)", model, route.Backend.GPUID, elapsed, aborted, route.Backend.InFlight())
 		if h.activity != nil {
@@ -406,7 +414,7 @@ func (h *Handler) handleLocalProxy(w http.ResponseWriter, r *http.Request, think
 		}
 		return
 	}
-	proxyRequest(w, r, backend, h.latencyWindow, thinkDisabled)
+	proxyRequest(w, r, backend, h.latencyWindow, thinkDisabled, h.evictOnHardFailure)
 }
 
 func (h *Handler) handleActivity(w http.ResponseWriter, r *http.Request) {

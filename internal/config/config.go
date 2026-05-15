@@ -99,6 +99,14 @@ type HealthConfig struct {
 	// failure threshold and gets killed with N requests in flight. Once grace
 	// expires or in-flight reaches 0, the respawn proceeds normally.
 	RespawnGrace Duration `yaml:"respawn_grace"`
+	// EvictOnHardFailure makes the proxy treat an EOF or "connection refused"
+	// from a backend's inference path as a definitive process-gone signal:
+	// the backend is marked unhealthy from the request path (so the picker
+	// stops routing to it instantly), and the manager respawns after one
+	// failed probe instead of MaxFailures. Defaults to true; the signal is
+	// kernel-level and effectively unambiguous, but operators can disable it
+	// to fall back to v0.5.0 health-ladder-only behavior.
+	EvictOnHardFailure bool `yaml:"evict_on_hard_failure"`
 }
 
 type BalancerConfig struct {
@@ -327,6 +335,12 @@ func (c *Config) ApplyOverrides(overrides map[string]string) error {
 				return fmt.Errorf("invalid health.respawn_grace: %w", err)
 			}
 			c.Health.RespawnGrace = Duration{d}
+		case "health.evict_on_hard_failure":
+			b, err := strconv.ParseBool(val)
+			if err != nil {
+				return fmt.Errorf("invalid health.evict_on_hard_failure: %w", err)
+			}
+			c.Health.EvictOnHardFailure = b
 		case "backend.threads":
 			v, err := strconv.Atoi(val)
 			if err != nil {

@@ -56,3 +56,35 @@ func TestStatusTransitions(t *testing.T) {
 	s.SetStatus(StatusDead)
 	if s.Status() != StatusDead { t.Errorf("expected dead") }
 }
+
+func TestNoteHardFailureFlipsStatusAndLatches(t *testing.T) {
+	s := NewBackendState(0, "localhost:9001")
+	s.SetStatus(StatusHealthy)
+	if s.HardFailureSeen() {
+		t.Fatal("expected HardFailureSeen=false before NoteHardFailure")
+	}
+	s.NoteHardFailure()
+	if s.Status() != StatusUnhealthy {
+		t.Errorf("expected status=Unhealthy after NoteHardFailure, got %v", s.Status())
+	}
+	if !s.HardFailureSeen() {
+		t.Error("expected HardFailureSeen=true after NoteHardFailure")
+	}
+}
+
+func TestClearHardFailure(t *testing.T) {
+	s := NewBackendState(0, "localhost:9001")
+	s.NoteHardFailure()
+	if !s.HardFailureSeen() {
+		t.Fatal("setup: expected flag latched")
+	}
+	s.ClearHardFailure()
+	if s.HardFailureSeen() {
+		t.Error("expected HardFailureSeen=false after ClearHardFailure")
+	}
+	// Status is not auto-restored — the health-tick path is responsible for
+	// flipping back to Healthy on a successful probe.
+	if s.Status() != StatusUnhealthy {
+		t.Errorf("ClearHardFailure should not touch status, got %v", s.Status())
+	}
+}

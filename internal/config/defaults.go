@@ -28,9 +28,10 @@ func Defaults() Config {
 			// triggers 3/3 failures → respawn → cold reload → cascade. Field
 			// report on 4-core EPYC 3151 took 502 rate from 40% (3s) to 0%
 			// (30s) at concurrency 16.
-			Timeout:         Duration{30 * time.Second},
-			MaxFailures:     3,
-			RespawnGrace:    Duration{60 * time.Second},
+			Timeout:            Duration{30 * time.Second},
+			MaxFailures:        3,
+			RespawnGrace:       Duration{60 * time.Second},
+			EvictOnHardFailure: true,
 		},
 		Balancer: BalancerConfig{
 			LatencyWindow:     Duration{30 * time.Second},

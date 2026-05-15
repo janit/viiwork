@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -336,6 +337,116 @@ func TestHealthEndpointUnhealthy(t *testing.T) {
 	var resp map[string]any
 	json.NewDecoder(w.Body).Decode(&resp)
 	if resp["status"] != "unhealthy" { t.Errorf("expected status 'unhealthy', got %v", resp["status"]) }
+}
+
+func TestProxyEvictsBackendOnHardFailure(t *testing.T) {
+	// Start a backend and immediately close it so the next dial fails with
+	// "connection refused" — the canonical hard-failure signal from the
+	// field report.
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	addr := backend.Listener.Addr().String()
+	backend.Close() // listener is now dead
+
+	state := balancer.NewBackendState(0, addr)
+	state.SetStatus(balancer.StatusHealthy)
+	bal := balancer.New([]*balancer.BackendState{state}, 7, 4)
+	h := NewHandler(bal, "/models/test.gguf", 30*time.Second)
+	h.SetEvictOnHardFailure(true)
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions",
+		strings.NewReader(`{"model":"test","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != 502 {
+		t.Errorf("expected 502, got %d", w.Code)
+	}
+	if state.Status() != balancer.StatusUnhealthy {
+		t.Errorf("expected backend status=Unhealthy after hard failure, got %v", state.Status())
+	}
+	if !state.HardFailureSeen() {
+		t.Error("expected hard-failure flag latched for manager to consume")
+	}
+}
+
+func TestProxyDoesNotEvictWhenFlagOff(t *testing.T) {
+	// With evict_on_hard_failure=false, a dead backend should still return 502
+	// but the status must not flip — falls back to legacy health-ladder behavior.
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	addr := backend.Listener.Addr().String()
+	backend.Close()
+
+	state := balancer.NewBackendState(0, addr)
+	state.SetStatus(balancer.StatusHealthy)
+	bal := balancer.New([]*balancer.BackendState{state}, 7, 4)
+	h := NewHandler(bal, "/models/test.gguf", 30*time.Second)
+	// flag defaults to false; do not call SetEvictOnHardFailure
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions",
+		strings.NewReader(`{"model":"test","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != 502 {
+		t.Errorf("expected 502, got %d", w.Code)
+	}
+	if state.Status() != balancer.StatusHealthy {
+		t.Errorf("expected status preserved when flag is off, got %v", state.Status())
+	}
+	if state.HardFailureSeen() {
+		t.Error("expected hard-failure flag NOT set when flag is off")
+	}
+}
+
+func TestProxyEvictsBackendOnEOF(t *testing.T) {
+	// Simulate the report's case: server accepts the TCP connection, reads
+	// the request, then closes without sending a response header. Net/http
+	// surfaces this as io.EOF (or wraps it) on the client side.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			// Drain enough of the request that the client has finished writing
+			// before we close — otherwise the close races the write and the
+			// client sees "use of closed network connection" instead of EOF.
+			buf := make([]byte, 4096)
+			for {
+				_ = conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+				if _, err := conn.Read(buf); err != nil {
+					break
+				}
+			}
+			conn.Close()
+		}
+	}()
+
+	state := balancer.NewBackendState(0, ln.Addr().String())
+	state.SetStatus(balancer.StatusHealthy)
+	bal := balancer.New([]*balancer.BackendState{state}, 7, 4)
+	h := NewHandler(bal, "/models/test.gguf", 30*time.Second)
+	h.SetEvictOnHardFailure(true)
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions",
+		strings.NewReader(`{"model":"test","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if state.Status() != balancer.StatusUnhealthy {
+		t.Errorf("expected status=Unhealthy after EOF, got %v", state.Status())
+	}
+	if !state.HardFailureSeen() {
+		t.Error("expected hard-failure flag latched after EOF")
+	}
 }
 
 func TestHealthEndpointWithMesh(t *testing.T) {
