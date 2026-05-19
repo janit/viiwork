@@ -2,8 +2,10 @@
 # Pinned to ROCm 6.2.4 -- last version with reliable gfx906 support
 FROM rocm/dev-ubuntu-24.04:6.2.4-complete AS llama-build
 RUN apt-get update && apt-get install -y cmake git
-# Pin llama.cpp to a known-good release to prevent upstream breakage
-ARG LLAMA_CPP_VERSION=b8660
+# Pin llama.cpp to a known-good release to prevent upstream breakage.
+# b9222 (2026-05-18) includes hybrid DeltaNet (Qwen3.5/3.6 arches) and
+# MTP speculative decoding (PR #22673 + follow-ups #23198, #23237).
+ARG LLAMA_CPP_VERSION=b9222
 RUN git clone --branch ${LLAMA_CPP_VERSION} --depth 1 \
     https://github.com/ggml-org/llama.cpp /llama.cpp
 WORKDIR /llama.cpp
