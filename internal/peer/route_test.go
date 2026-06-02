@@ -131,6 +131,73 @@ func TestPickRouteTiedPeersWithLocalAtCapacity(t *testing.T) {
 	}
 }
 
+// TestPickRouteTiedLocalsRoundRobin guards the bug where multiple healthy local
+// pairs tied at equal InFlight all got pinned to one pair. route.InFlight is a
+// snapshot taken when routes are built; phase-locked concurrent callers read the
+// same all-zero snapshot, and the old lowest-latency-first tiebreak resolved
+// every racing pick to the same pair. Round-robin fans them out instead.
+func TestPickRouteTiedLocalsRoundRobin(t *testing.T) {
+	pair0 := balancer.NewBackendState(0, "localhost:9001")
+	pair1 := balancer.NewBackendState(2, "localhost:9002")
+	pair2 := balancer.NewBackendState(4, "localhost:9003")
+	for _, b := range []*balancer.BackendState{pair0, pair1, pair2} {
+		b.SetStatus(balancer.StatusHealthy)
+		b.RecordLatency(50*time.Millisecond, 30*time.Second)
+	}
+
+	const n = 300
+	counts := map[string]int{}
+	for i := 0; i < n; i++ {
+		// New slice each iteration: PickRoute must not depend on routes ordering.
+		routes := []Route{
+			{Type: RouteLocal, Backend: pair0, InFlight: 0},
+			{Type: RouteLocal, Backend: pair1, InFlight: 0},
+			{Type: RouteLocal, Backend: pair2, InFlight: 0},
+		}
+		picked, err := PickRoute(routes, 4)
+		if err != nil {
+			t.Fatalf("iteration %d: %v", i, err)
+		}
+		if picked.Type != RouteLocal {
+			t.Fatalf("iteration %d: expected local route, got %s", i, picked.Type)
+		}
+		counts[picked.Backend.Addr]++
+	}
+	// Round-robin is deterministic with atomic increments and three pairs cleanly
+	// divide n=300.
+	for _, addr := range []string{"localhost:9001", "localhost:9002", "localhost:9003"} {
+		got := counts[addr]
+		if got < n/3-5 || got > n/3+5 {
+			t.Errorf("local %s got %d picks, expected ~%d (round-robin among ties)", addr, got, n/3)
+		}
+	}
+}
+
+// TestPickRouteLeastLoadedLocalBeatsRoundRobin: the local round-robin must only
+// activate at equal InFlight — a less-loaded local still wins overall, so a
+// genuinely slower (longer-held, higher-in-flight) pair is steered away from.
+func TestPickRouteLeastLoadedLocalBeatsRoundRobin(t *testing.T) {
+	busy := balancer.NewBackendState(0, "localhost:9001")
+	idle := balancer.NewBackendState(2, "localhost:9002")
+	for _, b := range []*balancer.BackendState{busy, idle} {
+		b.SetStatus(balancer.StatusHealthy)
+		b.RecordLatency(50*time.Millisecond, 30*time.Second)
+	}
+	for i := 0; i < 50; i++ {
+		routes := []Route{
+			{Type: RouteLocal, Backend: busy, InFlight: 3},
+			{Type: RouteLocal, Backend: idle, InFlight: 0},
+		}
+		picked, err := PickRoute(routes, 4)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if picked.Backend.Addr != "localhost:9002" {
+			t.Fatalf("iteration %d: expected idle local, got %s (InFlight=%d)", i, picked.Backend.Addr, picked.InFlight)
+		}
+	}
+}
+
 // TestPickRouteLeastLoadedAcrossPeersBeatsRoundRobin: the tiebreaker must
 // only activate at equal InFlight — least-loaded still wins overall.
 func TestPickRouteLeastLoadedAcrossPeersBeatsRoundRobin(t *testing.T) {
