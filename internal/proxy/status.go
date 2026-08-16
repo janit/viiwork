@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/janit/viiwork/internal/balancer"
+	"github.com/janit/viiwork/internal/gpu"
 	"github.com/janit/viiwork/internal/peer"
 )
 
@@ -19,6 +20,24 @@ type StatusLocation struct {
 	Hostname   string
 	ListenAddr string
 }
+
+// gpuLatest is the subset of *gpu.History the status payload needs. Kept as an
+// interface so status.go does not depend on the gpu package and so tests can
+// supply fixed samples.
+type gpuLatest interface {
+	Latest() []gpu.GPUSample
+}
+
+// statusGPUSource is set by SetStatusGPUSource. It is a package-level hook
+// rather than a constructor argument because NewStatusHandler is called from
+// NewMeshHandler before metrics are wired up in main.go, and threading it
+// through would change that constructor's signature for every caller.
+var statusGPUSource gpuLatest
+
+// SetStatusGPUSource attaches the GPU history that /v1/status publishes to
+// peers. Safe to leave unset: the gpus field is omitempty, and a node without
+// rocm-smi simply reports no GPUs.
+func SetStatusGPUSource(g gpuLatest) { statusGPUSource = g }
 
 func NewStatusHandler(nodeID string, localModel string, backends []*balancer.BackendState, power peer.PowerReader, cost peer.CostReader, loc StatusLocation) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -36,6 +55,8 @@ func NewStatusHandler(nodeID string, localModel string, backends []*balancer.Bac
 			}
 			resp.Backends = append(resp.Backends, peer.BackendInfo{
 				GPUID: b.GPUID, GPUIDs: gpuIDs, Model: localModel, Status: b.Status().String(), InFlight: b.InFlight(),
+				RSSMB: b.RSSMB(), SlotCtx: b.SlotCtx(), SlotCount: b.SlotCount(),
+				SlotActive: b.SlotActive(), TokDecoded: b.TokDecoded(), TokRemain: b.TokRemain(),
 			})
 			resp.TotalInFlight += b.InFlight()
 			if b.Status() == balancer.StatusHealthy { resp.HealthyBackends++ }
@@ -56,20 +77,44 @@ func NewStatusHandler(nodeID string, localModel string, backends []*balancer.Bac
 				TotalCentsKWh:    cost.TotalCentsKWh(),
 			}
 		}
+		if statusGPUSource != nil {
+			for _, g := range statusGPUSource.Latest() {
+				resp.GPUs = append(resp.GPUs, peer.GPUInfo{
+					GPUID: g.GPUID, Util: g.Utilization,
+					VRAMUsedMB: g.VRAMUsedMB, VRAMTotalMB: g.VRAMTotalMB,
+				})
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(resp)
 	})
 }
 
+// BuildClusterState assembles the full cluster snapshot: registry state plus
+// the local-only extras (version, host memory, GPU load) that the registry has
+// no access to. Shared by the /v1/cluster endpoint and the mesh push stream so
+// both cannot drift.
+func BuildClusterState(reg *peer.Registry) peer.ClusterResponse {
+	state := reg.ClusterState()
+	state.Version = Version
+	totalMB, usedMB := readHostMemory()
+	state.Local.HostMemTotalMB = totalMB
+	state.Local.HostMemUsedMB = usedMB
+	if statusGPUSource != nil {
+		for _, g := range statusGPUSource.Latest() {
+			state.Local.GPUs = append(state.Local.GPUs, peer.GPUInfo{
+				GPUID: g.GPUID, Util: g.Utilization,
+				VRAMUsedMB: g.VRAMUsedMB, VRAMTotalMB: g.VRAMTotalMB,
+			})
+		}
+	}
+	return state
+}
+
 func NewClusterHandler(reg *peer.Registry) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		state := reg.ClusterState()
-		state.Version = Version
-		totalMB, usedMB := readHostMemory()
-		state.Local.HostMemTotalMB = totalMB
-		state.Local.HostMemUsedMB = usedMB
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(state)
+		json.NewEncoder(w).Encode(BuildClusterState(reg))
 	})
 }
 

@@ -201,10 +201,23 @@ if cfg.GPUs.TensorSplit.Enabled {
 
 Recommend #1 for the initial cut, #2 as a follow-up when the dashboard work is done.
 
+> **Implemented.** Both, in the end: `GPUID` is the `-1` sentinel *and*
+> `GPUIDs []int` carries the device list. The sentinel alone turned out to be
+> insufficient once anything had to *display* a backend — see the
+> `X-GPU-Backend` note below.
+
 ### `internal/proxy/handler.go`
 - `/v1/models` should report the model as available with `n_slots: 1` (vs `n_slots: N*parallel` in replica mode). The dashboard currently shows per-GPU rows; in tensor-split mode it should show a single "tensor-split (4 GPUs)" row.
 - The 429 backpressure path triggers when in-flight ≥ max-in-flight; with single-slot tensor-split, max-in-flight should default to 1 (or a small queue depth).
 - `X-GPU-Backend` header should report something like `tensor-split:4-7` instead of a single GPU id.
+
+> **Implemented**, as `ts-4,5` (matching the `process.Backend.label()`
+> convention already used in logs) via `balancer.BackendState.Label()`.
+> This one bit before it was fixed: formatting `GPUID` directly rendered
+> `gpu--1`, which is merely unhelpful in a log line but actively broken in the
+> header — a 5×TS=2 fleet returned `gpu--1` for *all five* backends, so no
+> client could attribute a request to a backend. Anything that displays a
+> backend must go through `Label()`, never `GPUID`.
 
 ### `internal/peer/`
 No changes needed for the cross-node mesh — peers see a viiwork node as a single endpoint. The tensor-split node advertises one model with one slot, and peer routing is based on model name, not slot count. **But:** the mesh latency-aware picker should weigh tensor-split nodes appropriately given they serialize. Easiest fix: bump the latency window or add a "single-slot penalty" multiplier when picking. Defer to a follow-up.

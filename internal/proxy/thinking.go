@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +13,25 @@ import (
 )
 
 var thinkBlockRe = regexp.MustCompile(`(?s)<think>.*?</think>\s*`)
+
+// closeThinkTag is the byte form of the closing tag, used to disqualify the
+// suppress fast path before any decoding happens.
+var closeThinkTag = []byte("</think>")
+
+// sseChunkProbe is a cheap typed view of just the fields the think-suppression
+// decision inspects. Decoding into this costs a fraction of map[string]any
+// because the shape is known: no map growth, no interface boxing, and only the
+// string fields actually present allocate. Pointer fields distinguish "absent"
+// from "present but empty", which the decision logic depends on.
+type sseChunkProbe struct {
+	Choices []struct {
+		Delta *struct {
+			Content          *string `json:"content"`
+			ReasoningContent *string `json:"reasoning_content"`
+		} `json:"delta"`
+		FinishReason *string `json:"finish_reason"`
+	} `json:"choices"`
+}
 
 // reasoningLineRe matches lines that look like reasoning artifacts:
 // bullet points, numbered lists, metadata labels, drafting markers, self-checks.
@@ -265,25 +285,55 @@ func streamThinkDisabled(w http.ResponseWriter, body io.Reader, cancel func()) (
 	scanner.Buffer(make([]byte, 256*1024), 256*1024)
 
 	inThinkBlock := false
-	var thinkBuf strings.Builder // buffer reasoning tokens for salvage on truncation
-	const maxThinkBufSize = 1 << 20 // 1 MB cap to prevent unbounded growth
+	var thinkBuf strings.Builder         // buffer reasoning tokens for salvage on truncation
+	const maxThinkBufSize = 1 << 20      // 1 MB cap to prevent unbounded growth
 	var lastChunkTemplate map[string]any // keep a template for synthetic chunks
 
-	for scanner.Scan() {
-		line := scanner.Text()
+	// firstPayload retains a copy of the first data chunk so lastChunkTemplate
+	// can be built lazily. The fast path below never decodes a chunk, so the
+	// template can no longer be populated as a side effect of the first
+	// iteration — but salvage still needs it, and salvage is rare.
+	var firstPayload []byte
+	ensureTemplate := func() map[string]any {
+		if lastChunkTemplate == nil && firstPayload != nil {
+			var first map[string]any
+			if err := json.Unmarshal(firstPayload, &first); err == nil {
+				lastChunkTemplate = make(map[string]any, len(first))
+				for k, v := range first {
+					if k != "choices" {
+						lastChunkTemplate[k] = v
+					}
+				}
+			}
+		}
+		return lastChunkTemplate
+	}
 
-		if !strings.HasPrefix(line, "data: ") {
+	dataPrefix := []byte("data: ")
+	donePayload := []byte("[DONE]")
+	// reasoningKey gates the fast path. A chunk is only ever MUTATED by the
+	// logic below when delta.reasoning_content is present; every other branch
+	// emits the chunk unchanged. So if the raw bytes cannot contain that key,
+	// decoding to map[string]any and re-encoding is guaranteed to reproduce
+	// equivalent output — at ~69 allocations per token. Writing the original
+	// bytes instead is both cheaper and byte-exact.
+	reasoningKey := []byte("reasoning_content")
+
+	for scanner.Scan() {
+		line := scanner.Bytes() // valid until the next Scan; never retained unless copied
+
+		if !bytes.HasPrefix(line, dataPrefix) {
 			// Empty lines, SSE comments — pass through
-			if _, err := fmt.Fprintf(w, "%s\n", line); err != nil {
+			if _, err := writeRawLine(w, line); err != nil {
 				cancel()
 				return true
 			}
 			continue
 		}
 
-		payload := line[6:]
-		if payload == "[DONE]" {
-			if _, err := fmt.Fprintf(w, "data: [DONE]\n\n"); err != nil {
+		payload := line[len(dataPrefix):]
+		if bytes.Equal(payload, donePayload) {
+			if _, err := io.WriteString(w, "data: [DONE]\n\n"); err != nil {
 				cancel()
 				return true
 			}
@@ -291,9 +341,56 @@ func streamThinkDisabled(w http.ResponseWriter, body io.Reader, cancel func()) (
 			continue
 		}
 
+		if firstPayload == nil {
+			firstPayload = append([]byte(nil), payload...)
+		}
+
+		// FAST PATH: no reasoning_content in this chunk and no think block open,
+		// so every branch below would have emitted it verbatim. Skip the decode
+		// and re-encode entirely.
+		//
+		// The inThinkBlock guard is required: while a think block is open, a
+		// chunk without reasoning_content can still trigger salvage via
+		// finish_reason, which is a genuine mutation of the output stream.
+		if !inThinkBlock && !bytes.Contains(payload, reasoningKey) {
+			if _, err := writeSSEData(w, payload); err != nil {
+				cancel()
+				return true
+			}
+			f.Flush()
+			continue
+		}
+
+		// SUPPRESS FAST PATH. In a think-heavy stream almost every chunk is a
+		// reasoning token that gets buffered and dropped, never re-emitted — yet
+		// the map[string]any decode below costs ~43 allocations to reach that
+		// conclusion. A typed probe reaches it for ~6.
+		//
+		// This is deliberately a STRICT SUBSET of the "inside think block —
+		// buffer and suppress" branch further down, not a reimplementation of
+		// the decision tree. Every condition it cannot prove falls through to
+		// the original logic, which is unchanged. Keeping it conservative is
+		// what makes it safe: over-matching here would silently drop tokens.
+		if inThinkBlock && !bytes.Contains(payload, closeThinkTag) {
+			var probe sseChunkProbe
+			if err := json.Unmarshal(payload, &probe); err == nil &&
+				len(probe.Choices) == 1 &&
+				probe.Choices[0].Delta != nil &&
+				probe.Choices[0].Delta.ReasoningContent != nil &&
+				probe.Choices[0].Delta.Content == nil &&
+				(probe.Choices[0].FinishReason == nil || *probe.Choices[0].FinishReason == "") {
+				reasoning := *probe.Choices[0].Delta.ReasoningContent
+				// Mirrors the else-branch of the in-think-block case below.
+				if thinkBuf.Len()+len(reasoning) <= maxThinkBufSize {
+					thinkBuf.WriteString(reasoning)
+				}
+				continue
+			}
+		}
+
 		var chunk map[string]any
-		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
-			if _, err := fmt.Fprintf(w, "data: %s\n\n", payload); err != nil {
+		if err := json.Unmarshal(payload, &chunk); err != nil {
+			if _, err := writeSSEData(w, payload); err != nil {
 				cancel()
 				return true
 			}
@@ -303,7 +400,7 @@ func streamThinkDisabled(w http.ResponseWriter, body io.Reader, cancel func()) (
 
 		// Save top-level fields (id, model, etc.) for building salvage chunks
 		if lastChunkTemplate == nil {
-			lastChunkTemplate = make(map[string]any)
+			lastChunkTemplate = make(map[string]any, len(chunk))
 			for k, v := range chunk {
 				if k != "choices" {
 					lastChunkTemplate[k] = v
@@ -333,7 +430,7 @@ func streamThinkDisabled(w http.ResponseWriter, body io.Reader, cancel func()) (
 				// No delta — finish_reason-only chunk.
 				// If we're in an unclosed think block, salvage before emitting.
 				if fr, _ := cm["finish_reason"].(string); fr != "" && inThinkBlock && thinkBuf.Len() > 0 {
-					if aborted := emitSalvage(w, f, cancel, &thinkBuf, lastChunkTemplate); aborted {
+					if aborted := emitSalvage(w, f, cancel, &thinkBuf, ensureTemplate()); aborted {
 						return true
 					}
 					inThinkBlock = false
@@ -346,7 +443,7 @@ func streamThinkDisabled(w http.ResponseWriter, body io.Reader, cancel func()) (
 			if !hasReasoning {
 				// No reasoning_content — check for finish_reason with unclosed think
 				if fr, _ := cm["finish_reason"].(string); fr != "" && inThinkBlock && thinkBuf.Len() > 0 {
-					if aborted := emitSalvage(w, f, cancel, &thinkBuf, lastChunkTemplate); aborted {
+					if aborted := emitSalvage(w, f, cancel, &thinkBuf, ensureTemplate()); aborted {
 						return true
 					}
 					inThinkBlock = false
@@ -468,6 +565,32 @@ func extractAfterThinkClose(s string) string {
 	return strings.TrimLeft(s[idx+len("</think>"):], "\n\r")
 }
 
+// writeSSEData writes an already-encoded chunk as an SSE data frame without
+// re-marshalling it. Used by the pass-through fast path.
+func writeSSEData(w io.Writer, payload []byte) (int, error) {
+	n1, err := io.WriteString(w, "data: ")
+	if err != nil {
+		return n1, err
+	}
+	n2, err := w.Write(payload)
+	if err != nil {
+		return n1 + n2, err
+	}
+	n3, err := io.WriteString(w, "\n\n")
+	return n1 + n2 + n3, err
+}
+
+// writeRawLine passes a non-data SSE line through verbatim. It writes the
+// newline separately rather than appending to the slice, which aliases the
+// scanner's internal buffer and must never be written to.
+func writeRawLine(w io.Writer, line []byte) (int, error) {
+	n1, err := w.Write(line)
+	if err != nil {
+		return n1, err
+	}
+	n2, err := io.WriteString(w, "\n")
+	return n1 + n2, err
+}
 
 func emitSSE(w io.Writer, data any) (int, error) {
 	b, err := json.Marshal(data)

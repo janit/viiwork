@@ -1,8 +1,19 @@
-# Gemma 4 31B-it Q5_K_S — single TS=2 backend on gb1.
+# Gemma 4 31B-it QAT Q4_0 — single TS=2 backend.
+#
+# STAGED, NOT DEPLOYED. gb1 is fully GPU-allocated (qwen36=[0,1,2,3],
+# translategemma=[4,7,8,9], granite=[5,6]) — no free pair. devices:[4,7]
+# below is a PLACEHOLDER and WILL COLLIDE with translategemma if launched
+# on the current gb1 layout. Pick a genuinely free pair before `up`.
+# Verified working 2026-06-05: model + flags below produce clean prose.
 #
 # 33B dense Image-Text-to-Text (used here for text-only prose generation).
-# TS=2 splits the ~21.5GB Q5_K_S weights across two Radeon VII (~11GB each)
-# with KV headroom for short prompt + paragraph-length output.
+# Bumped from PTQ Q5_K_S to a QAT Q4 checkpoint. Google's official day-one
+# GGUF (google/gemma-4-31B-it-qat-q4_0-gguf) is broken — detokenizes garbage
+# and leaks foreign special tokens on gfx906 builds — so we use Unsloth's clean
+# QAT requant: unsloth/gemma-4-31B-it-qat-GGUF -> gemma-4-31B-it-qat-UD-Q4_K_XL
+# (~17.3GB weights, ~8.7GB per GPU under TS=2) — quality on par with the old
+# Q5_K_S at lower VRAM. Fetch it with scripts/download-gemma4-31b.sh.
+# Relocated to the free GPU pair [4,7]; GPUs 0-3,8,9 host other live backends.
 #
 # Use case: weather/road-accident/works data → English prose paragraph.
 # Translation is a separate step on the EuroLLM peer at localhost:8095.
@@ -11,12 +22,12 @@ server:
   port: 8094
 
 model:
-  path: /models/gemma-4-31B-it-Q5_K_S.gguf
+  path: /models/gemma-4-31B-it-qat-UD-Q4_K_XL.gguf
   context_size: 16384
   n_gpu_layers: -1
 
 gpus:
-  devices: [0, 1]
+  devices: [4, 7]
   base_port: 9501
   tensor_split:
     enabled: true
@@ -26,7 +37,15 @@ gpus:
 
 backend:
   binary: llama-server
-  extra_args: []
+  # --jinja: gemma-4 QAT ships a macro-heavy jinja chat template; without it
+  #   llama-server can't apply turn structure and the model rambles.
+  # --chat-template-kwargs enable_thinking=false: gemma-4 is a *thinking* model.
+  #   For this prose pipeline we want direct output — thinking burns ~400 hidden
+  #   tokens (~30s/paragraph) before the answer. Disabling it -> ~110 tokens,
+  #   same quality. (--reasoning-budget 0 did NOT take on this template; the
+  #   template keys off enable_thinking.) Callers can re-enable per-request with
+  #   chat_template_kwargs.enable_thinking=true.
+  extra_args: ["--jinja", "--chat-template-kwargs", "{\"enable_thinking\": false}"]
 
 health:
   interval: 5s

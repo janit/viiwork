@@ -1,20 +1,27 @@
 #!/usr/bin/env bash
-# Download Gemma 4 31B-it Q5_K_S GGUF.
+# Download Gemma 4 31B-it QAT GGUF (Quantization-Aware Training, Q4).
 #
-# Source: bartowski/google_gemma-4-31B-it-GGUF
-# Size:   ~21.5 GB (Q5_K_S)
-# Target: /mnt/p3700/llm-models/gemma-4-31B-it-Q5_K_S.gguf  (NFS p3700)
+# Source: unsloth/gemma-4-31B-it-qat-GGUF
+# Size:   ~17.3 GB (QAT UD-Q4_K_XL)
+# Target: /mnt/p3700/llm-models/gemma-4-31B-it-qat-UD-Q4_K_XL.gguf  (NFS p3700)
 #
 # Gemma 4 31B-it is a 33B dense Image-Text-to-Text model. Used here for
-# text-only prose generation (weather/road/works summaries). Highest dense
-# quality that fits in 2x Radeon VII (16GB) tensor-split at Q5_K_S.
+# text-only prose generation (weather/road/works summaries). This is the QAT
+# checkpoint: Google quantization-aware-trained the weights for Q4, so the
+# int4 quant lands at near-bf16 quality while fitting in 2x Radeon VII (16GB)
+# under tensor-split — replacing the old PTQ Q5_K_S at lower VRAM.
 #
-# Arch token: `gemma4` (upstream llama.cpp master supports it).
+# NOTE: Google's own day-one GGUF (google/gemma-4-31B-it-qat-q4_0-gguf) is a
+# broken conversion — it detokenizes garbage and leaks foreign special tokens
+# on gfx906 llama.cpp builds. Use Unsloth's clean requant below instead.
+#
+# Arch token: `gemma4`. Needs viiwork:latest (llama.cpp b9222+); the older
+# viiwork:qwen-test build mishandles the gemma4 QAT tokenizer.
 set -euo pipefail
 
-REPO="bartowski/google_gemma-4-31B-it-GGUF"
-SRC_FILE="google_gemma-4-31B-it-Q5_K_S.gguf"
-DST_FILE="gemma-4-31B-it-Q5_K_S.gguf"
+REPO="unsloth/gemma-4-31B-it-qat-GGUF"
+SRC_FILE="gemma-4-31B-it-qat-UD-Q4_K_XL.gguf"
+DST_FILE="gemma-4-31B-it-qat-UD-Q4_K_XL.gguf"
 DEST_DIR="/mnt/p3700/llm-models"
 
 mkdir -p "$DEST_DIR"

@@ -20,7 +20,7 @@ RUN ldd /llama.cpp/build/bin/llama-server    && /llama.cpp/build/bin/llama-serve
 RUN ldd /llama.cpp/build/bin/llama-perplexity && /llama.cpp/build/bin/llama-perplexity --help > /dev/null
 
 # Stage 2: Build viiwork
-FROM golang:1.23.6 AS go-build
+FROM golang:1.26.6 AS go-build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

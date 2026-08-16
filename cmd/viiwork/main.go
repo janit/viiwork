@@ -146,6 +146,10 @@ func main() {
 	reg.SetLocation(hostname, fmt.Sprintf("%s:%d", hostname, cfg.Server.Port))
 	handler := proxy.NewMeshHandler(bal, reg, cfg.Balancer.LatencyWindow.Duration)
 	handler.SetMetrics(hist, bcast, collector.Available)
+	// Publish GPU load to peers as well as locally. Without this the /mesh view
+	// can show GPU% for this node only, because peers learn everything they know
+	// about us from /v1/status.
+	proxy.SetStatusGPUSource(hist)
 	handler.SetActivity(actLog)
 	handler.SetEvictOnHardFailure(cfg.Health.EvictOnHardFailure)
 

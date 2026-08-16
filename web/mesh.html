@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>viiwork mesh</title>
+<style>
+  :root {
+    --bg: #0d1117; --card: #161b22; --border: #30363d;
+    --fg: #e6edf3; --dim: #8b949e; --dimmer: #6e7681;
+    --accent: #58a6ff; --ok: #3fb950; --warn: #d29922; --bad: #f85149;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 20px 24px; background: var(--bg); color: var(--fg);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 18px; }
+  h1 { font-size: 1.15rem; margin: 0; font-weight: 600; letter-spacing: -0.01em; }
+  h2 { font-size: 0.82rem; margin: 0 0 8px; font-weight: 600; color: var(--dim);
+       text-transform: uppercase; letter-spacing: 0.06em; }
+  .sub { color: var(--dimmer); font-size: 0.8rem; font-family: var(--mono); }
+  .spacer { flex: 1; }
+
+  .cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); gap: 22px; align-items: start; }
+  @media (max-width: 1100px) { .cols { grid-template-columns: minmax(0, 1fr); } }
+  section { margin-bottom: 20px; }
+
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 6px; }
+  .pad { padding: 10px 12px; }
+
+  /* model pills */
+  .pills { display: flex; flex-wrap: wrap; gap: 6px; }
+  .pill { font-family: var(--mono); font-size: 0.76rem; padding: 3px 9px; border-radius: 999px;
+          border: 1px solid var(--accent); color: var(--accent); background: transparent;
+          cursor: pointer; }
+  .pill.muted { border-color: var(--border); color: var(--dimmer); }
+  .pill.active { background: var(--accent); color: #08131f; font-weight: 600; }
+
+  /* toggle */
+  .toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .toggle button { background: transparent; border: 0; color: var(--dim); font: inherit;
+                   font-size: 0.78rem; padding: 4px 12px; cursor: pointer; }
+  .toggle button.on { background: var(--accent); color: #08131f; font-weight: 600; }
+
+  /* tables */
+  table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+  th { text-align: left; font-weight: 500; color: var(--dim); padding: 7px 10px;
+       border-bottom: 1px solid var(--border); white-space: nowrap; font-size: 0.76rem; }
+  td { padding: 6px 10px; border-bottom: 1px solid rgba(48,54,61,0.5); white-space: nowrap; }
+  tr:last-child td { border-bottom: 0; }
+  td.num { font-family: var(--mono); }
+  .grouphead td { background: rgba(88,166,255,0.06); color: var(--accent);
+                  font-family: var(--mono); font-size: 0.78rem; font-weight: 600;
+                  border-bottom: 1px solid var(--border); }
+  .grouphead .cnt { color: var(--dimmer); font-weight: 400; }
+
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--dimmer); }
+  .dot.healthy { background: var(--ok); }
+  .dot.starting { background: var(--warn); }
+  .dot.unhealthy, .dot.dead { background: var(--bad); }
+
+  .gpu { font-family: var(--mono); }
+  .gpu .plus { color: var(--dimmer); }
+  .host { color: var(--dim); font-family: var(--mono); font-size: 0.78rem; }
+
+  /* meter used for context + vram */
+  .meter { display: inline-block; width: 46px; height: 6px; border-radius: 3px;
+           background: #21262d; overflow: hidden; vertical-align: middle; margin-right: 6px; }
+  .meter > i { display: block; height: 100%; background: var(--accent); }
+  .meter > i.warn { background: var(--warn); }
+  .meter > i.bad { background: var(--bad); }
+
+  /* in-flight + activity */
+  .mono-list { font-family: var(--mono); font-size: 0.78rem; max-height: 300px; overflow-y: auto; }
+  .mono-list .row { padding: 3px 12px; display: flex; gap: 8px; align-items: baseline; }
+  .mono-list .row:nth-child(odd) { background: rgba(255,255,255,0.015); }
+  .age { min-width: 46px; text-align: right; }
+  .task { color: var(--accent); }
+  .arrow { color: var(--dimmer); }
+  .empty { color: var(--dimmer); font-style: italic; padding: 10px 12px; font-size: 0.8rem; }
+  .err { color: var(--bad); padding: 10px 12px; font-size: 0.8rem; }
+</style>
+</head>
+<body>
+<header>
+  <h1>viiwork mesh</h1>
+  <span class="sub" id="scope">…</span>
+  <span class="spacer"></span>
+  <span class="sub">group</span>
+  <span class="toggle" id="groupToggle">
+    <button data-mode="model" class="on">model</button>
+    <button data-mode="host">host</button>
+  </span>
+</header>
+
+<div class="cols">
+  <!-- LEFT -->
+  <div>
+    <section>
+      <h2>Mesh Models</h2>
+      <div class="pills" id="models"></div>
+    </section>
+
+    <section>
+      <h2>In-Flight Requests <span class="sub" id="inflightCount"></span></h2>
+      <div class="card mono-list" id="inflight"><div class="empty">nothing in flight</div></div>
+    </section>
+
+    <section>
+      <h2>Activity</h2>
+      <div class="card mono-list" id="activity"><div class="empty">waiting for events…</div></div>
+    </section>
+  </div>
+
+  <!-- RIGHT -->
+  <div>
+    <section>
+      <h2>Backends <span class="sub" id="backendSummary"></span></h2>
+      <div class="card" id="backendsCard">
+        <table id="backends">
+          <thead>
+            <tr>
+              <th style="width:1%"></th>
+              <th>GPU</th><th>Host</th><th>In-Flight</th><th>RSS</th>
+              <th>GPU%</th><th>VRAM</th><th>Context Use</th>
+            </tr>
+          </thead>
+          <tbody id="backendsBody"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+let groupMode = "model";          // "model" | "host"
+let modelFilter = null;           // null = all
+let cluster = null;               // last /v1/cluster payload
+const inflight = new Map();       // rid -> {startMs, model, dest, task, host}
+const activityRows = [];          // newest-first, capped
+const MAX_ACTIVITY = 60;
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+const $ = id => document.getElementById(id);
+const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g,
+  c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+function fmtGB(mb) {
+  if (!mb) return "—";
+  return (mb / 1024).toFixed(1) + "G";
+}
+function ageColor(sec) {
+  if (sec < 10) return "var(--ok)";
+  if (sec < 30) return "var(--warn)";
+  return "var(--bad)";
+}
+function meter(frac) {
+  const pct = Math.max(0, Math.min(1, frac || 0)) * 100;
+  const cls = pct > 90 ? "bad" : pct > 70 ? "warn" : "";
+  return `<span class="meter"><i class="${cls}" style="width:${pct.toFixed(0)}%"></i></span>`;
+}
+
+// A backend's GPU label. Tensor-split groups carry gpu_ids and no meaningful
+// gpu_id (it is -1), which is exactly the case the plain gpu_id rendering used
+// to get wrong.
+function gpuLabel(b) {
+  if (b.gpu_ids && b.gpu_ids.length) {
+    return b.gpu_ids.map(id => `gpu-${id}`).join('<span class="plus"> + </span>');
+  }
+  return `gpu-${b.gpu_id}`;
+}
+
+// ---------------------------------------------------------------------------
+// Flatten the cluster payload into one list of backends across all hosts.
+// This is the whole point of the page: local and peer backends are structurally
+// different in the API but identical on screen.
+// ---------------------------------------------------------------------------
+function flattenBackends(c) {
+  const rows = [];
+  if (!c) return rows;
+
+  const push = (b, host, model, gpus, reachable) => {
+    // GPU util/VRAM are reported per physical GPU; a tensor-split backend spans
+    // several, so aggregate: utilisation is the max (the group is only as idle
+    // as its busiest card) and VRAM is summed.
+    const ids = (b.gpu_ids && b.gpu_ids.length) ? b.gpu_ids : (b.gpu_id >= 0 ? [b.gpu_id] : []);
+    let util = null, used = 0, total = 0;
+    for (const id of ids) {
+      const g = gpus && gpus.find(x => x.gpu_id === id);
+      if (!g) continue;
+      util = util === null ? g.util : Math.max(util, g.util);
+      used += g.vram_used_mb || 0;
+      total += g.vram_total_mb || 0;
+    }
+    rows.push({
+      host, model: model || b.model || "—", status: b.status,
+      gpuHTML: gpuLabel(b), inFlight: b.in_flight || 0,
+      rssMB: b.rss_mb || 0, util, vramUsed: used, vramTotal: total,
+      slotCtx: b.slot_ctx || 0, tokDecoded: b.tok_decoded || 0,
+      reachable
+    });
+  };
+
+  const localHost = c.hostname || "local";
+  (c.local?.backends || []).forEach(b => push(b, localHost, c.local?.model, c.local?.gpus, true));
+
+  (c.peers || []).forEach(p => {
+    const host = p.hostname || p.addr;
+    const reachable = p.status === "reachable";
+    (p.backends || []).forEach(b => push(b, host, (p.models || [])[0], p.gpus, reachable));
+  });
+  return rows;
+}
+
+// ---------------------------------------------------------------------------
+// Render: backends table, grouped by model or host
+// ---------------------------------------------------------------------------
+function renderBackends() {
+  const body = $("backendsBody");
+  let rows = flattenBackends(cluster);
+  if (modelFilter) rows = rows.filter(r => r.model === modelFilter);
+
+  if (!rows.length) {
+    body.innerHTML = `<tr><td colspan="8" class="empty">no backends${modelFilter ? " for " + esc(modelFilter) : ""}</td></tr>`;
+    $("backendSummary").textContent = "";
+    return;
+  }
+
+  const key = r => groupMode === "model" ? r.model : r.host;
+  const groups = new Map();
+  for (const r of rows) {
+    if (!groups.has(key(r))) groups.set(key(r), []);
+    groups.get(key(r)).push(r);
+  }
+
+  const totalInFlight = rows.reduce((a, r) => a + r.inFlight, 0);
+  $("backendSummary").textContent =
+    `${rows.length} backend${rows.length === 1 ? "" : "s"} · ${groups.size} ${groupMode}${groups.size === 1 ? "" : "s"} · ${totalInFlight} in flight`;
+
+  let html = "";
+  for (const [name, list] of [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const busy = list.reduce((a, r) => a + r.inFlight, 0);
+    html += `<tr class="grouphead"><td colspan="8">${esc(name)}` +
+            `<span class="cnt"> · ${list.length} backend${list.length === 1 ? "" : "s"}` +
+            `${busy ? " · " + busy + " in flight" : ""}</span></td></tr>`;
+    for (const r of list) {
+      const ctxFrac = r.slotCtx ? r.tokDecoded / r.slotCtx : 0;
+      const vramFrac = r.vramTotal ? r.vramUsed / r.vramTotal : 0;
+      const utilTxt = r.util === null ? '<span class="empty">—</span>'
+                                      : `${r.util.toFixed(0)}%`;
+      html += `<tr>` +
+        `<td><span class="dot ${esc(r.status)}" title="${esc(r.status)}${r.reachable ? "" : " (peer unreachable)"}"></span></td>` +
+        `<td class="gpu">${r.gpuHTML}</td>` +
+        `<td class="host">${esc(r.host)}</td>` +
+        `<td class="num">${r.inFlight}</td>` +
+        `<td class="num">${fmtGB(r.rssMB)}</td>` +
+        `<td class="num">${utilTxt}</td>` +
+        `<td class="num">${r.vramTotal ? meter(vramFrac) + fmtGB(r.vramUsed) + "/" + fmtGB(r.vramTotal) : "—"}</td>` +
+        `<td class="num">${r.slotCtx ? meter(ctxFrac) + r.tokDecoded + "/" + r.slotCtx + "t" : "—"}</td>` +
+        `</tr>`;
+    }
+  }
+  body.innerHTML = html;
+}
+
+// ---------------------------------------------------------------------------
+// Render: model pills (click to filter)
+// ---------------------------------------------------------------------------
+function renderModels() {
+  const rows = flattenBackends(cluster);
+  const counts = new Map();
+  for (const r of rows) counts.set(r.model, (counts.get(r.model) || 0) + 1);
+  for (const m of (cluster?.models || [])) if (!counts.has(m)) counts.set(m, 0);
+
+  const el = $("models");
+  if (!counts.size) { el.innerHTML = '<span class="empty">no models</span>'; return; }
+
+  el.innerHTML = [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([m, n]) => {
+      const cls = modelFilter === m ? "pill active" : (n ? "pill" : "pill muted");
+      return `<button class="${cls}" data-model="${esc(m)}">${esc(m)}${n ? ` · ${n}` : ""}</button>`;
+    }).join("");
+
+  el.querySelectorAll("button").forEach(b => b.onclick = () => {
+    modelFilter = (modelFilter === b.dataset.model) ? null : b.dataset.model;
+    renderModels(); renderBackends(); renderInflight();
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Render: in-flight requests (reconstructed from the merged event stream)
+// ---------------------------------------------------------------------------
+function renderInflight() {
+  const el = $("inflight");
+  let list = [...inflight.entries()];
+  if (modelFilter) list = list.filter(([, r]) => r.model === modelFilter);
+  list.sort((a, b) => a[1].startMs - b[1].startMs);
+
+  $("inflightCount").textContent = list.length ? `${list.length}` : "";
+  if (!list.length) { el.innerHTML = '<div class="empty">nothing in flight</div>'; return; }
+
+  const now = Date.now();
+  el.innerHTML = list.map(([, r]) => {
+    const secs = Math.max(0, (now - r.startMs) / 1000);
+    return `<div class="row">` +
+      `<span class="age" style="color:${ageColor(secs)}">${secs.toFixed(1)}s</span>` +
+      (r.task ? `<span class="task">[${esc(r.task)}]</span>` : "") +
+      `<span>${esc(r.model)}</span>` +
+      `<span class="arrow">→</span><span>${esc(r.dest)}</span>` +
+      `<span class="host">@${esc(r.host)}</span>` +
+      `</div>`;
+  }).join("");
+}
+
+function renderActivity() {
+  const el = $("activity");
+  if (!activityRows.length) { el.innerHTML = '<div class="empty">waiting for events…</div>'; return; }
+  el.innerHTML = activityRows.map(r => {
+    const t = new Date(r.t * 1000).toLocaleTimeString();
+    return `<div class="row"><span class="host">${t}</span>` +
+      `<span class="host">${esc(r.host)}</span>` +
+      `<span>${esc(r.message)}</span></div>`;
+  }).join("");
+}
+
+// ---------------------------------------------------------------------------
+// Data: cluster snapshots arrive pushed, not polled
+// ---------------------------------------------------------------------------
+function applyCluster(c) {
+  cluster = c;
+  const peers = (cluster.peers || []);
+  const up = peers.filter(p => p.status === "reachable").length;
+  $("scope").textContent =
+    `${esc(cluster.hostname || "?")} · ${peers.length ? `${up}/${peers.length} peers reachable` : "no peers"} · v${esc(cluster.version || "?")}`;
+  renderModels();
+  renderBackends();
+}
+
+// ---------------------------------------------------------------------------
+// Data: merged activity stream -> in-flight reconstruction
+//
+// There is no server-side registry of running jobs; the per-node dashboard
+// derives them from its own event stream, and this does the same over the
+// merged mesh stream. A request is "in flight" between its start event and its
+// finished event, keyed by (node, request id) since request ids are per-node.
+// ---------------------------------------------------------------------------
+function connectStream() {
+  // One connection carries both feeds, distinguished by SSE event name. The
+  // page never polls: cluster snapshots are pushed when they change, and the
+  // server suppresses identical ones so an idle mesh is silent.
+  const es = new EventSource("/v1/mesh/stream");
+
+  es.addEventListener("cluster", ev => {
+    try { applyCluster(JSON.parse(ev.data)); } catch {}
+  });
+
+  es.addEventListener("activity", ev => {
+    let e;
+    try { e = JSON.parse(ev.data); } catch { return; }
+
+    const host = e.hostname || e.addr || "local";
+    if (e.type === "request" && e.rid) {
+      const key = (e.node_id || host) + "#" + e.rid;
+      const msg = e.message || "";
+      if (/finished|done|aborted/i.test(msg)) {
+        inflight.delete(key);
+      } else {
+        // Message form is "<model> → <dest>"; split rather than re-deriving,
+        // so this keeps working if either side's formatting changes.
+        const parts = msg.split("→");
+        inflight.set(key, {
+          startMs: (e.t || Math.floor(Date.now() / 1000)) * 1000,
+          model: (parts[0] || msg).trim(),
+          dest: (parts[1] || "?").trim(),
+          task: e.task_id || "",
+          host
+        });
+      }
+      renderInflight();
+    }
+
+    activityRows.unshift({ t: e.t, host, message: e.message || "" });
+    if (activityRows.length > MAX_ACTIVITY) activityRows.length = MAX_ACTIVITY;
+    renderActivity();
+  });
+
+  es.onerror = () => {
+    // EventSource reconnects on its own; surface it without tearing anything down.
+    $("scope").textContent += " · stream reconnecting…";
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Wire up
+// ---------------------------------------------------------------------------
+$("groupToggle").querySelectorAll("button").forEach(b => b.onclick = () => {
+  groupMode = b.dataset.mode;
+  $("groupToggle").querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b));
+  renderBackends();
+});
+
+connectStream();
+// In-flight ages must tick even when no events arrive.
+setInterval(renderInflight, 200);
+</script>
+</body>
+</html>

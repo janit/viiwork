@@ -299,11 +299,11 @@ echo "  5) Qwen3-32B (UD-Q2_K_XL, ~12.8GB) - general reasoning, thinking mode"
 echo "  6) Gemma-3-27B-IT (Q3_K_S, ~12.2GB) - summarization, structured-to-prose"
 echo "  7) Mistral-Small-3.1-24B-Instruct (IQ4_XS, ~12.8GB) - multilingual, instruction"
 echo ""
-echo "  GEMMA 4:"
-echo "  8) Gemma-4-26B-A4B-IT (UD-Q3_K_M, ~12.5GB) - MoE, best quality that fits"
-echo "  9) Gemma-4-26B-A4B-IT (UD-IQ3_S, ~11.2GB) - MoE, extra KV cache headroom"
-echo "  10) Gemma-4-E4B-IT (Q8_0, ~8.2GB) - 8B multimodal, high quality quant"
-echo "  11) Gemma-4-E2B-IT (Q8_0, ~5GB) - 5B multimodal, ultra-lightweight"
+echo "  GEMMA 4 (QAT = quantization-aware-trained, near-bf16 quality at Q4):"
+echo "  8) Gemma-4-26B-A4B-IT (QAT UD-Q4_K_XL, ~14.2GB) - MoE, best quality (tight on 16GB; use KV-q4)"
+echo "  9) Gemma-4-26B-A4B-IT-Light (UD-Q3_K_XL, ~12.5GB) - MoE, replica/throughput pick with KV headroom"
+echo "  10) Gemma-4-E4B-IT (QAT UD-Q4_K_XL, ~4.2GB) - 8B multimodal, near-bf16 quality"
+echo "  11) Gemma-4-E2B-IT (QAT UD-Q4_K_XL, ~2.6GB) - 5B multimodal, ultra-lightweight"
 echo ""
 echo "  DATA SCIENCE:"
 echo "  12) DeepSeek-R1-Distill-Qwen-32B (Q2_K, ~12.3GB) - chain-of-thought, math"
@@ -314,7 +314,7 @@ echo "  14) Qwen2.5-14B-Instruct (Q6_K, ~11.3GB) - strong multilingual, high qua
 echo "  15) Mistral-Nemo-Instruct-12B (Q6_K, ~9.4GB) - good European languages"
 echo ""
 echo "  LARGE MODELS (tensor-split, need 2+ GPUs):"
-echo "  17) Gemma-4-31B-IT (Q4_K_M, ~18GB) - full 31B, 2 GPUs"
+echo "  17) Gemma-4-31B-IT (QAT UD-Q4_K_XL, ~17.3GB) - full 31B, near-bf16 quality, 2 GPUs"
 echo "  18) Qwen3-32B (Q4_K_M, ~19GB) - full 32B, 2 GPUs"
 echo "  19) DeepSeek-R1-Distill-Qwen-32B (Q4_K_M, ~19GB) - full 32B reasoning, 2 GPUs"
 echo "  20) Qwen2.5-Coder-32B-Instruct (Q4_K_M, ~19GB) - full 32B coder, 2 GPUs"
@@ -372,24 +372,28 @@ MODEL_REPOS[7]="unsloth/Mistral-Small-3.1-24B-Instruct-2503-GGUF"
 MODEL_FILES[7]="Mistral-Small-3.1-24B-Instruct-2503-IQ4_XS.gguf"
 MODEL_CTX[7]=32768
 
+# QAT (quantization-aware-trained) Q4 checkpoint — near-bf16 quality at Q4.
+# ~14.2GB leaves only ~1.8GB for KV on a 16GB card: run with KV-q4 + short ctx,
+# or pick entry 9 for replica/throughput setups that want KV headroom.
 MODEL_NAMES[8]="Gemma-4-26B-A4B-IT"
-MODEL_REPOS[8]="unsloth/gemma-4-26B-A4B-it-GGUF"
-MODEL_FILES[8]="gemma-4-26B-A4B-it-UD-Q3_K_M.gguf"
+MODEL_REPOS[8]="unsloth/gemma-4-26B-A4B-it-qat-GGUF"
+MODEL_FILES[8]="gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf"
 MODEL_CTX[8]=4096
 
+# Non-QAT lighter quant — the replica×N throughput pick (more KV headroom).
 MODEL_NAMES[9]="Gemma-4-26B-A4B-IT-Light"
 MODEL_REPOS[9]="unsloth/gemma-4-26B-A4B-it-GGUF"
-MODEL_FILES[9]="gemma-4-26B-A4B-it-UD-IQ3_S.gguf"
+MODEL_FILES[9]="gemma-4-26B-A4B-it-UD-Q3_K_XL.gguf"
 MODEL_CTX[9]=4096
 
 MODEL_NAMES[10]="Gemma-4-E4B-IT"
-MODEL_REPOS[10]="unsloth/gemma-4-E4B-it-GGUF"
-MODEL_FILES[10]="gemma-4-E4B-it-Q8_0.gguf"
+MODEL_REPOS[10]="unsloth/gemma-4-E4B-it-qat-GGUF"
+MODEL_FILES[10]="gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf"
 MODEL_CTX[10]=32768
 
 MODEL_NAMES[11]="Gemma-4-E2B-IT"
-MODEL_REPOS[11]="unsloth/gemma-4-E2B-it-GGUF"
-MODEL_FILES[11]="gemma-4-E2B-it-Q8_0.gguf"
+MODEL_REPOS[11]="unsloth/gemma-4-E2B-it-qat-GGUF"
+MODEL_FILES[11]="gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf"
 MODEL_CTX[11]=32768
 
 MODEL_NAMES[12]="DeepSeek-R1-Distill-Qwen-32B"
@@ -414,8 +418,8 @@ MODEL_CTX[15]=32768
 
 # --- Large models (tensor-split: one llama-server spanning multiple GPUs) ---
 MODEL_NAMES[17]="Gemma-4-31B-IT"
-MODEL_REPOS[17]="unsloth/gemma-4-31B-it-GGUF"
-MODEL_FILES[17]="gemma-4-31B-it-Q4_K_M.gguf"
+MODEL_REPOS[17]="unsloth/gemma-4-31B-it-qat-GGUF"
+MODEL_FILES[17]="gemma-4-31B-it-qat-UD-Q4_K_XL.gguf"
 MODEL_CTX[17]=4096
 MODEL_MODE[17]="tensor-split"
 MODEL_MIN_GPUS[17]=2

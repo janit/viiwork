@@ -38,7 +38,7 @@ RUN ldd /llama.cpp/build/bin/llama-server && /llama.cpp/build/bin/llama-server -
 RUN ldd /llama.cpp/build/bin/llama-cli    && /llama.cpp/build/bin/llama-cli    --help > /dev/null
 
 # Stage 2: Build viiwork (unchanged)
-FROM golang:1.23.6 AS go-build
+FROM golang:1.26.6 AS go-build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
