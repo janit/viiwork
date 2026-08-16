@@ -60,6 +60,10 @@ type Manager struct {
 	activity          *activity.Log
 	// now is wall-clock time. Overridable in tests.
 	now func() time.Time
+	// baseCtx is the lifetime context handed to StartAll. The respawn path
+	// needs it to watch a restarted backend back to health from inside
+	// handleHealthResult, which has no ctx of its own.
+	baseCtx context.Context
 }
 
 func NewManager(cfg *config.Config, logWriter io.Writer, sampler PowerSampler, tracker CostTracker, collector GPUCollector, actLog *activity.Log) *Manager {
@@ -344,6 +348,9 @@ func (m *Manager) StartAll(ctx context.Context) error {
 	if len(m.Backends) == 0 {
 		return nil
 	}
+	m.mu.Lock()
+	m.baseCtx = ctx
+	m.mu.Unlock()
 
 	// Use a generous timeout for initial model loading — models can take many
 	// minutes to load into VRAM. The regular health timeout (a few seconds) is
@@ -354,12 +361,7 @@ func (m *Manager) StartAll(ctx context.Context) error {
 	// PCIe gen1 x1 took >10 min in measurement, so the previous 10 min limit
 	// triggered respawn loops where each cycle re-loaded the model and timed
 	// out again. 30 min covers the realistic worst case on this hardware.
-	startupTimeout := 30 * time.Minute
-	if m.cfg.GPUs.TensorSplit.Enabled {
-		// Tensor-split additionally pays the cost of partitioning weights across
-		// N devices and synchronizing the multi-GPU init path. Give it more.
-		startupTimeout = 45 * time.Minute
-	}
+	startupTimeout := m.startupTimeout()
 
 	// Start first backend and wait for it so the node can serve requests immediately.
 	b0 := m.Backends[0]
@@ -409,6 +411,17 @@ func (m *Manager) StartAll(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// startupTimeout is the budget a backend gets to load its model and answer a
+// health probe. Shared by the initial start and the respawn path.
+func (m *Manager) startupTimeout() time.Duration {
+	if m.cfg.GPUs.TensorSplit.Enabled {
+		// Tensor-split additionally pays the cost of partitioning weights across
+		// N devices and synchronizing the multi-GPU init path. Give it more.
+		return 45 * time.Minute
+	}
+	return 30 * time.Minute
 }
 
 func (m *Manager) waitForHealthy(ctx context.Context, b *Backend, timeout time.Duration) error {
@@ -558,8 +571,42 @@ func (m *Manager) handleHealthResult(b *Backend, healthy bool) {
 		if err := b.Start(); err != nil {
 			m.logger.Printf("ERROR: failed to respawn %s: %v", b.label(), err)
 			m.activity.Emit("backend", b.GPUID, "respawn failed: %v", err)
+			return
 		}
+		m.watchRespawn(b)
 	}
+}
+
+// watchRespawn waits for a just-respawned backend to answer a health probe and
+// puts it back in rotation.
+//
+// Start() leaves the backend in StatusStarting, and RunHealthLoop deliberately
+// SKIPS Starting backends so a model that is merely still loading is not
+// respawn-cascaded. Nothing else moves a backend out of Starting, so without
+// this watcher a respawned backend loads normally, serves fine on its own port,
+// and stays permanently invisible to the balancer. Observed on gb6 2026-07-28:
+// ts-2,3 was respawned after an OOM kill at 04:55, answered /health and real
+// completions on port 9602, and still sat out of rotation 6.8 hours later while
+// the node reported 4/5 healthy and never logged another manager event.
+//
+// This mirrors what StartAll already does for the initial start.
+//
+// Caller must hold m.mu (handleHealthResult does): baseCtx is read under it.
+func (m *Manager) watchRespawn(b *Backend) {
+	ctx := m.baseCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	timeout := m.startupTimeout()
+	go func() {
+		if err := m.waitForHealthy(ctx, b, timeout); err != nil {
+			m.logger.Printf("WARNING: %s failed to become healthy after respawn: %v", b.label(), err)
+			m.activity.Emit("backend", b.GPUID, "failed to become healthy after respawn: %v", err)
+			// Unhealthy (not Starting) so RunHealthLoop resumes managing it and
+			// the respawn ladder can try again.
+			b.State.SetStatus(balancer.StatusUnhealthy)
+		}
+	}()
 }
 
 func (m *Manager) Shutdown(ctx context.Context) {
