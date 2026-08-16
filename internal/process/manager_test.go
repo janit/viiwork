@@ -3,6 +3,8 @@ package process
 import (
 	"io"
 	"log"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
 	"time"
@@ -777,4 +779,101 @@ func TestApplyAutoNoMmapInjectsWhenMultiPartTotalTooBig(t *testing.T) {
 			"(part1=4096, total=12288, threshold=8192), got args=%v",
 			m.Backends[0].ExtraArgs)
 	}
+}
+
+// A respawned backend is left in StatusStarting by Start(), and RunHealthLoop
+// deliberately skips Starting backends. Without watchRespawn nothing ever moves
+// it out of Starting, so it loads, serves, and stays out of rotation forever.
+// This is the gb6 2026-07-28 failure: ts-2,3 answered /health and real
+// completions on 9602 for 6.8h while the node reported 4/5 healthy.
+func TestRespawnedBackendReturnsToRotation(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			w.WriteHeader(200)
+			return
+		}
+		w.WriteHeader(404)
+	}))
+	defer srv.Close()
+
+	b := fakeBackend(0)
+	b.State = balancer.NewBackendState(0, srv.Listener.Addr().String())
+	b.HealthTimeout = 3 * time.Second
+	b.State.SetStatus(balancer.StatusStarting)
+
+	m := newTestManager(t, 0, b)
+	m.mu.Lock()
+	m.watchRespawn(b)
+	m.mu.Unlock()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if b.State.Status() == balancer.StatusHealthy {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("respawned backend never returned to rotation: status %v", b.State.Status())
+}
+
+// If the respawned process never answers, it must land in Unhealthy, not stay
+// in Starting -- Unhealthy is the only state RunHealthLoop will manage, so it
+// is what lets the respawn ladder try again (and eventually mark it DEAD).
+func TestRespawnedBackendThatNeverLoadsBecomesUnhealthy(t *testing.T) {
+	b := fakeBackend(0)
+	// No process and no server: CheckHealth fails, IsRunning is false, so
+	// waitForHealthy gives up on its first tick instead of waiting 30 minutes.
+	b.HealthTimeout = 100 * time.Millisecond
+	b.State.SetStatus(balancer.StatusStarting)
+
+	m := newTestManager(t, 0, b)
+	m.mu.Lock()
+	m.watchRespawn(b)
+	m.mu.Unlock()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if b.State.Status() == balancer.StatusUnhealthy {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("stuck backend should be Unhealthy so the loop can retry, got %v", b.State.Status())
+}
+
+// Wiring test: the respawn path itself must hand the backend to watchRespawn.
+// /bin/sleep execs successfully so Start() returns nil, and the health probe is
+// pointed at a live server so the respawned backend "comes up" -- the assertion
+// is that the manager notices and puts it back in rotation. Without the
+// watchRespawn call this stays in StatusStarting forever, which is exactly the
+// gb6 failure (healthy backend, permanently out of rotation).
+func TestRespawnPutsRecoveredBackendBackInRotation(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			w.WriteHeader(200)
+			return
+		}
+		w.WriteHeader(404)
+	}))
+	defer srv.Close()
+
+	b := fakeBackend(0)
+	b.Binary = "/bin/sleep"
+	b.State = balancer.NewBackendState(0, srv.Listener.Addr().String())
+	b.HealthTimeout = 3 * time.Second
+
+	m := newTestManager(t, 0, b)
+	m.now = func() time.Time { return time.Unix(0, 0) }
+	m.handleHealthResult(b, false)
+	m.handleHealthResult(b, false)
+	m.handleHealthResult(b, false) // third failure triggers the respawn
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if b.State.Status() == balancer.StatusHealthy {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("respawned backend answering /health never returned to rotation (status %v); RunHealthLoop skips StatusStarting, so nothing would ever recover it", b.State.Status())
 }
