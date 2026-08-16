@@ -31,10 +31,10 @@ server:
 model:
   # A model that exceeds single-GPU VRAM. Examples that benefit from
   # tensor-split on a 16 GB Radeon VII rig:
-  #   - gemma-4-31B-it-Q4_K_M.gguf (~18 GB) → 2-4 GPUs
+  #   - gemma-4-31B-it-qat-UD-Q4_K_XL.gguf (~17.3 GB) → 2-4 GPUs
   #   - Qwen3.5-122B-A10B Q4_K_M (~70 GB)   → 5-6 GPUs
   #   - Qwen3-235B-A22B Q3_K_M (~100 GB)    → 7-8 GPUs
-  path: /models/gemma-4-31B-it-Q4_K_M.gguf
+  path: /models/gemma-4-31B-it-qat-UD-Q4_K_XL.gguf
   context_size: 4096
   n_gpu_layers: -1
   # parallel is forced to 1 in tensor-split mode regardless of this value

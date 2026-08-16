@@ -33,6 +33,9 @@ type StatusResponse struct {
 	CostEURPerHour float64            `json:"cost_eur_per_hour,omitempty"`
 	CostTodayEUR   float64            `json:"cost_today_eur,omitempty"`
 	CostBreakdown  *CostBreakdownJSON `json:"cost_breakdown,omitempty"`
+	// GPUs lets any node render GPU load for every host in the mesh, not just
+	// its own. omitempty keeps this compatible with nodes that predate it.
+	GPUs []GPUInfo `json:"gpus,omitempty"`
 }
 
 type BackendInfo struct {
@@ -41,6 +44,26 @@ type BackendInfo struct {
 	Model    string `json:"model"`
 	Status   string `json:"status"`
 	InFlight int64  `json:"in_flight"`
+	// Everything below is additive and omitempty: a node running an older
+	// build simply omits these and the mesh view degrades to blanks for that
+	// host rather than breaking. Without them a peer's backends arrive with
+	// no RSS or context figures, which is most of what the mesh view shows.
+	RSSMB      int64 `json:"rss_mb,omitempty"`
+	SlotCtx    int64 `json:"slot_ctx,omitempty"`
+	SlotCount  int   `json:"slot_count,omitempty"`
+	SlotActive int   `json:"slot_active,omitempty"`
+	TokDecoded int64 `json:"tok_decoded,omitempty"`
+	TokRemain  int64 `json:"tok_remain,omitempty"`
+}
+
+// GPUInfo is a single GPU's live utilisation, propagated across the mesh so any
+// node can render GPU load for every host. Locally this comes from the gpu
+// collector; for peers it arrives on the /v1/status poll.
+type GPUInfo struct {
+	GPUID       int     `json:"gpu_id"`
+	Util        float64 `json:"util"`
+	VRAMUsedMB  float64 `json:"vram_used_mb"`
+	VRAMTotalMB float64 `json:"vram_total_mb"`
 }
 
 type CostBreakdownJSON struct {
@@ -76,6 +99,16 @@ type PeerState struct {
 	costAvailable  bool
 	costEURPerHour float64
 	costTodayEUR   float64
+	gpus           []GPUInfo
+}
+
+// GPUs returns a copy of the peer's last reported GPU utilisation.
+func (p *PeerState) GPUs() []GPUInfo {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	out := make([]GPUInfo, len(p.gpus))
+	copy(out, p.gpus)
+	return out
 }
 
 func NewPeerState(addr string) *PeerState {
@@ -99,6 +132,7 @@ func (p *PeerState) Update(resp StatusResponse) {
 	p.costAvailable = resp.CostAvailable
 	p.costEURPerHour = resp.CostEURPerHour
 	p.costTodayEUR = resp.CostTodayEUR
+	p.gpus = append(p.gpus[:0], resp.GPUs...)
 }
 
 func (p *PeerState) MarkUnreachable() {
@@ -107,6 +141,7 @@ func (p *PeerState) MarkUnreachable() {
 	p.status = StatusUnreachable
 	p.models = nil
 	p.backends = nil
+	p.gpus = nil
 	p.powerWatts = 0
 	p.powerAvailable = false
 	p.costAvailable = false
@@ -119,6 +154,23 @@ func (p *PeerState) Status() PeerStatus { p.mu.RLock(); defer p.mu.RUnlock(); re
 func (p *PeerState) Models() []string {
 	p.mu.RLock(); defer p.mu.RUnlock()
 	out := make([]string, len(p.models)); copy(out, p.models); return out
+}
+
+// HasModel reports whether this peer serves the named model.
+//
+// Callers on the request path must use this rather than ranging over Models():
+// that method defensively copies the whole slice on every call, so route
+// resolution allocated once per peer per request purely to run a membership
+// test. Here the check happens under the same read lock with nothing escaping.
+func (p *PeerState) HasModel(name string) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	for _, m := range p.models {
+		if m == name {
+			return true
+		}
+	}
+	return false
 }
 
 // TotalInFlight returns the larger of the last-polled in-flight count and the

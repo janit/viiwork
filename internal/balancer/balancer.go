@@ -4,6 +4,9 @@ import (
 	"errors"
 	"log"
 	"os"
+	"sync/atomic"
+
+	"github.com/janit/viiwork/internal/logging"
 )
 
 var (
@@ -16,6 +19,8 @@ type Balancer struct {
 	highLoadThreshold int
 	maxInFlightPerGPU int64
 	logger            *log.Logger
+	// lastHealthy makes the single-backend warning edge-triggered.
+	lastHealthy atomic.Int32
 }
 
 func New(backends []*BackendState, highLoadThreshold int, maxInFlightPerGPU int) *Balancer {
@@ -28,21 +33,27 @@ func New(backends []*BackendState, highLoadThreshold int, maxInFlightPerGPU int)
 }
 
 func (b *Balancer) Pick() (*BackendState, error) {
-	var healthy []*BackendState
+	healthy := make([]*BackendState, 0, len(b.backends))
 	for _, be := range b.backends {
 		if be.Status() == StatusHealthy {
 			healthy = append(healthy, be)
 		}
 	}
 	if len(healthy) == 0 {
-		b.logger.Printf("[debug] Pick: no healthy backends (total=%d)", len(b.backends))
-		for _, be := range b.backends {
-			b.logger.Printf("[debug]   gpu-%d status=%s in_flight=%d", be.GPUID, be.Status(), be.InFlight())
+		if logging.DebugEnabled() {
+			b.logger.Printf("[debug] Pick: no healthy backends (total=%d)", len(b.backends))
+			for _, be := range b.backends {
+				b.logger.Printf("[debug]   %s status=%s in_flight=%d", be.Label(), be.Status(), be.InFlight())
+			}
 		}
 		return nil, ErrNoHealthyBackend
 	}
-	if len(healthy) == 1 {
-		b.logger.Printf("WARNING: only 1 healthy backend remaining (gpu-%d)", healthy[0].GPUID)
+	// Edge-triggered, not level-triggered. This used to fire on EVERY request
+	// while only one backend was healthy — which is the steady state for any
+	// single-backend deployment, so it logged once per request forever and
+	// buried real events. Now it reports the transition only.
+	if prev := b.lastHealthy.Swap(int32(len(healthy))); prev != int32(len(healthy)) && len(healthy) == 1 {
+		b.logger.Printf("WARNING: only 1 healthy backend remaining (%s)", healthy[0].Label())
 	}
 	allAtMax := true
 	for _, be := range healthy {
@@ -52,14 +63,16 @@ func (b *Balancer) Pick() (*BackendState, error) {
 		}
 	}
 	if allAtMax {
-		b.logger.Printf("[debug] Pick: backpressure — all %d healthy backends at max_in_flight=%d", len(healthy), b.maxInFlightPerGPU)
-		for _, be := range healthy {
-			b.logger.Printf("[debug]   gpu-%d in_flight=%d", be.GPUID, be.InFlight())
+		if logging.DebugEnabled() {
+			b.logger.Printf("[debug] Pick: backpressure — all %d healthy backends at max_in_flight=%d", len(healthy), b.maxInFlightPerGPU)
+			for _, be := range healthy {
+				b.logger.Printf("[debug]   %s in_flight=%d", be.Label(), be.InFlight())
+			}
 		}
 		return nil, ErrBackpressure
 	}
 	busyCount := 0
-	var idle []*BackendState
+	idle := make([]*BackendState, 0, len(healthy))
 	for _, be := range healthy {
 		if be.InFlight() > 0 {
 			busyCount++
@@ -69,11 +82,15 @@ func (b *Balancer) Pick() (*BackendState, error) {
 	}
 	if busyCount < b.highLoadThreshold && len(idle) > 0 {
 		picked := pickLowestLatency(idle)
-		b.logger.Printf("[debug] Pick: low-load path, picked gpu-%d (idle=%d busy=%d)", picked.GPUID, len(idle), busyCount)
+		if logging.DebugEnabled() {
+			b.logger.Printf("[debug] Pick: low-load path, picked %s (idle=%d busy=%d)", picked.Label(), len(idle), busyCount)
+		}
 		return picked, nil
 	}
 	picked := pickLeastLoaded(healthy)
-	b.logger.Printf("[debug] Pick: high-load path, picked gpu-%d (in_flight=%d healthy=%d busy=%d)", picked.GPUID, picked.InFlight(), len(healthy), busyCount)
+	if logging.DebugEnabled() {
+		b.logger.Printf("[debug] Pick: high-load path, picked %s (in_flight=%d healthy=%d busy=%d)", picked.Label(), picked.InFlight(), len(healthy), busyCount)
+	}
 	return picked, nil
 }
 
@@ -87,8 +104,8 @@ func pickLowestLatency(backends []*BackendState) *BackendState {
 	return best
 }
 
-func (b *Balancer) MaxInFlightPerGPU() int         { return int(b.maxInFlightPerGPU) }
-func (b *Balancer) Backends() []*BackendState       { return b.backends }
+func (b *Balancer) MaxInFlightPerGPU() int    { return int(b.maxInFlightPerGPU) }
+func (b *Balancer) Backends() []*BackendState { return b.backends }
 
 func pickLeastLoaded(backends []*BackendState) *BackendState {
 	best := backends[0]

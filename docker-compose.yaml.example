@@ -2,6 +2,12 @@ services:
   viiwork:
     image: viiwork
     build: .
+    # ipc: host is REQUIRED as soon as a SECOND ROCm container runs on this
+    # host, even on completely disjoint GPUs — without it the two conflict over
+    # HSA/KFD and the later one fails to initialise. Harmless for a single
+    # instance, so it is left on: the failure it prevents is confusing enough
+    # that discovering it later costs far more than the line costs here.
+    ipc: host
     devices:
       - /dev/kfd:/dev/kfd
       - /dev/dri:/dev/dri
@@ -16,4 +22,8 @@ services:
     group_add:
       - video
       - render
+    # environment:
+    #   # Verbose per-request routing logs. Off by default because they sit on
+    #   # hot paths — see README "Environment Variables".
+    #   - VIIWORK_DEBUG=1
     restart: unless-stopped

@@ -1,6 +1,11 @@
 # bench-harness
 
 Benchmark and soak harness used during the gfx906 llama.cpp fork work.
+
+> Not to be confused with the Go micro-benchmarks in `internal/proxy` and
+> `internal/balancer` (`go test -bench`). Those measure viiwork's own CPU cost
+> per request and per token; everything here measures GPU inference throughput
+> and long-run stability by driving real models.
 This is the repo-tracked snapshot of the scripts that live (and run from)
 `/home/janit/gfx906-work/bench-harness/` on the production node. Results
 land outside the repo at `/home/janit/gfx906-work/results/` because they

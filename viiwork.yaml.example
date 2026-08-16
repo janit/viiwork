@@ -6,6 +6,12 @@ model:
   path: /models/gpt-oss-20b-Q4_K_M.gguf
   context_size: 13337
   n_gpu_layers: -1
+  # parallel: 1  # slots per backend. llama.cpp DIVIDES context_size across
+  #              # slots, so parallel: 4 with context_size: 131072 gives each
+  #              # request 32K, not 128K. Raise it only together with a
+  #              # deliberate context decision — the two trade off directly.
+  #              # With several backends, prefer more backends over more slots:
+  #              # N replicas each at full context beat one backend at N slots.
 
 gpus:
   # Use 'devices' to specify exact GPU IDs (recommended for multi-instance):
@@ -13,7 +19,15 @@ gpus:
   # Or use 'count' for simple single-instance setups (uses GPUs 0..count-1):
   count: 10
   base_port: 9001
+  # offset: 0  # shift the GPU index range when several viiwork instances share
+  #            # a host and each drives a different slice of the GPUs.
   # power_limit_watts: 180  # optional: limit per-GPU power via rocm-smi
+  #
+  # tensor_split: split ONE model across several GPUs, for models too large for
+  # a single card. Not shown here to keep this file readable — see
+  # configs/viiwork.tensor-split.yaml.example for the full block
+  # (enabled / mode / group_size / weights / main_gpu) and the reasoning behind
+  # each knob.
 
 backend:
   binary: llama-server

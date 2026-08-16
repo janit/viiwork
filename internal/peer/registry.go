@@ -136,7 +136,8 @@ func (r *Registry) pollPeer(ctx context.Context, p *PeerState) {
 }
 
 func (r *Registry) FindRoutesForModel(modelName string) []Route {
-	var routes []Route
+	// Pre-sized: this runs once per request, and the upper bound is known.
+	routes := make([]Route, 0, len(r.backends)+len(r.peers))
 	if modelName == r.localModel {
 		for _, b := range r.backends {
 			if b.Status() == balancer.StatusHealthy {
@@ -145,12 +146,13 @@ func (r *Registry) FindRoutesForModel(modelName string) []Route {
 		}
 	}
 	for _, p := range r.peers {
-		if p.Status() != StatusReachable { continue }
-		for _, m := range p.Models() {
-			if m == modelName {
-				routes = append(routes, Route{Type: RoutePeer, Addr: p.Addr, Peer: p, InFlight: p.TotalInFlight()})
-				break
-			}
+		if p.Status() != StatusReachable {
+			continue
+		}
+		// HasModel, not range over Models(): the latter copies the peer's model
+		// slice on every call.
+		if p.HasModel(modelName) {
+			routes = append(routes, Route{Type: RoutePeer, Addr: p.Addr, Peer: p, InFlight: p.TotalInFlight()})
 		}
 	}
 	return routes
@@ -187,6 +189,7 @@ type ClusterResponse struct {
 }
 
 type ClusterLocalInfo struct {
+	GPUs []GPUInfo `json:"gpus,omitempty"`
 	Model          string               `json:"model"`
 	ListenAddr     string               `json:"listen_addr,omitempty"`
 	PowerWatts     float64              `json:"power_watts"`
@@ -200,8 +203,12 @@ type ClusterLocalInfo struct {
 }
 
 type ClusterBackendInfo struct {
-	GPUID      int    `json:"gpu_id"`
-	GPUIDs     []int  `json:"gpu_ids,omitempty"`
+	GPUID int   `json:"gpu_id"`
+	GPUIDs []int `json:"gpu_ids,omitempty"`
+	// Model is per-backend rather than per-node because the mesh view groups by
+	// it. A node serves one model today, but reading it off the backend keeps
+	// the grouping correct if that ever stops being true.
+	Model      string `json:"model,omitempty"`
 	Status     string `json:"status"`
 	InFlight   int64  `json:"in_flight"`
 	RSSMB      int64  `json:"rss_mb,omitempty"`
@@ -213,6 +220,7 @@ type ClusterBackendInfo struct {
 }
 
 type ClusterPeerInfo struct {
+	GPUs            []GPUInfo            `json:"gpus,omitempty"`
 	Addr            string               `json:"addr"`
 	Hostname        string               `json:"hostname,omitempty"`
 	Status          string               `json:"status"`
@@ -247,7 +255,7 @@ func (r *Registry) ClusterState() ClusterResponse {
 			gpuIDs = append(gpuIDs, b.GPUIDs...)
 		}
 		resp.Local.Backends = append(resp.Local.Backends, ClusterBackendInfo{
-			GPUID: b.GPUID, GPUIDs: gpuIDs, Status: b.Status().String(), InFlight: b.InFlight(),
+			GPUID: b.GPUID, GPUIDs: gpuIDs, Model: r.localModel, Status: b.Status().String(), InFlight: b.InFlight(),
 			RSSMB: b.RSSMB(), SlotCtx: b.SlotCtx(), SlotCount: b.SlotCount(), SlotActive: b.SlotActive(),
 			TokDecoded: b.TokDecoded(), TokRemain: b.TokRemain(),
 		})
@@ -272,10 +280,13 @@ func (r *Registry) ClusterState() ClusterResponse {
 			info.CostAvailable = p.CostAvailable()
 			info.CostEURPerHour = p.CostEURPerHour()
 			info.CostTodayEUR = p.CostTodayEUR()
+			info.GPUs = p.GPUs()
 			for _, pb := range p.Backends() {
 				info.Backends = append(info.Backends, ClusterBackendInfo{
 					GPUID: pb.GPUID, GPUIDs: append([]int(nil), pb.GPUIDs...),
-					Status: pb.Status, InFlight: pb.InFlight,
+					Model: pb.Model, Status: pb.Status, InFlight: pb.InFlight,
+					RSSMB: pb.RSSMB, SlotCtx: pb.SlotCtx, SlotCount: pb.SlotCount,
+					SlotActive: pb.SlotActive, TokDecoded: pb.TokDecoded, TokRemain: pb.TokRemain,
 				})
 			}
 			if p.CostAvailable() {

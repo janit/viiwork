@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/janit/viiwork/internal/balancer"
+	"github.com/janit/viiwork/internal/logging"
 )
 
 // isHardSocketFailure reports whether err from backendClient.Do indicates the
@@ -84,29 +85,35 @@ func proxyRequest(w http.ResponseWriter, r *http.Request, backend *balancer.Back
 	defer cancel()
 
 	targetURL := fmt.Sprintf("http://%s%s", backend.Addr, r.URL.Path)
-	if r.URL.RawQuery != "" { targetURL += "?" + r.URL.RawQuery }
+	if r.URL.RawQuery != "" {
+		targetURL += "?" + r.URL.RawQuery
+	}
 
 	proxyReq, err := http.NewRequestWithContext(ctx, r.Method, targetURL, r.Body)
 	if err != nil {
-		log.Printf("[debug] proxy request creation failed for gpu-%d: %v", backend.GPUID, err)
+		log.Printf("[debug] proxy request creation failed for %s: %v", backend.Label(), err)
 		http.Error(w, "proxy error", http.StatusBadGateway)
 		return
 	}
 	for key, values := range r.Header {
-		for _, v := range values { proxyReq.Header.Add(key, v) }
+		for _, v := range values {
+			proxyReq.Header.Add(key, v)
+		}
 	}
 
 	resp, err := backendClient.Do(proxyReq)
 	if err != nil {
 		if evictOnHardFailure && isHardSocketFailure(err) {
 			backend.NoteHardFailure()
-			log.Printf("[manager] gpu-%d evicted: hard socket failure on inference path (%v)", backend.GPUID, err)
+			log.Printf("[manager] %s evicted: hard socket failure on inference path (%v)", backend.Label(), err)
 		}
-		log.Printf("[debug] backend gpu-%d (%s) unavailable: %v", backend.GPUID, backend.Addr, err)
+		log.Printf("[debug] backend %s (%s) unavailable: %v", backend.Label(), backend.Addr, err)
 		http.Error(w, "backend unavailable", http.StatusBadGateway)
 		return
 	}
-	log.Printf("[debug] backend gpu-%d responded %d (content-type: %s)", backend.GPUID, resp.StatusCode, resp.Header.Get("Content-Type"))
+	if logging.DebugEnabled() {
+		log.Printf("[debug] backend %s responded %d (content-type: %s)", backend.Label(), resp.StatusCode, resp.Header.Get("Content-Type"))
+	}
 	defer resp.Body.Close()
 
 	for key, values := range resp.Header {
@@ -116,9 +123,11 @@ func proxyRequest(w http.ResponseWriter, r *http.Request, backend *balancer.Back
 		if thinkDisabled && strings.EqualFold(key, "Content-Length") {
 			continue // body will be rewritten, original length is wrong
 		}
-		for _, v := range values { w.Header().Add(key, v) }
+		for _, v := range values {
+			w.Header().Add(key, v)
+		}
 	}
-	w.Header().Set("X-GPU-Backend", fmt.Sprintf("gpu-%d", backend.GPUID))
+	w.Header().Set("X-GPU-Backend", backend.Label())
 	w.Header().Set("X-Queue-Depth", fmt.Sprintf("%d", backend.InFlight()))
 
 	// When think is disabled, rewrite the response to move reasoning_content
@@ -128,12 +137,12 @@ func proxyRequest(w http.ResponseWriter, r *http.Request, backend *balancer.Back
 			w.WriteHeader(resp.StatusCode)
 			clientAborted = streamThinkDisabled(w, resp.Body, cancel)
 			if clientAborted {
-				log.Printf("[debug] gpu-%d stream: client aborted (think-disabled path)", backend.GPUID)
+				log.Printf("[debug] %s stream: client aborted (think-disabled path)", backend.Label())
 			}
 		} else {
 			body, err := io.ReadAll(resp.Body)
 			if err != nil {
-				log.Printf("[debug] gpu-%d non-streaming read error: %v", backend.GPUID, err)
+				log.Printf("[debug] %s non-streaming read error: %v", backend.Label(), err)
 				http.Error(w, "backend read error", http.StatusBadGateway)
 				return
 			}
@@ -153,7 +162,7 @@ func proxyRequest(w http.ResponseWriter, r *http.Request, backend *balancer.Back
 			n, readErr := resp.Body.Read(buf)
 			if n > 0 {
 				if _, writeErr := w.Write(buf[:n]); writeErr != nil {
-					log.Printf("[debug] gpu-%d stream: client write error (aborting): %v", backend.GPUID, writeErr)
+					log.Printf("[debug] %s stream: client write error (aborting): %v", backend.Label(), writeErr)
 					cancel() // client disconnected — kill backend request immediately
 					clientAborted = true
 					break
@@ -162,7 +171,7 @@ func proxyRequest(w http.ResponseWriter, r *http.Request, backend *balancer.Back
 			}
 			if readErr != nil {
 				if readErr != io.EOF {
-					log.Printf("[debug] gpu-%d stream: backend read error: %v", backend.GPUID, readErr)
+					log.Printf("[debug] %s stream: backend read error: %v", backend.Label(), readErr)
 				}
 				break
 			}

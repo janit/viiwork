@@ -15,6 +15,7 @@ import (
 	"github.com/janit/viiwork/internal/activity"
 	"github.com/janit/viiwork/internal/balancer"
 	"github.com/janit/viiwork/internal/gpu"
+	"github.com/janit/viiwork/internal/logging"
 	"github.com/janit/viiwork/internal/peer"
 	"github.com/janit/viiwork/internal/pipeline"
 	"github.com/janit/viiwork/web"
@@ -75,7 +76,6 @@ func (h *Handler) SetEvictOnHardFailure(enabled bool) {
 	h.evictOnHardFailure = enabled
 }
 
-
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		if rv := recover(); rv != nil {
@@ -106,6 +106,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.URL.Path == "/" && r.Method == "GET":
 		w.Header().Set("Content-Type", "text/html")
 		w.Write(web.DashboardHTML)
+	case r.URL.Path == "/mesh" && r.Method == "GET":
+		w.Header().Set("Content-Type", "text/html")
+		w.Write(web.MeshHTML)
+	case r.URL.Path == "/v1/mesh/stream" && r.Method == "GET":
+		h.handleMeshStream(w, r)
 	case r.URL.Path == "/chat" && r.Method == "GET":
 		w.Header().Set("Content-Type", "text/html")
 		w.Write(web.ChatHTML)
@@ -152,6 +157,10 @@ func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request) {
 // maxRequestBodySize limits inference request bodies to 32 MB.
 const maxRequestBodySize = 32 << 20
 
+// presizeCap bounds how much readBodyPresized will trust Content-Length for.
+// 2 MB comfortably covers a 100K-token prompt; anything larger grows normally.
+const presizeCap = 2 << 20
+
 // HeaderTask is a fallback for clients whose SDKs forbid non-standard JSON fields.
 const HeaderTask = "X-Viiwork-Task"
 
@@ -176,10 +185,142 @@ func sanitizeTaskID(s string) string {
 	return strings.TrimSpace(string(b))
 }
 
+// readBodyPresized buffers a request body, sizing the destination from
+// Content-Length when the client supplied a usable one.
+//
+// io.ReadAll starts at 512 bytes and grows by repeated append, so a large chat
+// completion body is reallocated and copied ~a dozen times on the way in. Chat
+// clients always send Content-Length (the body is a fully-built JSON document,
+// not a stream), so the size is known up front in practice.
+//
+// The length is treated as a HINT, never as truth: it is ignored when absent
+// (-1), when implausible, and it does not bound how much is read. The caller
+// has already wrapped the body in http.MaxBytesReader, which remains the only
+// thing enforcing the size limit. A lying Content-Length therefore costs at
+// most one wasted allocation, never a truncated or over-large read.
+func readBodyPresized(r io.Reader, contentLength int64) ([]byte, error) {
+	if contentLength <= 0 || contentLength > maxRequestBodySize {
+		return io.ReadAll(r)
+	}
+	// Content-Length is CLIENT-CONTROLLED, so it must not size an allocation
+	// without a bound. Sending "Content-Length: 32MB" with a one-byte body
+	// would otherwise force a 32 MB allocation per request — cheap for the
+	// attacker, and multiplied by concurrency an easy way to push a 62 GB host
+	// into swap. io.ReadAll never had this exposure because it only ever
+	// allocated what it actually read.
+	//
+	// Capping costs almost nothing: real chat bodies sit far below this, and a
+	// genuinely larger one just grows from the cap in a few doublings instead
+	// of from 512 bytes in a dozen.
+	if contentLength > presizeCap {
+		contentLength = presizeCap
+	}
+	// The headroom is bytes.MinRead, not +1: Buffer.ReadFrom asks grow() for
+	// MinRead free bytes before EVERY read, including the final one that just
+	// returns io.EOF. Sizing to exactly Content-Length therefore triggers one
+	// last doubling and allocates more than io.ReadAll did — measured, not
+	// theorised (251 KB/op vs 202 KB before this line was corrected).
+	buf := bytes.NewBuffer(make([]byte, 0, contentLength+bytes.MinRead))
+	if _, err := buf.ReadFrom(r); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// Byte-level keys used to gate the fast field extraction below.
+var (
+	keyModelJSON = []byte(`"model"`)
+	keyThinkJSON = []byte(`"think"`)
+	keyTaskJSON  = []byte(`"task"`)
+	escapePrefix = []byte(`\u`)
+)
+
+// extractModelFast returns the value of a top-level "model" key without parsing
+// the rest of the body, reporting false when it cannot do so safely.
+//
+// The motivation: handleProxy needs three small scalars, but json.Unmarshal must
+// lex the entire document to produce them — including a prompt that can run to
+// megabytes. Routing a 16K-token request cost ~762us of pure lexing before this.
+//
+// Three guards keep it honest, and any of them failing means the caller falls
+// back to the full unmarshal:
+//
+//  1. "think" and "task" must be absent from the raw bytes. They are viiwork
+//     extensions and almost never present; if either string appears anywhere,
+//     even inside prompt text, we take the slow path rather than guess.
+//  2. "model" must appear exactly once. json.Unmarshal resolves duplicate keys
+//     to the LAST occurrence while an early-stopping scan would take the first,
+//     so a body with two "model" keys must not use this path.
+//  3. Scanning stops at the first non-scalar value. Skipping over a nested
+//     array with the decoder would cost what we are trying to avoid, so if
+//     "model" does not appear before "messages" there is nothing to win.
+//
+// Correctness rests on encoding/json's own lexer — this does not hand-roll JSON
+// parsing, it just stops reading early.
+func extractModelFast(body []byte) (string, bool) {
+	if bytes.Contains(body, keyThinkJSON) || bytes.Contains(body, keyTaskJSON) {
+		return "", false
+	}
+	// JSON permits unicode escapes in KEYS, so {"\u0074hink":true} is a valid
+	// spelling of "think" that the byte scan above cannot see. Early-stopping
+	// cannot rule out a later key either — by the time the decoder reaches an
+	// escaped "think" we have already returned on "model". The byte scan is
+	// therefore the only thing proving absence, and it must not be defeatable,
+	// so any escape sequence anywhere disqualifies the fast path.
+	//
+	// Cost of being this strict: Python's json.dumps defaults to
+	// ensure_ascii=True and escapes every non-ASCII character, so clients
+	// sending non-English prompts fall back to the full unmarshal. That is the
+	// pre-existing behaviour and always correct — just not faster.
+	if bytes.Contains(body, escapePrefix) {
+		return "", false
+	}
+	if bytes.Count(body, keyModelJSON) != 1 {
+		return "", false
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	tok, err := dec.Token()
+	if err != nil {
+		return "", false
+	}
+	if d, ok := tok.(json.Delim); !ok || d != '{' {
+		return "", false
+	}
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return "", false
+		}
+		key, _ := keyTok.(string)
+		// The byte-level guards above cannot see keys written with JSON unicode
+		// escapes — {"\u0074hink":true} is a valid spelling of "think" that
+		// bytes.Contains will miss, and taking the fast path there would drop a
+		// think/task the client really sent. dec.Token() has already decoded the
+		// escape, so re-checking the decoded key closes the hole for free.
+		if key == "think" || key == "task" {
+			return "", false
+		}
+		valTok, err := dec.Token()
+		if err != nil {
+			return "", false
+		}
+		if d, isDelim := valTok.(json.Delim); isDelim {
+			// Nested object or array: skipping it is the expense we are avoiding.
+			_ = d
+			return "", false
+		}
+		if key == "model" {
+			s, ok := valTok.(string)
+			return s, ok
+		}
+	}
+	return "", false
+}
+
 func (h *Handler) handleProxy(w http.ResponseWriter, r *http.Request) {
 	// Read and buffer body to extract model and think parameters
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
-	bodyBytes, err := io.ReadAll(r.Body)
+	bodyBytes, err := readBodyPresized(r.Body, r.ContentLength)
 	if err != nil {
 		if err.Error() == "http: request body too large" {
 			http.Error(w, `{"error":{"message":"request body too large","type":"invalid_request"}}`, http.StatusRequestEntityTooLarge)
@@ -194,7 +335,12 @@ func (h *Handler) handleProxy(w http.ResponseWriter, r *http.Request) {
 		Think *bool  `json:"think"`
 		Task  string `json:"task"`
 	}
-	json.Unmarshal(bodyBytes, &reqBody)
+	if model, ok := extractModelFast(bodyBytes); ok {
+		// Fast path proved think/task absent, so the zero values are correct.
+		reqBody.Model = model
+	} else {
+		json.Unmarshal(bodyBytes, &reqBody)
+	}
 	thinkDisabled := reqBody.Think == nil || !*reqBody.Think
 
 	// Resolve task ID: body "task" wins, else X-Viiwork-Task header.
@@ -306,22 +452,28 @@ func (h *Handler) handleProxy(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	rid := activity.NewRequestID()
 	if route.Type == peer.RouteLocal {
-		log.Printf("[debug] %s → gpu-%d (in_flight=%d)", model, route.Backend.GPUID, route.Backend.InFlight())
+		if logging.DebugEnabled() {
+			log.Printf("[debug] %s → gpu-%d (in_flight=%d)", model, route.Backend.GPUID, route.Backend.InFlight())
+		}
 		if h.activity != nil {
-			h.activity.EmitRequestTask(rid, route.Backend.GPUID, taskID, "%s → gpu-%d", model, route.Backend.GPUID)
+			h.activity.EmitRequestTask(rid, route.Backend.GPUID, taskID, "%s → %s", model, route.Backend.Label())
 		}
 		aborted := proxyRequest(w, r, route.Backend, h.latencyWindow, thinkDisabled, h.evictOnHardFailure)
 		elapsed := time.Since(start).Round(time.Millisecond)
-		log.Printf("[debug] %s → gpu-%d finished (elapsed=%s aborted=%v in_flight=%d)", model, route.Backend.GPUID, elapsed, aborted, route.Backend.InFlight())
+		if logging.DebugEnabled() {
+			log.Printf("[debug] %s → gpu-%d finished (elapsed=%s aborted=%v in_flight=%d)", model, route.Backend.GPUID, elapsed, aborted, route.Backend.InFlight())
+		}
 		if h.activity != nil {
 			if aborted {
-				h.activity.EmitRequestTask(rid, route.Backend.GPUID, taskID, "%s → gpu-%d aborted by client (%s)", model, route.Backend.GPUID, elapsed)
+				h.activity.EmitRequestTask(rid, route.Backend.GPUID, taskID, "%s → %s aborted by client (%s)", model, route.Backend.Label(), elapsed)
 			} else {
-				h.activity.EmitRequestTask(rid, route.Backend.GPUID, taskID, "%s → gpu-%d done (%s)", model, route.Backend.GPUID, elapsed)
+				h.activity.EmitRequestTask(rid, route.Backend.GPUID, taskID, "%s → %s done (%s)", model, route.Backend.Label(), elapsed)
 			}
 		}
 	} else {
-		log.Printf("[debug] %s → peer %s", model, route.Addr)
+		if logging.DebugEnabled() {
+			log.Printf("[debug] %s → peer %s", model, route.Addr)
+		}
 		if h.activity != nil {
 			h.activity.EmitRequestTask(rid, -1, taskID, "%s → peer %s", model, route.Addr)
 		}
@@ -336,7 +488,9 @@ func (h *Handler) handleProxy(w http.ResponseWriter, r *http.Request) {
 			route.Peer.DecLocalInFlight()
 		}
 		elapsed := time.Since(start).Round(time.Millisecond)
-		log.Printf("[debug] %s → peer %s finished (elapsed=%s)", model, route.Addr, elapsed)
+		if logging.DebugEnabled() {
+			log.Printf("[debug] %s → peer %s finished (elapsed=%s)", model, route.Addr, elapsed)
+		}
 		if h.activity != nil {
 			h.activity.EmitRequestTask(rid, -1, taskID, "%s → peer %s done (%s)", model, route.Addr, elapsed)
 		}

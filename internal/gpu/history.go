@@ -1,6 +1,9 @@
 package gpu
 
-import "sync"
+import (
+	"sort"
+	"sync"
+)
 
 type RingBuffer struct {
 	samples []GPUSample
@@ -63,5 +66,26 @@ func (h *History) AllGPUSamples() map[int][]GPUSample {
 	defer h.mu.RUnlock()
 	out := make(map[int][]GPUSample, len(h.buffers))
 	for id, rb := range h.buffers { out[id] = rb.slice() }
+	return out
+}
+
+// Latest returns the newest sample for each GPU, ordered by GPU ID.
+//
+// A status poll needs only the current value; AllGPUSamples copies the whole
+// hour-long ring buffer for every GPU, which is far too much to put on a
+// per-poll mesh payload.
+func (h *History) Latest() []GPUSample {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	out := make([]GPUSample, 0, len(h.buffers))
+	for _, rb := range h.buffers {
+		if rb.count == 0 {
+			continue
+		}
+		// head points at the next write slot, so the newest entry is behind it.
+		newest := (rb.head - 1 + rb.maxSize) % rb.maxSize
+		out = append(out, rb.samples[newest])
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].GPUID < out[j].GPUID })
 	return out
 }
