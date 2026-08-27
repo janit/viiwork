@@ -3,7 +3,11 @@ server:
   port: 8080
 
 model:
-  path: /models/gpt-oss-20b-Q4_K_M.gguf
+  # Any GGUF llama.cpp can load. gemma-4-26B-A4B (MoE, 4B active) is a good
+  # default on a 16 GB card: it fits with KV headroom and is the highest-
+  # throughput model measured on this hardware. See "Recommended Models" in
+  # README.md for measured picks per layout.
+  path: /models/gemma-4-26B-A4B-it-UD-Q3_K_XL.gguf
   context_size: 13337
   n_gpu_layers: -1
   # parallel: 1  # slots per backend. llama.cpp DIVIDES context_size across
@@ -32,6 +36,13 @@ gpus:
 backend:
   binary: llama-server
   extra_args: ["--reasoning-format", "deepseek"]  # enables <think> tag parsing for thinking models
+  # Thinking models: several current families (Gemma 4, Qwen3.8, Laguna) reason
+  # by default, which shows up as latency and tokens you may not want for prose.
+  # Disabling it is per-template and NOT uniform — see docs/thinking-models.md:
+  #   extra_args: ["--jinja", "--chat-template-kwargs", "{\"enable_thinking\": false}"]
+  # `--reasoning-budget 0` does not take on the Gemma 4 template, and Laguna
+  # inverts the flag (it wants enable_thinking TRUE). Verify per model rather
+  # than copying a flag between them.
   # threads: 0  # 0 = auto-derive max(1, nproc/n_backends). Override to pin a
   #             # specific count. Bypassed entirely if --threads is in extra_args.
 
@@ -108,11 +119,11 @@ balancer:
 #         prompt: prompts/translate.tmpl
 #         temperature: 0.1
 #       - name: localize
-#         model: qwen2.5-14b
+#         model: gemma-4-31B-it-qat-UD-Q4_K_XL
 #         prompt: prompts/localize.tmpl
 #         temperature: 0.4
 #       - name: qc
-#         model: qwen2.5-7b
+#         model: EuroLLM-22B-Instruct-2512-Q5_K_M
 #         prompt: prompts/qc.tmpl
 #         temperature: 0.1
 #         json_output: true
@@ -129,10 +140,10 @@ balancer:
 #         formality: neutral
 #     steps:
 #       - name: generate
-#         model: qwen2.5-14b
+#         model: gemma-4-31B-it-qat-UD-Q4_K_XL
 #         prompt: prompts/generate.tmpl
 #         temperature: 0.7
 #       - name: improve
-#         model: qwen2.5-14b
+#         model: gemma-4-31B-it-qat-UD-Q4_K_XL
 #         prompt: prompts/improve.tmpl
 #         temperature: 0.3

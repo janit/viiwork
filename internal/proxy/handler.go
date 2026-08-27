@@ -128,6 +128,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleActivity(w, r)
 	case r.URL.Path == "/v1/activity/stream" && r.Method == "GET":
 		h.handleActivityStream(w, r)
+	case r.URL.Path == "/v1/prompts" && r.Method == "GET":
+		h.handlePromptLookup(w, r)
+	case r.URL.Path == "/v1/mesh/prompt" && r.Method == "GET":
+		h.handleMeshPrompt(w, r)
 	case r.URL.Path == "/v1/embeddings" && r.Method == "POST":
 		h.handleProxy(w, r)
 	default:
@@ -234,6 +238,33 @@ var (
 	keyTaskJSON  = []byte(`"task"`)
 	escapePrefix = []byte(`\u`)
 )
+
+// promptExtract pulls just enough of a chat/completions body to recover the
+// user-facing prompt text for the dashboard's prompt history. It mirrors the
+// same last-user-message convention handlePipeline already uses for
+// sourceText, plus the legacy /v1/completions "prompt" string field.
+type promptExtract struct {
+	Messages []struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	} `json:"messages"`
+	Prompt string `json:"prompt"`
+}
+
+// extractPromptText is best-effort: a body with multimodal content parts (an
+// array instead of a plain string) fails to decode into Content for that one
+// message, same as elsewhere in this file, and simply yields no text there
+// rather than an error the caller has to handle.
+func extractPromptText(body []byte) string {
+	var p promptExtract
+	json.Unmarshal(body, &p)
+	for i := len(p.Messages) - 1; i >= 0; i-- {
+		if p.Messages[i].Role == "user" && p.Messages[i].Content != "" {
+			return p.Messages[i].Content
+		}
+	}
+	return p.Prompt
+}
 
 // extractModelFast returns the value of a top-level "model" key without parsing
 // the rest of the body, reporting false when it cannot do so safely.
@@ -451,6 +482,9 @@ func (h *Handler) handleProxy(w http.ResponseWriter, r *http.Request) {
 	model := reqBody.Model
 	start := time.Now()
 	rid := activity.NewRequestID()
+	if h.activity != nil {
+		h.activity.StorePrompt(rid, model, extractPromptText(bodyBytes))
+	}
 	if route.Type == peer.RouteLocal {
 		if logging.DebugEnabled() {
 			log.Printf("[debug] %s → gpu-%d (in_flight=%d)", model, route.Backend.GPUID, route.Backend.InFlight())
@@ -578,6 +612,99 @@ func (h *Handler) handleActivity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]any{"events": h.activity.Recent()})
+}
+
+// handlePromptLookup serves this node's own stored prompt for a request id.
+// It is also what handleMeshPrompt proxies to on the peer that actually owns
+// a given rid — request ids are a per-process counter, not cluster-wide, so
+// a lookup only ever makes sense against the node that minted it.
+func (h *Handler) handlePromptLookup(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	rid, err := strconv.ParseInt(r.URL.Query().Get("rid"), 10, 64)
+	if err != nil || h.activity == nil {
+		http.NotFound(w, r)
+		return
+	}
+	entry, ok := h.activity.GetPrompt(rid)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	json.NewEncoder(w).Encode(entry)
+}
+
+// handleMeshPrompt is the fan-out entry point the mesh dashboard's prompt
+// modal calls. An empty addr means the request originated on whichever node
+// the browser's /v1/mesh/stream connection landed on (mirroring how
+// handleMeshStream leaves MeshEvent.Addr unset for its own local events), so
+// it is served from this node's own store. A non-empty addr names a peer, and
+// the browser may not be able to reach it directly — LAN-addressed peers,
+// possibly tunnelled to only one node — so this proxies server-side instead,
+// the same reasoning as the rest of the mesh fan-out.
+func (h *Handler) handleMeshPrompt(w http.ResponseWriter, r *http.Request) {
+	addr := r.URL.Query().Get("addr")
+	if addr == "" {
+		h.handlePromptLookup(w, r)
+		return
+	}
+	// addr is attacker-controllable: it arrives as a query parameter, and this
+	// handler fetches it and echoes the response back. Forwarding it verbatim
+	// would turn any node into an SSRF probe for its own network — the mesh is
+	// on a LAN alongside IPMI and management interfaces. Only addresses this
+	// node already peers with are allowed; the dashboard never needs any other.
+	if !h.isPeerAddr(addr) {
+		http.Error(w, `{"error":{"message":"unknown peer","type":"invalid_request"}}`, http.StatusBadRequest)
+		return
+	}
+	// Re-serialise rid from the parsed integer rather than passing the raw
+	// string through, so nothing can smuggle extra query parameters or path
+	// segments into the peer request.
+	rid, err := strconv.ParseInt(r.URL.Query().Get("rid"), 10, 64)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	url := "http://" + addr + "/v1/prompts?rid=" + strconv.FormatInt(rid, 10)
+	req, err := http.NewRequestWithContext(r.Context(), "GET", url, nil)
+	if err != nil {
+		http.Error(w, `{"error":{"message":"bad peer address","type":"invalid_request"}}`, http.StatusBadRequest)
+		return
+	}
+	// peerClient carries a timeout; http.DefaultClient does not, and a peer
+	// that accepts the connection but never answers would otherwise pin this
+	// goroutine and its response writer indefinitely.
+	resp, err := peerClient.Do(req)
+	if err != nil {
+		http.Error(w, `{"error":{"message":"peer unreachable","type":"server_error"}}`, http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	// Bound the copy: the body is a prompt entry from a peer, and a peer that
+	// is compromised or simply wrong should not be able to stream unbounded
+	// data through this node into the browser.
+	io.Copy(w, io.LimitReader(resp.Body, maxPromptResponseBytes))
+}
+
+// maxPromptResponseBytes caps a proxied peer prompt response. The store
+// truncates prompts well below this, so the slack only covers JSON overhead.
+const maxPromptResponseBytes = 1 << 20
+
+// isPeerAddr reports whether addr is one of this node's configured peers.
+// Matching is exact against the configured host:port — the peer list comes
+// from config, so no normalisation or DNS resolution is involved, and none
+// should be: resolving here would reintroduce the SSRF this guards against.
+func (h *Handler) isPeerAddr(addr string) bool {
+	if h.registry == nil {
+		return false
+	}
+	for _, p := range h.registry.Peers() {
+		if p.Addr == addr {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Handler) handleActivityStream(w http.ResponseWriter, r *http.Request) {
