@@ -14,7 +14,7 @@ viiwork ships in two parallel builds living in the same repo. Both run the same 
 
 ## Stable foundation — `viiwork:latest`
 
-The default. Standard upstream llama.cpp from `ggml-org/llama.cpp`, built from the repo's `Dockerfile`. Pinned to a specific release tag (currently `b9222`, which carries Qwen3.5/3.6 hybrid DeltaNet support and MTP speculative decoding) and patched for the gfx906 FP8 header incompatibility. This is the build every viiwork node has run since day one and what every new node should start on unless there's a reason to do otherwise.
+The default. Standard upstream llama.cpp from `ggml-org/llama.cpp`, built from the repo's `Dockerfile`. Pinned to a specific release tag (currently `b10437`, which carries Qwen3.5/3.6/3.8 hybrid DeltaNet support and MTP speculative decoding) and patched for the gfx906 FP8 header incompatibility. The pin must stay at or above `b10430` — the Qwen3.8 quants were cut with it, and the older `b9222` rejects that arch at load time. This is the build every viiwork node has run since day one and what every new node should start on unless there's a reason to do otherwise.
 
 Build: `make docker` or `docker compose up -d` (compose's `build:` directive triggers the build automatically the first time).
 

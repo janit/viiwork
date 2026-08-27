@@ -31,13 +31,27 @@ type Log struct {
 	mu          sync.Mutex
 	events      []Event
 	subscribers map[chan []byte]struct{}
+	prompts     *PromptStore
 }
 
 func NewLog() *Log {
 	return &Log{
 		events:      make([]Event, 0, maxEvents),
 		subscribers: make(map[chan []byte]struct{}),
+		prompts:     NewPromptStore(),
 	}
+}
+
+// StorePrompt records the prompt text for a request alongside the activity
+// log entry for it, so the mesh dashboard can fetch it on demand instead of
+// carrying full prompt bodies on every SSE event.
+func (l *Log) StorePrompt(rid int64, model, prompt string) {
+	l.prompts.Store(rid, time.Now().Unix(), model, prompt)
+}
+
+// GetPrompt looks up a previously stored prompt by request id.
+func (l *Log) GetPrompt(rid int64) (PromptEntry, bool) {
+	return l.prompts.Get(rid)
 }
 
 func (l *Log) Emit(typ string, gpuID int, format string, args ...any) {

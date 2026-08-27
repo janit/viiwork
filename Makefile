@@ -13,7 +13,7 @@ test:
 		go test ./... -v; \
 	else \
 		echo "go not found on host, running tests in container..."; \
-		docker run --rm -v $(CURDIR):/src -w /src -e GOFLAGS=-buildvcs=false golang:1.26.6 go test ./... -v; \
+		docker run --rm -v $(CURDIR):/src -w /src -e GOFLAGS=-buildvcs=false golang:1.27.0 go test ./... -v; \
 	fi
 
 clean:

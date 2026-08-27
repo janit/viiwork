@@ -180,6 +180,9 @@ whichever host you can reach and you see the whole mesh:
 - **Mesh Models** — every model across the cluster; click one to filter the view
 - **In-Flight Requests** — live jobs with elapsed time, task tag, model, and the
   backend and host serving them
+- **Prompts** — the most recent requests across the mesh, newest first. Click a
+  row to highlight it and open a modal with the full prompt text and the query
+  details (model, backend, host, task tag, time). See *Prompt history* below.
 - **Backends** — GPU, host, in-flight, RSS, GPU%, VRAM and context use for every
   host, grouped by model or by host
 
@@ -191,9 +194,42 @@ Peer *jobs* appear in real time. Peer *backend counts and GPU load* refresh on
 `peers.poll_interval` (10s by default) — lower it if you want the backends table
 to track remote hosts more tightly.
 
+### Prompt history
+
+Each node keeps the prompt text of its **last 100 requests in memory**, evicted
+oldest-first. Nothing is written to disk and nothing survives a restart — this is
+a debugging aid, not an audit log.
+
+Prompt text is deliberately *not* carried on the activity stream; it is fetched
+only when you open a row, so full prompt bodies stay off the per-request path.
+Because request ids are a per-process counter rather than a cluster-wide
+namespace, a lookup is only meaningful against the node that minted the id, and
+the fan-out happens server-side for the same reason the rest of the mesh view
+does: your browser may not be able to reach peers directly.
+
+Coverage includes local, peer-routed and pipeline requests. Requests with no
+recoverable user text (for example multimodal content parts) simply have no
+entry rather than a blank one.
+
+Two endpoints back this: `/v1/prompts?rid=N` reads this node's own store, and
+`/v1/mesh/prompt?rid=N&addr=HOST:PORT` is what the dashboard calls — an empty
+`addr` means "this node", and a non-empty one is forwarded, but **only** to an
+address already in this node's configured peer list.
+
 ## Security
 
 viiwork is designed for trusted local networks and has no built-in authentication. All API endpoints are open to any client that can reach the server. If you expose viiwork to an untrusted network, use a reverse proxy (Caddy, nginx) or firewall rules to restrict access.
+
+Two consequences of that worth being explicit about:
+
+- **Prompt text is readable over the API.** The mesh dashboard's prompt history
+  (last 100 requests per node, in memory) is served unauthenticated like
+  everything else. If prompts on your fleet are sensitive, restrict access at the
+  network layer. There is currently no switch to disable the history.
+- **`/v1/mesh/prompt` only forwards to configured peers.** The `addr` parameter
+  is validated against this node's peer list before anything is fetched, so the
+  endpoint cannot be used to make a node probe arbitrary hosts on your network.
+  Peers themselves are trusted: they come from config, not from request input.
 
 ## API Endpoints
 
@@ -212,6 +248,8 @@ viiwork is designed for trusted local networks and has no built-in authenticatio
 | `/v1/metrics` | GET | GPU metrics history (JSON) |
 | `/v1/metrics/stream` | GET | Live GPU metrics (SSE) |
 | `/v1/mesh/stream` | GET | Live cluster state + activity, all hosts (SSE) |
+| `/v1/prompts` | GET | Prompt text for one request id on this node (`?rid=N`) |
+| `/v1/mesh/prompt` | GET | Prompt lookup with server-side peer fan-out (`?rid=N&addr=`) |
 
 ## Host Requirements
 
@@ -226,7 +264,9 @@ viiwork is designed for trusted local networks and has no built-in authenticatio
 
 The list below is grounded in what's actually deployed on the reference fleet (10× Radeon VII) and what's been stress-tested — numbers are measured throughput, not estimated. The shape of these recommendations is driven by one hard constraint: any model whose weights + KV cache don't fit in a single 16 GB card pays a ~3× throughput tax (validated on Qwen3.5-A3B Q4_K_M vs Q3_K_M on the same GPU). For models above that line, tensor-split across 2+ GPUs avoids the tax at the cost of single-stream parallelism.
 
-> **Build note.** Hybrid-attention models (Qwen3.5-A3B, Qwen3.6, anything using DeltaNet / linear attention) need an upstream-current `llama.cpp` — build a fresh image from `Dockerfile`. The `viiwork:gfx906` fork is pruned to `llama / qwen2 / qwen3 / qwen3moe / gemma / gemma2 / gemma3 / gemma3n / gemma4` and will reject hybrid archs at load time. Standard transformer models run on either build.
+> **Build note.** Hybrid-attention models (Qwen3.5-A3B, Qwen3.6/3.8, Laguna, anything using DeltaNet / linear attention) need an upstream-current `llama.cpp` — build a fresh image from `Dockerfile`. The `viiwork:gfx906` fork is pruned to `llama / qwen2 / qwen3 / qwen3moe / gemma / gemma2 / gemma3 / gemma3n / gemma4` and will reject hybrid archs at load time. Standard transformer models run on either build.
+>
+> Same-week architectures can need more than "current master" — they can need an *unmerged* one. Check `general.architecture` in the GGUF before planning a bring-up: if `llama-server` answers `unknown model architecture: 'X'`, no flag will fix it and the only path is a build from whichever PR adds `X` (Qwen3.8-Flash-Next needed PR #27742 from `unslothai/llama.cpp`; master rejected it outright). Pin the PR head in a dedicated `Dockerfile.<model>-test` rather than tracking `master`, and re-pin to a release tag once it merges.
 
 > **Quant choice on gfx906: take the highest quant that fits.** Measured on
 > Qwen3.8-27B, Q6_K costs **0 tok/s** against Q4 despite reading 28% more bytes
@@ -244,7 +284,18 @@ The list below is grounded in what's actually deployed on the reference fleet (1
 > computes at a time — so **extra GPUs in a group buy VRAM and context, never
 > throughput**. For throughput, run more backends, not wider ones.
 
-> **Gemma 4 quant: prefer QAT.** Gemma 4 ships [quantization-aware-trained Q4 checkpoints](https://blog.google/innovation-and-ai/technology/developers-tools/quantization-aware-training-gemma-4/) — int4 weights at near-bf16 quality and ~3× less memory than fp16. `scripts/setup-node.sh` and `scripts/download-gemma4-31b.sh` default to these. Two gotchas, both verified on gfx906: (1) Google's own day-one GGUFs are broken (garbage detokenization / leaked special tokens) — use Unsloth's clean requants (`unsloth/gemma-4-*-it-qat-GGUF`) and a current `llama.cpp` (`viiwork:latest`, b9222+); (2) Gemma 4 is a *thinking* model — for prose/direct output, disable thinking server-side with `extra_args: ["--jinja", "--chat-template-kwargs", "{\"enable_thinking\": false}"]` (`--reasoning-budget 0` does not take on this template).
+> **A single tensor larger than one card is a hard wall, not a tuning problem.**
+> Layer split assigns whole *layers* to cards and `-ot` assigns a whole *tensor*
+> to one device — neither can spread one oversized tensor, and `--split-mode row`
+> (which would) is refused by this ROCm backend. So any model carrying a
+> monolithic tensor above **16.37 GB** must keep it in host RAM here, no matter
+> how many GPUs you own. When that tensor is on the per-token path the model
+> becomes single-core CPU-bound and the GPUs idle. Qwen3.8-Flash-Next is the
+> worked example below: a 26.82 GB n-gram embedding, unchanged across every
+> published quant. Check the largest tensor before assuming VRAM total is what
+> matters — total capacity is necessary, not sufficient.
+
+> **Gemma 4 quant: prefer QAT.** Gemma 4 ships [quantization-aware-trained Q4 checkpoints](https://blog.google/innovation-and-ai/technology/developers-tools/quantization-aware-training-gemma-4/) — int4 weights at near-bf16 quality and ~3× less memory than fp16. `scripts/setup-node.sh` and `scripts/download-gemma4-31b.sh` default to these. Two gotchas, both verified on gfx906: (1) Google's own day-one GGUFs are broken (garbage detokenization / leaked special tokens) — use Unsloth's clean requants (`unsloth/gemma-4-*-it-qat-GGUF`) and a current `llama.cpp` (`viiwork:latest`, b10437+); (2) Gemma 4 is a *thinking* model — for prose/direct output, disable thinking server-side with `extra_args: ["--jinja", "--chat-template-kwargs", "{\"enable_thinking\": false}"]` (`--reasoning-budget 0` does not take on this template).
 
 ### Validated production deployments
 
@@ -273,7 +324,8 @@ same walls.
 | Model | State | What is known |
 |---|---|---|
 | Soofi-S-30B-A3B (hybrid Mamba-2 / MoE) | **Blocked** on HuggingFace manual approval | Configs written and validated (`configs/viiwork.soofi-s-30b-ts2-gpu01.yaml`). The GGUF declares `general.architecture = nemotron_h_moe`, **not** "soofi" — it reuses an existing arch, so no llama.cpp bump is needed; do not grep binaries for "soofi". Quant choice inverts the rule above: columns (2688/1856/3712) are not divisible by 256, so every K-quant falls back — Q6_K becomes q8_0 (~32 GB, no quality gain) and Q5_K_M becomes q5_1 (~25 GB, the pick). No community requant exists to route around the gate, and self-converting is blocked because the base repo is gated too. |
-| Muse-Glimmer-30B (meta-models) | Ran on GPUs 4+7, since displaced | Needs llama.cpp **b10369+** (`muse_glimmer` landed in PR #26841); the shared b9222 pin cannot load it and `Dockerfile.gfx906` is arch-pruned. kquant-dynamic is 19.65 GB so TS=2 is required, not preferred. Output needs `reasoning_strength: low` — at the template default the model self-talks and that text leaks into `content`. `--mmproj` and the DFlash drafter are deliberately not wired in (upstream #26873, #26894). |
+| Qwen3.8-Flash-Next (125B total / 6B active, GDN + QSA hybrid) | **Runs, but loses to the 27B** — not retained | Loads and serves correctly across all 10 GPUs, and is *slower than Qwen3.8-27B on two*: 8.7 / 16.0 / 20.4 tok/s at conc 1 / 2 / 4 against the 27B's 10.2 / 18.6 / 27.0. The cause is structural, not tuning. `general.architecture = qwen4exp`, which upstream master rejects outright (`unknown model architecture`); support is only in the still-open PR #27742 from `unslothai/llama.cpp` (branch `qwen4exp/qwen3.8-flash-next`). The blocker is `per_layer_token_embd.weight`: **26.82 GB as one indivisible IQ4_NL tensor** (51.2B elements — the n-gram table). A Radeon VII holds 16.37 GB and `-ot` assigns a whole tensor to one device, so it can never be GPU-resident here and stays in host RAM. Decode is then pinned to a **single CPU core** (measured 0.91 of 4 cores busy with GPUs at 0%), which is the real ceiling: 48.5/160 GB VRAM is in use while 30.9 GB sits in RSS. Needs cards ≥27 GB to be worth revisiting. Only quant published at bring-up was UD-IQ1_S (72.5 GB), so quality was not assessed. |
+| Muse-Glimmer-30B (meta-models) | Ran on GPUs 4+7, since displaced | Needs llama.cpp **b10369+** (`muse_glimmer` landed in PR #26841); the older b9222 pin could not load it and `Dockerfile.gfx906` is arch-pruned. kquant-dynamic is 19.65 GB so TS=2 is required, not preferred. Output needs `reasoning_strength: low` — at the template default the model self-talks and that text leaks into `content`. `--mmproj` and the DFlash drafter are deliberately not wired in (upstream #26873, #26894). |
 
 ### Single-GPU picks (≤16 GB)
 
@@ -385,7 +437,7 @@ go test -v -run TestName ./internal/package  # single test
 go test -bench=. -benchmem ./internal/proxy ./internal/balancer  # hot-path benchmarks
 ```
 
-Requires Go 1.26.6 (pinned in `go.mod` and the Dockerfiles). The only module
+Requires Go 1.27.0 (pinned in `go.mod` and the Dockerfiles). The only module
 dependency is `gopkg.in/yaml.v3`; everything else is stdlib, deliberately.
 
 The benchmarks cover the per-token and per-request paths — SSE response

@@ -107,6 +107,7 @@ func (h *Handler) handlePipeline(w http.ResponseWriter, r *http.Request, p *pipe
 	rid := activity.NewRequestID()
 	if h.activity != nil {
 		h.activity.EmitRequestTask(rid, -1, taskID, "[pipeline] %s started", modelName)
+		h.activity.StorePrompt(rid, modelName, sourceText)
 	}
 
 	start := time.Now()

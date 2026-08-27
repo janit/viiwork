@@ -81,6 +81,29 @@
   .arrow { color: var(--dimmer); }
   .empty { color: var(--dimmer); font-style: italic; padding: 10px 12px; font-size: 0.8rem; }
   .err { color: var(--bad); padding: 10px 12px; font-size: 0.8rem; }
+
+  /* prompt history + modal */
+  .prompt-row { cursor: pointer; }
+  .prompt-row:hover { background: rgba(255,255,255,0.04); }
+  .prompt-row.selected { background: rgba(88,166,255,0.14) !important; }
+  .prompt-row.running .arrow { color: var(--warn); }
+  .promptlink { margin-left: auto; color: var(--accent); font-size: 0.76rem; white-space: nowrap; }
+
+  dialog#promptModal {
+    background: var(--card); color: var(--fg); border: 1px solid var(--border);
+    border-radius: 8px; padding: 16px 18px; width: min(720px, 92vw);
+    box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+  }
+  dialog#promptModal::backdrop { background: rgba(0,0,0,0.6); }
+  dialog#promptModal form { margin: 0; }
+  .modalHead { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+  .modalHead h2 { margin: 0; font-size: 0.95rem; color: var(--fg); text-transform: none; letter-spacing: 0; }
+  .modalHead button { background: transparent; border: 1px solid var(--border); color: var(--dim);
+    border-radius: 6px; padding: 3px 10px; font: inherit; font-size: 0.78rem; cursor: pointer; }
+  .modalHead button:hover { color: var(--fg); border-color: var(--dim); }
+  #promptModalMeta { margin: 6px 0 10px; }
+  #promptModalBody { white-space: pre-wrap; word-break: break-word; max-height: 60vh;
+    overflow: auto; margin: 0; font-family: var(--mono); font-size: 0.82rem; }
 </style>
 </head>
 <body>
@@ -109,6 +132,11 @@
     </section>
 
     <section>
+      <h2>Prompts <span class="sub" id="promptCount"></span></h2>
+      <div class="card mono-list" id="prompts"><div class="empty">no requests yet</div></div>
+    </section>
+
+    <section>
       <h2>Activity</h2>
       <div class="card mono-list" id="activity"><div class="empty">waiting for events…</div></div>
     </section>
@@ -134,6 +162,17 @@
   </div>
 </div>
 
+<dialog id="promptModal">
+  <form method="dialog">
+    <div class="modalHead">
+      <h2 id="promptModalTitle"></h2>
+      <button value="cancel">close</button>
+    </div>
+    <div class="sub" id="promptModalMeta"></div>
+    <pre id="promptModalBody"></pre>
+  </form>
+</dialog>
+
 <script>
 "use strict";
 
@@ -146,6 +185,14 @@ let cluster = null;               // last /v1/cluster payload
 const inflight = new Map();       // rid -> {startMs, model, dest, task, host}
 const activityRows = [];          // newest-first, capped
 const MAX_ACTIVITY = 60;
+
+// Prompt history: one entry per distinct (node, rid), oldest evicted past
+// MAX_PROMPTS. In memory only — nothing here is persisted or sent anywhere
+// except the on-demand fetch when a row is opened.
+const promptHistory = new Map();  // key -> {rid, addr, host, model, dest, task, t, done}
+const promptOrder = [];           // keys in first-seen order, oldest first
+const MAX_PROMPTS = 100;
+let selectedPromptKey = null;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -321,6 +368,88 @@ function renderInflight() {
   }).join("");
 }
 
+// ---------------------------------------------------------------------------
+// Render + interact: prompt history (a link per completed/in-flight request;
+// clicking highlights the row and opens the native <dialog> with the full
+// prompt, fetched on demand rather than carried on every SSE event).
+// ---------------------------------------------------------------------------
+function renderPrompts() {
+  const el = $("prompts");
+  $("promptCount").textContent = promptOrder.length ? String(promptOrder.length) : "";
+  if (!promptOrder.length) { el.innerHTML = '<div class="empty">no requests yet</div>'; return; }
+
+  const keys = [...promptOrder].reverse(); // newest first
+  el.innerHTML = keys.map(key => {
+    const r = promptHistory.get(key);
+    if (!r) return "";
+    const t = new Date(r.t * 1000).toLocaleTimeString();
+    const cls = "row prompt-row" + (r.done ? "" : " running") + (key === selectedPromptKey ? " selected" : "");
+    return `<div class="${cls}" data-key="${esc(key)}">` +
+      `<span class="host">${t}</span>` +
+      (r.task ? `<span class="task">[${esc(r.task)}]</span>` : "") +
+      `<span>${esc(r.model)}</span>` +
+      `<span class="arrow">→</span><span>${esc(r.dest)}</span>` +
+      `<span class="host">@${esc(r.host)}</span>` +
+      `<span class="promptlink">prompt ↗</span>` +
+      `</div>`;
+  }).join("");
+
+  el.querySelectorAll(".prompt-row").forEach(row => {
+    row.onclick = () => openPromptModal(row.dataset.key);
+  });
+}
+
+// recordPrompt tracks one (node, rid) across its start and done/aborted
+// events, updating the same history row in place rather than appending a
+// second one — the map key stays stable across both events for a request.
+function recordPrompt(e, host) {
+  const key = (e.node_id || host) + "#" + e.rid;
+  const isDone = /finished|done|aborted/i.test(e.message || "");
+  const parts = (e.message || "").split("→");
+
+  if (!promptHistory.has(key)) {
+    promptOrder.push(key);
+    if (promptOrder.length > MAX_PROMPTS) {
+      const evicted = promptOrder.shift();
+      promptHistory.delete(evicted);
+      if (selectedPromptKey === evicted) selectedPromptKey = null;
+    }
+  }
+  promptHistory.set(key, {
+    rid: e.rid, addr: e.addr || "", host,
+    model: (parts[0] || e.message || "").trim(),
+    dest: (parts[1] || "?").trim(),
+    task: e.task_id || "",
+    t: e.t || Math.floor(Date.now() / 1000),
+    done: isDone
+  });
+  renderPrompts();
+}
+
+function openPromptModal(key) {
+  const r = promptHistory.get(key);
+  if (!r) return;
+  selectedPromptKey = key;
+  renderPrompts();
+
+  $("promptModalTitle").textContent = `${r.model} → ${r.dest}`;
+  $("promptModalMeta").textContent =
+    `@${r.host} · ${new Date(r.t * 1000).toLocaleString()}` +
+    (r.task ? ` · task ${r.task}` : "") + (r.done ? "" : " · in flight");
+  $("promptModalBody").textContent = "Loading…";
+  $("promptModal").showModal();
+
+  const params = new URLSearchParams({ rid: String(r.rid), addr: r.addr });
+  fetch("/v1/mesh/prompt?" + params.toString())
+    .then(resp => resp.ok ? resp.json() : Promise.reject(resp.status))
+    .then(data => { $("promptModalBody").textContent = data.prompt || "(empty)"; })
+    .catch(() => {
+      $("promptModalBody").textContent =
+        "(prompt unavailable — it may have aged out of the 100-entry history, " +
+        "or the owning node restarted since this request ran)";
+    });
+}
+
 function renderActivity() {
   const el = $("activity");
   if (!activityRows.length) { el.innerHTML = '<div class="empty">waiting for events…</div>'; return; }
@@ -386,6 +515,7 @@ function connectStream() {
         });
       }
       renderInflight();
+      recordPrompt(e, host);
     }
 
     activityRows.unshift({ t: e.t, host, message: e.message || "" });
@@ -406,6 +536,11 @@ $("groupToggle").querySelectorAll("button").forEach(b => b.onclick = () => {
   groupMode = b.dataset.mode;
   $("groupToggle").querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b));
   renderBackends();
+});
+
+$("promptModal").addEventListener("close", () => {
+  selectedPromptKey = null;
+  renderPrompts();
 });
 
 connectStream();

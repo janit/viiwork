@@ -3,9 +3,15 @@
 FROM rocm/dev-ubuntu-24.04:6.2.4-complete AS llama-build
 RUN apt-get update && apt-get install -y cmake git
 # Pin llama.cpp to a known-good release to prevent upstream breakage.
-# b9222 (2026-05-18) includes hybrid DeltaNet (Qwen3.5/3.6 arches) and
-# MTP speculative decoding (PR #22673 + follow-ups #23198, #23237).
-ARG LLAMA_CPP_VERSION=b9222
+# b10437 is what the reference fleet runs (all 5 hosts, since 2026-08-17).
+# It carries hybrid DeltaNet (Qwen3.5/3.6 arches) and MTP speculative decoding
+# (PR #22673 + follow-ups #23198, #23237), and is >= the b10430 the Qwen3.8
+# quants were cut with.
+#
+# Do not drop this below b10430: the previous b9222 pin cannot load Qwen3.8-27B,
+# which the README recommends, and fails at load with "unknown model
+# architecture" rather than anything self-explanatory.
+ARG LLAMA_CPP_VERSION=b10437
 RUN git clone --branch ${LLAMA_CPP_VERSION} --depth 1 \
     https://github.com/ggml-org/llama.cpp /llama.cpp
 WORKDIR /llama.cpp
@@ -20,7 +26,7 @@ RUN ldd /llama.cpp/build/bin/llama-server    && /llama.cpp/build/bin/llama-serve
 RUN ldd /llama.cpp/build/bin/llama-perplexity && /llama.cpp/build/bin/llama-perplexity --help > /dev/null
 
 # Stage 2: Build viiwork
-FROM golang:1.26.6 AS go-build
+FROM golang:1.27.0 AS go-build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
