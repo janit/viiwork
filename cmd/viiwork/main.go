@@ -123,7 +123,7 @@ func main() {
 	bcast := gpu.NewBroadcaster()
 	collector := gpu.NewStatCollector(hist, bcast)
 
-	actLog := activity.NewLog()
+	actLog := activity.NewLogWithPromptHistory(cfg.Activity.PromptHistory)
 
 	mgr := process.NewManager(cfg, nil, sampler, costTracker, collector, actLog)
 	for _, b := range mgr.Backends {
@@ -144,6 +144,7 @@ func main() {
 	}
 	hostname, _ := os.Hostname()
 	reg.SetLocation(hostname, fmt.Sprintf("%s:%d", hostname, cfg.Server.Port))
+	reg.SetPromptHistory(actLog.PromptHistoryMax())
 	handler := proxy.NewMeshHandler(bal, reg, cfg.Balancer.LatencyWindow.Duration)
 	handler.SetMetrics(hist, bcast, collector.Available)
 	// Publish GPU load to peers as well as locally. Without this the /mesh view

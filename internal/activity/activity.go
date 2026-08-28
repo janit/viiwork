@@ -34,11 +34,17 @@ type Log struct {
 	prompts     *PromptStore
 }
 
-func NewLog() *Log {
+// NewLog returns a log with the default prompt-history capacity.
+func NewLog() *Log { return NewLogWithPromptHistory(DefaultPromptHistory) }
+
+// NewLogWithPromptHistory returns a log whose prompt store holds promptHistory
+// requests. Kept separate from NewLog so the many call sites that do not care
+// stay unchanged.
+func NewLogWithPromptHistory(promptHistory int) *Log {
 	return &Log{
 		events:      make([]Event, 0, maxEvents),
 		subscribers: make(map[chan []byte]struct{}),
-		prompts:     NewPromptStore(),
+		prompts:     NewPromptStore(promptHistory),
 	}
 }
 
@@ -54,6 +60,9 @@ func (l *Log) StorePrompt(rid int64, model, prompt string) {
 func (l *Log) StoreOutput(rid int64, model, output string, elapsedMS int64) {
 	l.prompts.StoreOutput(rid, time.Now().Unix(), model, output, elapsedMS)
 }
+
+// PromptHistoryMax reports the prompt store's configured capacity.
+func (l *Log) PromptHistoryMax() int { return l.prompts.Max() }
 
 // GetPrompt looks up a previously stored prompt by request id.
 func (l *Log) GetPrompt(rid int64) (PromptEntry, bool) {

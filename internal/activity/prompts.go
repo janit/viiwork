@@ -2,9 +2,12 @@ package activity
 
 import "sync"
 
-// maxPrompts bounds prompt history to the most recent N requests, in memory
-// only. Same ring-buffer-via-reslice idiom as Log.emit's event cap.
-const maxPrompts = 100
+// DefaultPromptHistory is the number of requests a node keeps when nothing is
+// configured. Memory is roughly this times maxPromptChars times two (prompt and
+// output), so the default trades about 100 MB of worst-case headroom for a
+// history deep enough to still contain a request someone asks about an hour
+// later. Configurable via server-side config; see config.ActivityConfig.
+const DefaultPromptHistory = 1000
 
 // maxPromptChars keeps one pathological multi-megabyte prompt from dominating
 // the store; it is truncated rather than kept whole. The same cap applies to
@@ -25,17 +28,29 @@ type PromptEntry struct {
 	ElapsedMS int64 `json:"elapsed_ms,omitempty"`
 }
 
-// PromptStore holds the last maxPrompts request prompts in memory. It backs
+// PromptStore holds the last max request prompts in memory. It backs
 // the mesh dashboard's per-request prompt modal — nothing here is persisted,
 // and it does not survive a restart.
 type PromptStore struct {
 	mu      sync.Mutex
 	entries []PromptEntry
+	max     int
 }
 
-func NewPromptStore() *PromptStore {
-	return &PromptStore{}
+// NewPromptStore returns a store holding the most recent max requests. A max
+// below 1 falls back to the default rather than producing a store that drops
+// everything written to it — a misconfigured cap should degrade to the normal
+// behaviour, not to a silently empty panel.
+func NewPromptStore(max int) *PromptStore {
+	if max < 1 {
+		max = DefaultPromptHistory
+	}
+	return &PromptStore{max: max}
 }
+
+// Max reports the configured capacity, so it can be published to the dashboard
+// rather than the browser hardcoding a second copy of the number.
+func (p *PromptStore) Max() int { return p.max }
 
 // Store records a prompt for rid. Empty prompts are dropped rather than kept
 // as blank entries — some requests have none, and a stored blank would still
@@ -73,8 +88,8 @@ func (p *PromptStore) StoreOutput(rid int64, t int64, model, output string, elap
 // append adds an entry and trims the ring. Callers hold p.mu.
 func (p *PromptStore) append(e PromptEntry) {
 	p.entries = append(p.entries, e)
-	if len(p.entries) > maxPrompts {
-		p.entries = p.entries[len(p.entries)-maxPrompts:]
+	if len(p.entries) > p.max {
+		p.entries = p.entries[len(p.entries)-p.max:]
 	}
 }
 

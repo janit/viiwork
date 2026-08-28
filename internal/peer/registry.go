@@ -51,6 +51,10 @@ type Registry struct {
 	cost       CostReader
 	listenAddr string
 	hostname   string
+	// promptHistory is this node's prompt-store capacity, published on
+	// /v1/status and /v1/cluster so the dashboard sizes its own list from the
+	// server's number instead of keeping a second copy that can drift.
+	promptHistory int
 }
 
 func NewRegistry(nodeID string, localModel string, backends []*balancer.BackendState, peers []*PeerState, timeout time.Duration) *Registry {
@@ -87,6 +91,9 @@ func (r *Registry) SetLocation(hostname, listenAddr string) {
 	r.hostname = hostname
 	r.listenAddr = listenAddr
 }
+func (r *Registry) SetPromptHistory(n int) { r.promptHistory = n }
+func (r *Registry) PromptHistory() int     { return r.promptHistory }
+
 func (r *Registry) Hostname() string   { return r.hostname }
 func (r *Registry) ListenAddr() string { return r.listenAddr }
 
@@ -198,6 +205,7 @@ type ClusterLocalInfo struct {
 	CostAvailable  bool                 `json:"cost_available,omitempty"`
 	CostEURPerHour float64              `json:"cost_eur_per_hour,omitempty"`
 	CostTodayEUR   float64              `json:"cost_today_eur,omitempty"`
+	PromptHistory  int                  `json:"prompt_history,omitempty"`
 	HostMemTotalMB int64                `json:"host_mem_total_mb,omitempty"`
 	HostMemUsedMB  int64                `json:"host_mem_used_mb,omitempty"`
 }
@@ -229,6 +237,7 @@ type ClusterPeerInfo struct {
 	Backends        []ClusterBackendInfo `json:"backends,omitempty"`
 	TotalInFlight   int64                `json:"total_in_flight,omitempty"`
 	HealthyBackends int                  `json:"healthy_backends,omitempty"`
+	PromptHistory   int                  `json:"prompt_history,omitempty"`
 	PowerWatts      float64              `json:"power_watts,omitempty"`
 	PowerAvailable  bool                 `json:"power_available,omitempty"`
 	CostAvailable   bool                 `json:"cost_available,omitempty"`
@@ -237,7 +246,7 @@ type ClusterPeerInfo struct {
 }
 
 func (r *Registry) ClusterState() ClusterResponse {
-	resp := ClusterResponse{NodeID: r.nodeID, Hostname: r.hostname, Local: ClusterLocalInfo{Model: r.localModel, ListenAddr: r.listenAddr}}
+	resp := ClusterResponse{NodeID: r.nodeID, Hostname: r.hostname, Local: ClusterLocalInfo{Model: r.localModel, ListenAddr: r.listenAddr, PromptHistory: r.promptHistory}}
 	if r.power != nil {
 		resp.Local.PowerWatts = r.power.Watts()
 		resp.Local.PowerAvailable = r.power.Available()
@@ -275,6 +284,7 @@ func (r *Registry) ClusterState() ClusterResponse {
 			info.Models = p.Models()
 			info.TotalInFlight = p.TotalInFlight()
 			info.HealthyBackends = p.HealthyBackends()
+			info.PromptHistory = p.PromptHistory()
 			info.PowerWatts = p.PowerWatts()
 			info.PowerAvailable = p.PowerAvailable()
 			info.CostAvailable = p.CostAvailable()
