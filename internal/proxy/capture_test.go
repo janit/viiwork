@@ -230,3 +230,67 @@ func TestPromptPageServed(t *testing.T) {
 		t.Error("prompt page does not fetch the prompt endpoint")
 	}
 }
+
+// The configured capacity must actually govern the store. Exercised directly
+// rather than through the proxy: request ids come from a process-wide counter
+// shared with every other test in this binary, so driving it over HTTP makes
+// the assertion depend on ordering it does not control.
+func TestPromptHistoryCapacityConfigurable(t *testing.T) {
+	l := activity.NewLogWithPromptHistory(3)
+	if got := l.PromptHistoryMax(); got != 3 {
+		t.Fatalf("PromptHistoryMax() = %d, want 3", got)
+	}
+	for i := int64(1); i <= 5; i++ {
+		l.StorePrompt(i, "m", "q"+strconv.FormatInt(i, 10))
+	}
+	for _, rid := range []int64{1, 2} {
+		if _, ok := l.GetPrompt(rid); ok {
+			t.Errorf("rid %d should have been evicted at a cap of 3", rid)
+		}
+	}
+	for _, rid := range []int64{3, 4, 5} {
+		if _, ok := l.GetPrompt(rid); !ok {
+			t.Errorf("rid %d should still be present at a cap of 3", rid)
+		}
+	}
+}
+
+// A cap below 1 must fall back to the default rather than yielding a store that
+// silently drops everything written to it.
+func TestPromptHistoryZeroFallsBackToDefault(t *testing.T) {
+	for _, n := range []int{0, -5} {
+		l := activity.NewLogWithPromptHistory(n)
+		if got := l.PromptHistoryMax(); got != activity.DefaultPromptHistory {
+			t.Errorf("NewLogWithPromptHistory(%d) max = %d, want default %d", n, got, activity.DefaultPromptHistory)
+		}
+	}
+}
+
+func TestStatusPublishesPromptHistory(t *testing.T) {
+	state := balancer.NewBackendState(0, "localhost:9001")
+	state.SetStatus(balancer.StatusHealthy)
+	backends := []*balancer.BackendState{state}
+	reg := peer.NewRegistry("viiwork-local", "test", backends, nil, 3*time.Second)
+	reg.SetPromptHistory(2500)
+	h := NewMeshHandler(balancer.New(backends, 7, 4), reg, 30*time.Second)
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/v1/status", nil))
+	var status peer.StatusResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &status); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if status.PromptHistory != 2500 {
+		t.Errorf("/v1/status prompt_history = %d, want 2500", status.PromptHistory)
+	}
+
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/v1/cluster", nil))
+	var cluster peer.ClusterResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &cluster); err != nil {
+		t.Fatalf("decode cluster: %v", err)
+	}
+	if cluster.Local.PromptHistory != 2500 {
+		t.Errorf("/v1/cluster local.prompt_history = %d, want 2500", cluster.Local.PromptHistory)
+	}
+}

@@ -201,10 +201,26 @@ to track remote hosts more tightly.
 
 ### Prompt and output history
 
-Each node keeps the prompt **and the response** of its **last 100 requests in
+Each node keeps the prompt **and the response** of its **last 1000 requests in
 memory**, evicted oldest-first. Nothing is written to disk and nothing survives a
 restart — this is a debugging aid, not an audit log. Prompt and output are each
 truncated at 50 000 characters.
+
+The depth is configurable:
+
+```yaml
+activity:
+  prompt_history: 1000   # default
+```
+
+Memory scales with it — roughly the count times up to 100 KB, since a prompt and
+an output are each capped at 50 000 characters. 1000 is therefore about 100 MB of
+worst-case headroom, and realistically far less. A value below 1 falls back to
+the default rather than producing a store that drops everything.
+
+Nodes report their own capacity on `/v1/status` and `/v1/cluster`, and the mesh
+dashboard sizes its list from the largest value any node reports rather than
+keeping a second copy of the number. Raise the config and the view follows.
 
 Clicking a row opens `/prompt`, a full page showing both, with the elapsed time
 and a copy button for each. Rows are ordinary links, so cmd-click, middle-click
@@ -242,8 +258,9 @@ viiwork is designed for trusted local networks and has no built-in authenticatio
 
 Two consequences of that worth being explicit about:
 
-- **Prompt *and response* text is readable over the API.** The history (last 100
-  requests per node, in memory) is served unauthenticated like everything else.
+- **Prompt *and response* text is readable over the API.** The history
+  (`activity.prompt_history` requests per node, 1000 by default, in memory) is
+  served unauthenticated like everything else.
   If either side of the traffic on your fleet is sensitive, restrict access at
   the network layer. There is currently no switch to disable the history.
 - **`/v1/mesh/prompt` only forwards to configured peers.** The `addr` parameter
@@ -395,7 +412,7 @@ same walls.
 | Model | State | What is known |
 |---|---|---|
 | Soofi-S-30B-A3B (hybrid Mamba-2 / MoE) | **Blocked** on HuggingFace manual approval | Configs written and validated (`configs/viiwork.soofi-s-30b-ts2-gpu01.yaml`). The GGUF declares `general.architecture = nemotron_h_moe`, **not** "soofi" — it reuses an existing arch, so no llama.cpp bump is needed; do not grep binaries for "soofi". Quant choice inverts the rule above: columns (2688/1856/3712) are not divisible by 256, so every K-quant falls back — Q6_K becomes q8_0 (~32 GB, no quality gain) and Q5_K_M becomes q5_1 (~25 GB, the pick). No community requant exists to route around the gate, and self-converting is blocked because the base repo is gated too. |
-| Qwen3.8-Flash-Next (125B total / 6B active, GDN + QSA hybrid) | **Runs, but loses to the 27B** — not retained | Loads and serves correctly across all 10 GPUs, and is *slower than Qwen3.8-27B on two*: 8.7 / 16.0 / 20.4 tok/s at conc 1 / 2 / 4 against the 27B's 10.2 / 18.6 / 27.0. The cause is structural, not tuning. `general.architecture = qwen4exp`, which upstream master rejects outright (`unknown model architecture`); support is only in the still-open PR #27742 from `unslothai/llama.cpp` (branch `qwen4exp/qwen3.8-flash-next`). The blocker is `per_layer_token_embd.weight`: **26.82 GB as one indivisible IQ4_NL tensor** (51.2B elements — the n-gram table). A Radeon VII holds 16.37 GB and `-ot` assigns a whole tensor to one device, so it can never be GPU-resident here and stays in host RAM. Decode is then pinned to a **single CPU core** (measured 0.91 of 4 cores busy with GPUs at 0%), which is the real ceiling: 48.5/160 GB VRAM is in use while 30.9 GB sits in RSS. Needs cards ≥27 GB to be worth revisiting. Only quant published at bring-up was UD-IQ1_S (72.5 GB), so quality was not assessed. |
+| Qwen3.8-Flash-Next (125B total / 6B active, GDN + QSA hybrid) | **Runs, but loses to the 27B** — not retained | Loads and serves correctly across all 10 GPUs, and is *slower than Qwen3.8-27B on two*: 8.7 / 16.0 / 20.4 tok/s at conc 1 / 2 / 4 against the 27B's 10.2 / 18.6 / 27.0. The cause is structural, not tuning. `general.architecture = qwen4exp`, which upstream master rejects outright (`unknown model architecture`); support is only in the still-open PR #27742 from `unslothai/llama.cpp` (branch `qwen4exp/qwen3.8-flash-next`). The blocker is `per_layer_token_embd.weight`: **26.82 GB as one indivisible IQ4_NL tensor** (51.2B elements — the n-gram table). A Radeon VII holds 16.37 GB and `-ot` assigns a whole tensor to one device, so it can never be GPU-resident here and stays in host RAM. Decode is then pinned to a **single CPU core** (measured 0.91 of 4 cores busy with GPUs at 0%), which is the real ceiling: 48.5/160 GB VRAM is in use while 30.9 GB sits in RSS. Needs cards ≥27 GB to be worth revisiting. Re-tested at UD-Q4_K_XL (103.7 GB) to rule out the quant: decode was **unchanged at 12.6 tok/s**, confirming the ceiling is CPU, not quantization — on gfx906 the higher quant rides free. Quality at Q4_K_XL was *better* than the 27B on Finnish (correct terminology throughout vs four terminology errors and a case error) and equal on strict-JSON extraction, and it was more token-efficient (5 of 8 eval prompts completed in budget vs the 27B's 2 of 8). But **neither model solves hard reasoning through this stack**: on one bridge-crossing problem the 27B burned 6,000 tokens / 6.4 min and Flash-Next 10,000 tokens / 17.1 min, both still mid-deliberation, and Flash-Next's decode degraded 12.6 -> 9.7 tok/s as context grew (QSA attention cost). Both emit raw chain-of-thought into `content` with no `<think>` delimiters, which looks like a template/integration gap rather than a reasoning limit — worth retrying under vLLM/SGLang before concluding anything about the models. Verdict: not retained; the 27B gives comparable quality at 1.6x the speed on 2 GPUs instead of 10. |
 | Muse-Glimmer-30B (meta-models) | Ran on GPUs 4+7, since displaced | Needs llama.cpp **b10369+** (`muse_glimmer` landed in PR #26841); the older b9222 pin could not load it and `Dockerfile.gfx906` is arch-pruned. kquant-dynamic is 19.65 GB so TS=2 is required, not preferred. Output needs `reasoning_strength: low` — at the template default the model self-talks and that text leaks into `content`. `--mmproj` and the DFlash drafter are deliberately not wired in (upstream #26873, #26894). |
 
 ### Single-GPU picks (≤16 GB)

@@ -169,11 +169,16 @@ const activityRows = [];          // newest-first, capped
 const MAX_ACTIVITY = 60;
 
 // Prompt history: one entry per distinct (node, rid), oldest evicted past
-// MAX_PROMPTS. In memory only — nothing here is persisted or sent anywhere
+// maxPrompts. In memory only — nothing here is persisted or sent anywhere
 // except the on-demand fetch when a row is opened.
 const promptHistory = new Map();  // key -> {rid, addr, host, model, dest, task, t, done}
 const promptOrder = [];           // keys in first-seen order, oldest first
-const MAX_PROMPTS = 100;
+// Sized from the server rather than hardcoded. Each node reports its own
+// prompt-store capacity on /v1/cluster, and this view merges several nodes, so
+// the list has to hold the largest of them or it would evict rows that the
+// owning node can still answer a lookup for. Nodes older than v1.1.1 report
+// nothing, hence the fallback.
+let maxPrompts = 1000;
 
 // Halt freezes the view. It queues incoming events instead of applying them,
 // rather than merely skipping the re-render, because the two lists evict as
@@ -409,7 +414,7 @@ function recordPrompt(e, host) {
 
   if (!promptHistory.has(key)) {
     promptOrder.push(key);
-    if (promptOrder.length > MAX_PROMPTS) {
+    if (promptOrder.length > maxPrompts) {
       promptHistory.delete(promptOrder.shift());
     }
   }
@@ -440,6 +445,7 @@ function renderActivity() {
 // ---------------------------------------------------------------------------
 function applyCluster(c) {
   cluster = c;
+  syncPromptCap(c);
   const peers = (cluster.peers || []);
   const up = peers.filter(p => p.status === "reachable").length;
   $("scope").textContent =
@@ -517,6 +523,21 @@ function applyActivity(e) {
     activityRows.unshift({ t: e.t, host, message: e.message || "" });
     if (activityRows.length > MAX_ACTIVITY) activityRows.length = MAX_ACTIVITY;
     renderActivity();
+}
+
+// syncPromptCap adopts the largest prompt-history capacity any node reports,
+// and trims the list if the number shrank. Taking the max rather than the local
+// node's own value matters because the list is cluster-wide: a peer configured
+// deeper than this node can still answer lookups for rows this node would
+// otherwise have dropped.
+function syncPromptCap(c) {
+  if (!c) return;
+  let cap = c.local?.prompt_history || 0;
+  for (const p of (c.peers || [])) cap = Math.max(cap, p.prompt_history || 0);
+  if (!cap || cap === maxPrompts) return;
+  maxPrompts = cap;
+  while (promptOrder.length > maxPrompts) promptHistory.delete(promptOrder.shift());
+  renderPrompts();
 }
 
 // ---------------------------------------------------------------------------

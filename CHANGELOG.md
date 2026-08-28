@@ -1,5 +1,41 @@
 # Changelog
 
+## v1.1.1
+
+### Prompt history depth is configurable, and defaults to 1000
+
+```yaml
+activity:
+  prompt_history: 1000   # was a hardcoded 100
+```
+
+Memory scales with it — roughly the count times up to 100 KB, since prompt and
+output are each truncated at 50 000 characters — so the default is about 100 MB
+of worst-case headroom and realistically far less. A value below 1 falls back to
+the default rather than producing a store that silently drops everything.
+
+The number is no longer kept in two places. Each node publishes its capacity as
+`prompt_history` on `/v1/status` and in `/v1/cluster` (under `local`, and per
+entry in `peers`), and the mesh dashboard sizes its own list from the largest
+value any node reports. Raise the config and the view follows. Nodes older than
+v1.1.1 omit the field; consumers should read its absence as "unknown", not as
+"keeps nothing".
+
+### Fixed
+
+- **The prompt page claimed a request had aged out when it had barely started.**
+  A request is not necessarily in the store the instant its activity event
+  reaches a browser, and the page is routinely opened from a row that is still
+  running, but the first 404 was reported as permanent loss. A miss is now
+  retried briefly before it is believed, and the three cases that were collapsed
+  into one message — not yet recorded, genuinely evicted, node unreachable — say
+  different things.
+- **The page no longer strands a running request.** Output is written once, when
+  the response finishes; the page now follows the request to completion instead
+  of showing a half-empty page that a manual reload would have fixed.
+- **The "aged out" message quoted a hardcoded 100** rather than the node's
+  configured depth.
+
 ## v1.1.0
 
 Mesh dashboard work, and the first release that lets a browser on another origin

@@ -117,37 +117,125 @@ function fill(panelID, bodyID, charsID, text, emptyNote) {
 }
 
 const params = new URLSearchParams({ rid, addr });
-fetch("/v1/mesh/prompt?" + params.toString())
-  .then(resp => resp.ok ? resp.json() : Promise.reject(resp.status))
-  .then(data => {
-    const bits = [];
-    if (host) bits.push("@" + host);
-    if (data.t) bits.push(new Date(data.t * 1000).toLocaleString());
-    if (data.elapsed_ms) bits.push((data.elapsed_ms / 1000).toFixed(2) + "s");
-    if (task) bits.push("task " + task);
-    if (addr) bits.push(addr);
-    bits.push("rid " + rid);
-    $("meta").textContent = bits.join(" · ");
 
-    if (data.model && !model) $("title").textContent = data.model;
+// A just-started request is not necessarily in the store the instant its
+// activity event reaches a browser, and this page is routinely opened from a
+// row that is still running. Treating the first 404 as "gone forever" told
+// people their request had aged out when it had barely begun, so a miss is
+// retried briefly before it is believed.
+const MISS_RETRIES_MS = [400, 900, 1800];
 
-    fill("promptPanel", "promptBody", "promptChars", data.prompt, "(no prompt recorded)");
-    // An entry with no output is the normal state for a request that is still
-    // running: output is stored once, when the response finishes.
-    fill("outputPanel", "outputBody", "outputChars", data.output,
-      "(no output recorded — the request may still be running, or it ended before producing any)");
-  })
-  .catch(() => {
-    $("meta").innerHTML = "";
-    $("meta").textContent = "rid " + rid + (addr ? " · " + addr : "");
-    const note = "(unavailable — this request may have aged out of the 100-entry " +
-      "history, or the node that ran it restarted since)";
-    for (const p of ["promptPanel", "outputPanel"]) $(p).classList.add("empty");
-    $("promptBody").textContent = note;
-    $("outputBody").textContent = note;
-    $("promptChars").textContent = "";
+// Output is written once, when the response finishes. Until then the entry
+// exists with a prompt and no output, so the page follows the request rather
+// than showing a dead half-page that a manual reload would fix.
+const OUTPUT_POLL_MS = 2000;
+const OUTPUT_POLL_LIMIT = 300; // ~10 minutes; long enough for a slow generation
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// capacity resolves the owning node's configured prompt-history depth, so the
+// "aged out" wording can quote the real number instead of a hardcoded one that
+// goes stale the moment anybody edits their config.
+async function capacity() {
+  try {
+    const resp = await fetch("/v1/cluster");
+    if (!resp.ok) return 0;
+    const c = await resp.json();
+    if (addr) {
+      const peer = (c.peers || []).find(p => p.addr === addr);
+      if (peer && peer.prompt_history) return peer.prompt_history;
+    }
+    return (c.local && c.local.prompt_history) || 0;
+  } catch { return 0; }
+}
+
+// Returns the entry, null for a clean miss, or throws for anything else — the
+// three cases need different words on screen and must not be collapsed.
+async function fetchEntry() {
+  const resp = await fetch("/v1/mesh/prompt?" + params.toString());
+  if (resp.status === 404) return null;
+  if (!resp.ok) throw new Error("HTTP " + resp.status);
+  return await resp.json();
+}
+
+function renderMeta(data, extra) {
+  const bits = [];
+  if (host) bits.push("@" + host);
+  if (data && data.t) bits.push(new Date(data.t * 1000).toLocaleString());
+  if (data && data.elapsed_ms) bits.push((data.elapsed_ms / 1000).toFixed(2) + "s");
+  if (extra) bits.push(extra);
+  if (task) bits.push("task " + task);
+  if (addr) bits.push(addr);
+  bits.push("rid " + rid);
+  $("meta").textContent = bits.join(" · ");
+}
+
+function renderEntry(data, running) {
+  renderMeta(data, running ? "running" : "");
+  if (data.model && !model) $("title").textContent = data.model;
+  fill("promptPanel", "promptBody", "promptChars", data.prompt, "(no prompt recorded)");
+  if (data.output) {
+    fill("outputPanel", "outputBody", "outputChars", data.output, "");
+  } else {
+    $("outputPanel").classList.add("empty");
     $("outputChars").textContent = "";
-  });
+    $("outputBody").textContent = running
+      ? "(still running — the response is recorded when it finishes)"
+      : "(no output recorded — the request ended before producing any)";
+  }
+}
+
+function renderUnavailable(note) {
+  renderMeta(null, "");
+  for (const id of ["promptPanel", "outputPanel"]) $(id).classList.add("empty");
+  $("promptBody").textContent = note;
+  $("outputBody").textContent = note;
+  $("promptChars").textContent = "";
+  $("outputChars").textContent = "";
+}
+
+(async () => {
+  const cap = await capacity();
+
+  let data = null;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      data = await fetchEntry();
+    } catch (err) {
+      renderUnavailable("(could not reach the node that ran this request — " +
+        String(err) + ")");
+      return;
+    }
+    if (data) break;
+    if (attempt >= MISS_RETRIES_MS.length) break;
+    $("promptBody").textContent = "waiting for this request to be recorded…";
+    await sleep(MISS_RETRIES_MS[attempt]);
+  }
+
+  if (!data) {
+    renderUnavailable(
+      "(not found — this request has aged out of the node's " +
+      (cap ? cap + "-entry " : "") + "prompt history, or the node that ran it " +
+      "has restarted since)");
+    return;
+  }
+
+  renderEntry(data, !data.output);
+
+  // Follow a running request to completion.
+  for (let i = 0; i < OUTPUT_POLL_LIMIT && !data.output; i++) {
+    await sleep(OUTPUT_POLL_MS);
+    let next;
+    try {
+      next = await fetchEntry();
+    } catch {
+      return; // keep what is on screen rather than replacing it with an error
+    }
+    if (!next) return; // evicted while we watched; the prompt on screen still stands
+    data = next;
+    renderEntry(data, !data.output);
+  }
+})();
 
 document.querySelectorAll("button[data-copy]").forEach(b => {
   b.onclick = () => {

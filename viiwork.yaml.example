@@ -64,6 +64,17 @@ backend:
   # threads: 0  # 0 = auto-derive max(1, nproc/n_backends). Override to pin a
   #             # specific count. Bypassed entirely if --threads is in extra_args.
 
+# activity: in-memory request history for the dashboards. None of it is
+# persisted; a restart clears it.
+#
+# activity:
+#   prompt_history: 1000   # requests keeping their prompt and output for lookup.
+#                          # Memory is roughly this times up to 100 KB (prompt and
+#                          # output are each truncated at 50 000 chars), so 1000 is
+#                          # ~100 MB of worst-case headroom and far less in practice.
+#                          # Below 1 falls back to the default. Nodes publish this
+#                          # on /v1/status so the dashboard sizes its list to match.
+
 health:
   interval: 5s
   # timeout: 30s default. CPU-bound hosts (especially 4-core w/ many backends)

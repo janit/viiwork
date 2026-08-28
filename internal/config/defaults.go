@@ -1,6 +1,10 @@
 package config
 
-import "time"
+import (
+	"time"
+
+	"github.com/janit/viiwork/internal/activity"
+)
 
 func Defaults() Config {
 	return Config{
@@ -19,6 +23,9 @@ func Defaults() Config {
 			CORS: CORSConfig{
 				AllowOrigins: []string{"*.ts.net", "localhost", "127.0.0.1"},
 			},
+		},
+		Activity: ActivityConfig{
+			PromptHistory: activity.DefaultPromptHistory,
 		},
 		Model: ModelConfig{
 			ContextSize: 13337,

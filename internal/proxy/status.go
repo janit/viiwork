@@ -19,6 +19,10 @@ import (
 type StatusLocation struct {
 	Hostname   string
 	ListenAddr string
+	// PromptHistory is this node's configured prompt-history capacity. It
+	// travels on /v1/status so peers and the dashboard read the real number
+	// instead of each keeping their own copy of it.
+	PromptHistory int
 }
 
 // gpuLatest is the subset of *gpu.History the status payload needs. Kept as an
@@ -47,6 +51,7 @@ func NewStatusHandler(nodeID string, localModel string, backends []*balancer.Bac
 			ListenAddr:    loc.ListenAddr,
 			Models:        []string{localModel},
 			TotalBackends: len(backends),
+			PromptHistory: loc.PromptHistory,
 		}
 		for _, b := range backends {
 			var gpuIDs []int

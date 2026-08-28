@@ -150,24 +150,28 @@ func TestPipelineRequestPromptStored(t *testing.T) {
 	}
 }
 
-// TestPromptHistoryEvictsAtCap pins the "in memory only, purge at 100" rule:
-// the store keeps the most recent 100 prompts and drops older ones, so a long
-// -running node cannot accumulate prompt text without bound.
+// TestPromptHistoryEvictsAtCap pins the "in memory only, oldest-first eviction"
+// rule so a long-running node cannot accumulate prompt text without bound.
+//
+// Written against a configured cap rather than the default: the default is a
+// tunable number, and a test that hardcodes it fails for the wrong reason the
+// next time it changes.
 func TestPromptHistoryEvictsAtCap(t *testing.T) {
-	log := activity.NewLog()
-	const n = 130
+	const cap = 100
+	log := activity.NewLogWithPromptHistory(cap)
+	const n = cap + 30
 	for i := 1; i <= n; i++ {
 		log.StorePrompt(int64(i), "m", "prompt-"+strconv.Itoa(i))
 	}
 
-	// The oldest 30 must be gone.
-	for _, rid := range []int64{1, 15, 30} {
+	// Everything past the cap must be gone.
+	for _, rid := range []int64{1, 15, n - cap} {
 		if _, ok := log.GetPrompt(rid); ok {
-			t.Errorf("rid %d should have been evicted past the 100-entry cap", rid)
+			t.Errorf("rid %d should have been evicted past the %d-entry cap", rid, cap)
 		}
 	}
-	// The most recent 100 must survive.
-	for _, rid := range []int64{31, 100, n} {
+	// The most recent cap entries must survive.
+	for _, rid := range []int64{n - cap + 1, n - 1, n} {
 		entry, ok := log.GetPrompt(rid)
 		if !ok {
 			t.Fatalf("rid %d should still be present", rid)
@@ -175,6 +179,18 @@ func TestPromptHistoryEvictsAtCap(t *testing.T) {
 		if entry.Prompt != "prompt-"+strconv.FormatInt(rid, 10) {
 			t.Errorf("rid %d has wrong prompt %q", rid, entry.Prompt)
 		}
+	}
+}
+
+// The default must be the documented one — README, CHANGELOG and the example
+// config all quote it, and the dashboard falls back to it for peers too old to
+// report their own.
+func TestDefaultPromptHistory(t *testing.T) {
+	if activity.DefaultPromptHistory != 1000 {
+		t.Errorf("DefaultPromptHistory = %d, want 1000 (documented)", activity.DefaultPromptHistory)
+	}
+	if got := activity.NewLog().PromptHistoryMax(); got != 1000 {
+		t.Errorf("NewLog() max = %d, want 1000", got)
 	}
 }
 

@@ -123,6 +123,16 @@ type HealthConfig struct {
 	EvictOnHardFailure bool `yaml:"evict_on_hard_failure"`
 }
 
+// ActivityConfig tunes the in-memory activity and prompt history a node keeps.
+// None of it is persisted; a restart clears everything here.
+type ActivityConfig struct {
+	// PromptHistory is how many recent requests keep their prompt and output
+	// available for lookup. Memory scales with it: roughly this many times up
+	// to 100 KB (a prompt and an output, each truncated at 50 000 characters).
+	// 0 uses the default.
+	PromptHistory int `yaml:"prompt_history"`
+}
+
 type BalancerConfig struct {
 	LatencyWindow     Duration `yaml:"latency_window"`
 	HighLoadThreshold int      `yaml:"high_load_threshold"`
@@ -163,6 +173,7 @@ type Config struct {
 	GPUs      GPUConfig                          `yaml:"gpus"`
 	Backend   BackendConfig                      `yaml:"backend"`
 	Health    HealthConfig                       `yaml:"health"`
+	Activity  ActivityConfig                     `yaml:"activity"`
 	Balancer  BalancerConfig                     `yaml:"balancer"`
 	Peers     PeersConfig                        `yaml:"peers"`
 	Cost      CostConfig                         `yaml:"cost"`

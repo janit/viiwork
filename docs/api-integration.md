@@ -293,14 +293,21 @@ which node minted the id; otherwise it 404s.
 
 ### Storage limits — design the UI around these
 
-- **Capacity** — the last **100 requests per node**, evicted oldest-first.
+- **Capacity** — the last **`activity.prompt_history` requests per node**,
+  1000 by default, evicted oldest-first. It is per-node configuration, so
+  different nodes in one mesh may keep different depths. Each node reports its
+  own value as `prompt_history` on `/v1/status` and in `/v1/cluster` (both
+  `local` and each entry of `peers`); it is absent on nodes older than v1.1.1,
+  where you should assume 100. **Size any client-side list from the largest
+  value you see rather than hardcoding one**, or you will evict rows the owning
+  node could still answer a lookup for.
 - **Durability** — memory only. A node restart loses everything, with no signal
   other than lookups starting to 404.
 - **Truncation** — prompt and output are each capped at 50 000 characters,
   suffixed `"... [truncated]"`.
 - **Failure mode** — a lookup for an evicted or restarted-away id returns `404`.
   Treat it as expected, not as an error: "this request has aged out of the
-  100-entry history".
+  node's history".
 
 ## 6. Semantics that bite
 

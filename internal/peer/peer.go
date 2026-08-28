@@ -36,6 +36,11 @@ type StatusResponse struct {
 	// GPUs lets any node render GPU load for every host in the mesh, not just
 	// its own. omitempty keeps this compatible with nodes that predate it.
 	GPUs []GPUInfo `json:"gpus,omitempty"`
+
+	// PromptHistory is how many requests this node keeps prompt and output
+	// for. Absent from nodes older than v1.1.1, which is why a consumer must
+	// read zero as "unknown", not as "keeps nothing".
+	PromptHistory int `json:"prompt_history,omitempty"`
 }
 
 type BackendInfo struct {
@@ -100,6 +105,7 @@ type PeerState struct {
 	costEURPerHour float64
 	costTodayEUR   float64
 	gpus           []GPUInfo
+	promptHistory  int
 }
 
 // GPUs returns a copy of the peer's last reported GPU utilisation.
@@ -133,6 +139,7 @@ func (p *PeerState) Update(resp StatusResponse) {
 	p.costEURPerHour = resp.CostEURPerHour
 	p.costTodayEUR = resp.CostTodayEUR
 	p.gpus = append(p.gpus[:0], resp.GPUs...)
+	p.promptHistory = resp.PromptHistory
 }
 
 func (p *PeerState) MarkUnreachable() {
@@ -195,6 +202,8 @@ func (p *PeerState) IncLocalInFlight() { p.localInFlight.Add(1) }
 func (p *PeerState) DecLocalInFlight() { p.localInFlight.Add(-1) }
 func (p *PeerState) LocalInFlight() int64 { return p.localInFlight.Load() }
 func (p *PeerState) HealthyBackends() int { p.mu.RLock(); defer p.mu.RUnlock(); return p.healthyBackends }
+
+func (p *PeerState) PromptHistory() int { p.mu.RLock(); defer p.mu.RUnlock(); return p.promptHistory }
 
 func (p *PeerState) PowerWatts() float64 {
 	p.mu.RLock()
