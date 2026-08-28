@@ -152,6 +152,11 @@ func main() {
 	proxy.SetStatusGPUSource(hist)
 	handler.SetActivity(actLog)
 	handler.SetEvictOnHardFailure(cfg.Health.EvictOnHardFailure)
+	if len(cfg.Server.CORS.AllowOrigins) > 0 {
+		tailnetIPs := cfg.Server.CORS.AllowTailnetIPs == nil || *cfg.Server.CORS.AllowTailnetIPs
+		handler.SetCORS(&proxy.CORS{Origins: cfg.Server.CORS.AllowOrigins, TailnetIPs: tailnetIPs})
+		log.Printf("CORS enabled for origins %v (tailnet IPs: %v)", cfg.Server.CORS.AllowOrigins, tailnetIPs)
+	}
 
 	if len(pipelines) > 0 {
 		resolver := proxy.NewPipelineResolver(pipelines)

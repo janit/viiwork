@@ -17,7 +17,7 @@ func NewRequestID() int64 {
 
 type Event struct {
 	Time      int64  `json:"t"`
-	Type      string `json:"type"`    // "backend", "request", "system"
+	Type      string `json:"type"` // "backend", "request", "system"
 	Message   string `json:"message"`
 	GPUID     int    `json:"gpu_id,omitempty"`
 	RequestID int64  `json:"rid,omitempty"`
@@ -47,6 +47,12 @@ func NewLog() *Log {
 // carrying full prompt bodies on every SSE event.
 func (l *Log) StorePrompt(rid int64, model, prompt string) {
 	l.prompts.Store(rid, time.Now().Unix(), model, prompt)
+}
+
+// StoreOutput records the response text for a request once it has finished,
+// against the same rid the prompt was stored under.
+func (l *Log) StoreOutput(rid int64, model, output string, elapsedMS int64) {
+	l.prompts.StoreOutput(rid, time.Now().Unix(), model, output, elapsedMS)
 }
 
 // GetPrompt looks up a previously stored prompt by request id.

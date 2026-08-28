@@ -180,11 +180,16 @@ whichever host you can reach and you see the whole mesh:
 - **Mesh Models** — every model across the cluster; click one to filter the view
 - **In-Flight Requests** — live jobs with elapsed time, task tag, model, and the
   backend and host serving them
-- **Prompts** — the most recent requests across the mesh, newest first. Click a
-  row to highlight it and open a modal with the full prompt text and the query
-  details (model, backend, host, task tag, time). See *Prompt history* below.
+- **Prompts** — the most recent requests across the mesh, newest first. Every
+  row is a link to a full-page view of that request's prompt and output. See
+  *Prompt and output history* below.
 - **Backends** — GPU, host, in-flight, RSS, GPU%, VRAM and context use for every
   host, grouped by model or by host
+
+**Halt** (the button in the header, or press `h`) freezes the whole view so rows
+stop moving while you read or click them. Events that arrive during a halt are
+queued, not dropped, and applied in order when you resume — the button shows how
+many are waiting.
 
 The page opens a single stream and never polls. Your browser only ever talks to
 the host you opened; that host reaches the other nodes over your LAN, so peers do
@@ -194,22 +199,37 @@ Peer *jobs* appear in real time. Peer *backend counts and GPU load* refresh on
 `peers.poll_interval` (10s by default) — lower it if you want the backends table
 to track remote hosts more tightly.
 
-### Prompt history
+### Prompt and output history
 
-Each node keeps the prompt text of its **last 100 requests in memory**, evicted
-oldest-first. Nothing is written to disk and nothing survives a restart — this is
-a debugging aid, not an audit log.
+Each node keeps the prompt **and the response** of its **last 100 requests in
+memory**, evicted oldest-first. Nothing is written to disk and nothing survives a
+restart — this is a debugging aid, not an audit log. Prompt and output are each
+truncated at 50 000 characters.
 
-Prompt text is deliberately *not* carried on the activity stream; it is fetched
-only when you open a row, so full prompt bodies stay off the per-request path.
+Clicking a row opens `/prompt`, a full page showing both, with the elapsed time
+and a copy button for each. Rows are ordinary links, so cmd-click, middle-click
+and *open in new tab* all work — the intended workflow is fanning a batch of
+requests out into background tabs and reading them side by side. Each tab is
+titled with its request id so they stay tellable apart.
+
+A reasoning model's thinking is kept and labelled rather than folded into the
+answer: with thinking enabled the model leaves `content` empty and puts
+everything in `reasoning_content`, so discarding it would blank the output for
+exactly the requests most worth reading. A failed request stores its error body,
+which is usually the most useful thing on the page.
+
+Neither prompt nor output text is carried on the activity stream; both are
+fetched only when you open a request, so bodies stay off the per-request path.
+The response is captured by teeing the bytes on their way to the client and
+parsing once at the end, so nothing is decoded per token.
 Because request ids are a per-process counter rather than a cluster-wide
 namespace, a lookup is only meaningful against the node that minted the id, and
 the fan-out happens server-side for the same reason the rest of the mesh view
 does: your browser may not be able to reach peers directly.
 
-Coverage includes local, peer-routed and pipeline requests. Requests with no
-recoverable user text (for example multimodal content parts) simply have no
-entry rather than a blank one.
+Coverage includes local, peer-routed and pipeline requests. A request with no
+recoverable user text (for example multimodal content parts) still gets an entry
+if it produced output; a request with neither gets none rather than a blank one.
 
 Two endpoints back this: `/v1/prompts?rid=N` reads this node's own store, and
 `/v1/mesh/prompt?rid=N&addr=HOST:PORT` is what the dashboard calls — an empty
@@ -222,14 +242,44 @@ viiwork is designed for trusted local networks and has no built-in authenticatio
 
 Two consequences of that worth being explicit about:
 
-- **Prompt text is readable over the API.** The mesh dashboard's prompt history
-  (last 100 requests per node, in memory) is served unauthenticated like
-  everything else. If prompts on your fleet are sensitive, restrict access at the
-  network layer. There is currently no switch to disable the history.
+- **Prompt *and response* text is readable over the API.** The history (last 100
+  requests per node, in memory) is served unauthenticated like everything else.
+  If either side of the traffic on your fleet is sensitive, restrict access at
+  the network layer. There is currently no switch to disable the history.
 - **`/v1/mesh/prompt` only forwards to configured peers.** The `addr` parameter
   is validated against this node's peer list before anything is fetched, so the
   endpoint cannot be used to make a node probe arbitrary hosts on your network.
   Peers themselves are trusted: they come from config, not from request input.
+
+### Browser origins (CORS)
+
+Server-side callers — curl, a backend proxying on behalf of its own UI — are
+unaffected by any of this. It matters only when a page served from somewhere
+else fetches viiwork directly from the browser.
+
+Because viiwork authenticates nothing, an origin allowlist is not protecting the
+API from anyone who can already reach it. What it stops is a page in some
+browser on your network quietly driving your fleet through that browser's
+network position. Treat the list as a real control and keep it short:
+
+```yaml
+server:
+  cors:
+    allow_origins: ["*.ts.net", "localhost", "127.0.0.1", "*.your-app.example"]
+    allow_tailnet_ips: true   # also 100.64.0.0/10 and fd7a:115c:a1e0::/48
+```
+
+`*.example.com` matches subdomains only, never the bare apex; every other entry
+must match the host exactly. `allow_origins: []` sends no CORS header at all,
+which is how viiwork behaved before v1.1.0.
+
+What ships is `*.ts.net`, `localhost` and `127.0.0.1` plus tailnet IPs — the
+deployment viiwork documents, and nothing else. Your own application's origin is
+deployment-specific: add it in your `viiwork.yaml`.
+
+Where the consumer has a backend of its own, **prefer a server-side proxy over
+CORS**: it needs no allowlist entry, and it can put authentication in front of
+an API that has none.
 
 ## API Endpoints
 
@@ -237,6 +287,7 @@ Two consequences of that worth being explicit about:
 |----------|--------|-------------|
 | `/` | GET | Status dashboard (this node) |
 | `/mesh` | GET | Cluster-wide dashboard (all hosts, all models) |
+| `/prompt` | GET | Full-page prompt + output for one request (`?rid=N&addr=`) |
 | `/chat` | GET | Lightweight chat UI |
 | `/health` | GET | System health (JSON) |
 | `/v1/models` | GET | List all models (local + mesh peers) |
@@ -248,8 +299,18 @@ Two consequences of that worth being explicit about:
 | `/v1/metrics` | GET | GPU metrics history (JSON) |
 | `/v1/metrics/stream` | GET | Live GPU metrics (SSE) |
 | `/v1/mesh/stream` | GET | Live cluster state + activity, all hosts (SSE) |
-| `/v1/prompts` | GET | Prompt text for one request id on this node (`?rid=N`) |
-| `/v1/mesh/prompt` | GET | Prompt lookup with server-side peer fan-out (`?rid=N&addr=`) |
+| `/v1/prompts` | GET | Prompt + output for one request id on this node (`?rid=N`) |
+| `/v1/mesh/prompt` | GET | Prompt + output lookup with server-side peer fan-out (`?rid=N&addr=`) |
+
+All `GET`/`POST` endpoints answer CORS preflights and carry an
+`Access-Control-Allow-Origin` header for allowed origins — see *Browser origins*
+under [Security](#security).
+
+Consuming this API from another application? `docs/api-integration.md` is a
+worked integration spec — endpoint-by-endpoint reference, the server-side
+proxy vs direct-browser trade-off, and the semantics (per-node request ids,
+freshness that differs by column, no server-side job registry) that are not
+visible in the payloads.
 
 ## Host Requirements
 
@@ -283,6 +344,16 @@ The list below is grounded in what's actually deployed on the reference fleet (1
 > VRAM. Layer split runs a group's cards strictly sequentially — one card
 > computes at a time — so **extra GPUs in a group buy VRAM and context, never
 > throughput**. For throughput, run more backends, not wider ones.
+
+> **Size `health.max_failures` from your cold-load time.** `llama-server`
+> answers `/health` with 503 *"Loading model"* for the whole time it is reading
+> tensors, so during a cold load every probe counts as a health *failure*.
+> `max_failures x interval` must therefore exceed the entire load, not a typical
+> restart. Measured 2026-08-27: a 104 GB model on USB loaded at ~30 MB/s (~60
+> min), and a 5-minute grace made viiwork respawn the backend when it had
+> already placed 78 GB of 76.9 GB of weights in VRAM — minutes from ready, and
+> the restart discarded all of it. Rule of thumb:
+> `model_bytes / observed_read_bytes_per_sec / interval`, then double it.
 
 > **A single tensor larger than one card is a hard wall, not a tuning problem.**
 > Layer split assigns whole *layers* to cards and `-ot` assigns a whole *tensor*

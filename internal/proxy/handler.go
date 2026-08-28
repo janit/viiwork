@@ -37,6 +37,7 @@ type Handler struct {
 	pipelineResolver   *PipelineResolver
 	pipelineExecutor   *pipeline.Executor
 	evictOnHardFailure bool
+	cors               *CORS
 }
 
 // NewHandler creates a standalone handler (no mesh). Preserved for backward compatibility.
@@ -76,6 +77,14 @@ func (h *Handler) SetEvictOnHardFailure(enabled bool) {
 	h.evictOnHardFailure = enabled
 }
 
+// SetCORS enables cross-origin access for the listed origins. Leave it unset
+// and no CORS header is ever sent, which is the pre-existing behaviour: the
+// API is then reachable only from a server-side caller or a page served by the
+// node itself.
+func (h *Handler) SetCORS(c *CORS) {
+	h.cors = c
+}
+
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		if rv := recover(); rv != nil {
@@ -85,6 +94,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 		}
 	}()
+
+	// CORS runs before routing for two reasons: the allow header has to land on
+	// every response including the SSE streams and the error paths, and a
+	// preflight has to be answered here or not at all — the switch below
+	// matches only GET and POST, so an OPTIONS would fall through to 404.
+	if h.cors != nil && h.cors.apply(w, r) {
+		return
+	}
 
 	switch {
 	case r.URL.Path == "/health" && r.Method == "GET":
@@ -111,6 +128,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Write(web.MeshHTML)
 	case r.URL.Path == "/v1/mesh/stream" && r.Method == "GET":
 		h.handleMeshStream(w, r)
+	case r.URL.Path == "/prompt" && r.Method == "GET":
+		// A full page rather than the dashboard's old in-place modal: the point
+		// is that each row is a real link, so a middle- or cmd-click opens one
+		// in a background tab and a batch can be triaged side by side.
+		w.Header().Set("Content-Type", "text/html")
+		w.Write(web.PromptHTML)
 	case r.URL.Path == "/chat" && r.Method == "GET":
 		w.Header().Set("Content-Type", "text/html")
 		w.Write(web.ChatHTML)
@@ -484,6 +507,15 @@ func (h *Handler) handleProxy(w http.ResponseWriter, r *http.Request) {
 	rid := activity.NewRequestID()
 	if h.activity != nil {
 		h.activity.StorePrompt(rid, model, extractPromptText(bodyBytes))
+		// Capture the response on its way back to the client so the dashboard
+		// can show what came out, not only what went in. Wrapping here covers
+		// both branches below at once, local and peer-routed alike, and the
+		// deferred store runs after whichever one ran has finished writing.
+		var capw *captureWriter
+		w, capw = newCaptureWriter(w)
+		defer func() {
+			h.activity.StoreOutput(rid, model, capw.Output(), time.Since(start).Milliseconds())
+		}()
 	}
 	if route.Type == peer.RouteLocal {
 		if logging.DebugEnabled() {

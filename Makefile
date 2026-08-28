@@ -32,8 +32,13 @@ clean:
 # keeping the original target names working for older docs and habits.
 
 # Stable foundation: standard upstream llama.cpp from the default Dockerfile.
+# VERSION must be passed through: the Dockerfile defaults ARG VERSION to "dev",
+# so without this the image reports "dev" from /v1/cluster and /v1/status no
+# matter what the tree is tagged — which is worst precisely on a release build,
+# where the tag is the whole point. scripts/update.sh and the gfx906 target
+# already do this; this target was the odd one out.
 docker docker-stable:
-	docker build -t viiwork .
+	docker build --build-arg VERSION=$(VERSION) -t viiwork .
 
 # Experimental track: gfx906-stripped fork build. Requires the local fork
 # tree at $(GFX906_FORK) and uses BuildKit's --build-context to pull it

@@ -7,6 +7,18 @@ func Defaults() Config {
 		Server: ServerConfig{
 			Host: "0.0.0.0",
 			Port: 8080,
+			// Defaults cover the deployment viiwork documents — nodes on a
+			// tailnet — plus localhost for development. Your own application's
+			// origin is deployment-specific and belongs in your viiwork.yaml,
+			// not here.
+			//
+			// The API authenticates nothing, so this list is the only thing
+			// standing between it and any page a browser on your network
+			// happens to open. Narrow it rather than widen it; set
+			// allow_origins: [] to turn CORS off entirely.
+			CORS: CORSConfig{
+				AllowOrigins: []string{"*.ts.net", "localhost", "127.0.0.1"},
+			},
 		},
 		Model: ModelConfig{
 			ContextSize: 13337,

@@ -200,3 +200,58 @@ func BenchmarkExtractModelFastFallback(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkCaptureWriter measures what output capture adds to the streaming
+// path. The SSE benchmarks above call streamThinkDisabled directly and so do
+// not see the wrapper at all; this exercises it the way handleProxy does, one
+// Write per SSE chunk.
+func BenchmarkCaptureWriter(b *testing.B) {
+	chunk := []byte(`data: {"choices":[{"delta":{"content":" token"}}]}` + "\n\n")
+	const chunks = 512
+
+	// Split deliberately: "writes" is the part that sits on the per-token path
+	// and is the number to watch, while "writes+extract" adds the one-shot
+	// parse that runs once per request after the client is already served.
+	b.Run("bare-writes", func(b *testing.B) {
+		b.SetBytes(int64(len(chunk) * chunks))
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			var w http.ResponseWriter = discardWriter{}
+			for j := 0; j < chunks; j++ {
+				w.Write(chunk)
+			}
+		}
+	})
+
+	b.Run("capture-writes", func(b *testing.B) {
+		b.SetBytes(int64(len(chunk) * chunks))
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			w, _ := newCaptureWriter(discardWriter{})
+			for j := 0; j < chunks; j++ {
+				w.Write(chunk)
+			}
+		}
+	})
+
+	b.Run("capture-writes+extract", func(b *testing.B) {
+		b.SetBytes(int64(len(chunk) * chunks))
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			w, capw := newCaptureWriter(discardWriter{})
+			for j := 0; j < chunks; j++ {
+				w.Write(chunk)
+			}
+			_ = capw.Output()
+		}
+	})
+}
+
+// discardWriter is a flushing ResponseWriter that does nothing, so the
+// benchmark measures the wrapper rather than the recorder underneath it.
+type discardWriter struct{}
+
+func (discardWriter) Header() http.Header         { return http.Header{} }
+func (discardWriter) Write(b []byte) (int, error) { return len(b), nil }
+func (discardWriter) WriteHeader(int)             {}
+func (discardWriter) Flush()                      {}

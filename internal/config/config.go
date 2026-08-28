@@ -28,8 +28,22 @@ func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 }
 
 type ServerConfig struct {
-	Host string `yaml:"host"`
-	Port int    `yaml:"port"`
+	Host string     `yaml:"host"`
+	Port int        `yaml:"port"`
+	CORS CORSConfig `yaml:"cors"`
+}
+
+// CORSConfig controls which browser origins may read this node's API. It
+// matters because viiwork authenticates nothing: see proxy.CORS for what an
+// origin allowlist is and is not doing on an unauthenticated service.
+type CORSConfig struct {
+	// AllowOrigins are host patterns. "*.example.com" matches subdomains only;
+	// anything else must match the host exactly. Empty disables CORS entirely.
+	AllowOrigins []string `yaml:"allow_origins"`
+	// AllowTailnetIPs also allows origins addressed by a literal Tailscale IP
+	// (100.64.0.0/10, fd7a:115c:a1e0::/48), since a tailnet host is reached by
+	// its address about as often as by its MagicDNS name.
+	AllowTailnetIPs *bool `yaml:"allow_tailnet_ips"`
 }
 
 type ModelConfig struct {
@@ -144,14 +158,14 @@ type CostConfig struct {
 }
 
 type Config struct {
-	Server    ServerConfig                        `yaml:"server"`
-	Model     ModelConfig                         `yaml:"model"`
-	GPUs      GPUConfig                           `yaml:"gpus"`
-	Backend   BackendConfig                       `yaml:"backend"`
-	Health    HealthConfig                        `yaml:"health"`
-	Balancer  BalancerConfig                      `yaml:"balancer"`
-	Peers     PeersConfig                         `yaml:"peers"`
-	Cost      CostConfig                          `yaml:"cost"`
+	Server    ServerConfig                       `yaml:"server"`
+	Model     ModelConfig                        `yaml:"model"`
+	GPUs      GPUConfig                          `yaml:"gpus"`
+	Backend   BackendConfig                      `yaml:"backend"`
+	Health    HealthConfig                       `yaml:"health"`
+	Balancer  BalancerConfig                     `yaml:"balancer"`
+	Peers     PeersConfig                        `yaml:"peers"`
+	Cost      CostConfig                         `yaml:"cost"`
 	Pipelines map[string]pipeline.PipelineConfig `yaml:"pipelines"`
 }
 
