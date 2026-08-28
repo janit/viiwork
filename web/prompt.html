@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>prompt</title>
+<style>
+  :root {
+    --bg: #0d1117; --card: #161b22; --border: #30363d;
+    --fg: #e6edf3; --dim: #8b949e; --dimmer: #6e7681;
+    --accent: #58a6ff; --ok: #3fb950; --warn: #d29922; --bad: #f85149;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 20px 24px 40px; background: var(--bg); color: var(--fg);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 6px; }
+  h1 { font-size: 1.05rem; margin: 0; font-weight: 600; letter-spacing: -0.01em;
+       font-family: var(--mono); }
+  h2 { font-size: 0.78rem; margin: 0; font-weight: 600; color: var(--dim);
+       text-transform: uppercase; letter-spacing: 0.06em; }
+  .sub { color: var(--dimmer); font-size: 0.8rem; font-family: var(--mono); }
+  .spacer { flex: 1; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  #meta { margin-bottom: 18px; }
+
+  .panel { background: var(--card); border: 1px solid var(--border); border-radius: 6px;
+           margin-bottom: 18px; }
+  .panelHead { display: flex; align-items: center; gap: 10px;
+               padding: 8px 12px; border-bottom: 1px solid var(--border); }
+  .panel pre {
+    margin: 0; padding: 12px; font-family: var(--mono); font-size: 0.84rem;
+    white-space: pre-wrap; word-break: break-word; overflow-x: auto;
+  }
+  .panel.empty pre { color: var(--dimmer); font-style: italic; }
+
+  button { background: transparent; border: 1px solid var(--border); color: var(--dim);
+           border-radius: 6px; padding: 3px 10px; font: inherit; font-size: 0.76rem;
+           cursor: pointer; }
+  button:hover { color: var(--fg); border-color: var(--dim); }
+
+  .chars { color: var(--dimmer); font-size: 0.74rem; font-family: var(--mono); }
+  .err { color: var(--warn); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1 id="title">…</h1>
+  <span class="spacer"></span>
+  <a href="/mesh">← mesh</a>
+</header>
+<div class="sub" id="meta"></div>
+
+<div class="panel" id="promptPanel">
+  <div class="panelHead">
+    <h2>Prompt</h2>
+    <span class="chars" id="promptChars"></span>
+    <span class="spacer"></span>
+    <button data-copy="promptBody">copy</button>
+  </div>
+  <pre id="promptBody">loading…</pre>
+</div>
+
+<div class="panel" id="outputPanel">
+  <div class="panelHead">
+    <h2>Output</h2>
+    <span class="chars" id="outputChars"></span>
+    <span class="spacer"></span>
+    <button data-copy="outputBody">copy</button>
+  </div>
+  <pre id="outputBody">loading…</pre>
+</div>
+
+<script>
+"use strict";
+
+const $ = id => document.getElementById(id);
+const q = new URLSearchParams(location.search);
+
+// Every field below is rendered with textContent, never innerHTML. These
+// values arrive in the query string of a link anyone can hand-craft, and the
+// prompt and output bodies are model input and model output — none of it is
+// trusted markup.
+const rid = q.get("rid") || "";
+const addr = q.get("addr") || "";
+const model = q.get("model") || "";
+const dest = q.get("dest") || "";
+const host = q.get("host") || "";
+const task = q.get("task") || "";
+
+// The tab title carries the request id because the point of this page is to be
+// opened many times at once — a row of tabs all reading "prompt" would be
+// useless for picking one out.
+document.title = (rid ? "#" + rid + " " : "") + (model || "prompt");
+$("title").textContent = model ? (dest ? model + " → " + dest : model) : "request #" + rid;
+
+function fmtChars(n) {
+  return n >= 1000 ? (n / 1000).toFixed(1) + "k chars" : n + " chars";
+}
+
+function fill(panelID, bodyID, charsID, text, emptyNote) {
+  const panel = $(panelID);
+  if (text) {
+    panel.classList.remove("empty");
+    $(bodyID).textContent = text;
+    $(charsID).textContent = fmtChars(text.length);
+  } else {
+    panel.classList.add("empty");
+    $(bodyID).textContent = emptyNote;
+    $(charsID).textContent = "";
+  }
+}
+
+const params = new URLSearchParams({ rid, addr });
+fetch("/v1/mesh/prompt?" + params.toString())
+  .then(resp => resp.ok ? resp.json() : Promise.reject(resp.status))
+  .then(data => {
+    const bits = [];
+    if (host) bits.push("@" + host);
+    if (data.t) bits.push(new Date(data.t * 1000).toLocaleString());
+    if (data.elapsed_ms) bits.push((data.elapsed_ms / 1000).toFixed(2) + "s");
+    if (task) bits.push("task " + task);
+    if (addr) bits.push(addr);
+    bits.push("rid " + rid);
+    $("meta").textContent = bits.join(" · ");
+
+    if (data.model && !model) $("title").textContent = data.model;
+
+    fill("promptPanel", "promptBody", "promptChars", data.prompt, "(no prompt recorded)");
+    // An entry with no output is the normal state for a request that is still
+    // running: output is stored once, when the response finishes.
+    fill("outputPanel", "outputBody", "outputChars", data.output,
+      "(no output recorded — the request may still be running, or it ended before producing any)");
+  })
+  .catch(() => {
+    $("meta").innerHTML = "";
+    $("meta").textContent = "rid " + rid + (addr ? " · " + addr : "");
+    const note = "(unavailable — this request may have aged out of the 100-entry " +
+      "history, or the node that ran it restarted since)";
+    for (const p of ["promptPanel", "outputPanel"]) $(p).classList.add("empty");
+    $("promptBody").textContent = note;
+    $("outputBody").textContent = note;
+    $("promptChars").textContent = "";
+    $("outputChars").textContent = "";
+  });
+
+document.querySelectorAll("button[data-copy]").forEach(b => {
+  b.onclick = () => {
+    navigator.clipboard.writeText($(b.dataset.copy).textContent).then(() => {
+      const was = b.textContent;
+      b.textContent = "copied";
+      setTimeout(() => { b.textContent = was; }, 1200);
+    }).catch(() => { b.textContent = "copy failed"; });
+  };
+});
+</script>
+</body>
+</html>

@@ -10,3 +10,6 @@ var MeshHTML []byte
 
 //go:embed chat.html
 var ChatHTML []byte
+
+//go:embed prompt.html
+var PromptHTML []byte

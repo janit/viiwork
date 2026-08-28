@@ -82,28 +82,20 @@
   .empty { color: var(--dimmer); font-style: italic; padding: 10px 12px; font-size: 0.8rem; }
   .err { color: var(--bad); padding: 10px 12px; font-size: 0.8rem; }
 
-  /* prompt history + modal */
-  .prompt-row { cursor: pointer; }
+  /* prompt history — each row is a real <a> so cmd/middle-click opens a
+     background tab; that is the whole point of the full-page prompt view. */
+  a.prompt-row { color: inherit; text-decoration: none; }
   .prompt-row:hover { background: rgba(255,255,255,0.04); }
-  .prompt-row.selected { background: rgba(88,166,255,0.14) !important; }
   .prompt-row.running .arrow { color: var(--warn); }
   .promptlink { margin-left: auto; color: var(--accent); font-size: 0.76rem; white-space: nowrap; }
 
-  dialog#promptModal {
-    background: var(--card); color: var(--fg); border: 1px solid var(--border);
-    border-radius: 8px; padding: 16px 18px; width: min(720px, 92vw);
-    box-shadow: 0 12px 40px rgba(0,0,0,0.5);
-  }
-  dialog#promptModal::backdrop { background: rgba(0,0,0,0.6); }
-  dialog#promptModal form { margin: 0; }
-  .modalHead { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
-  .modalHead h2 { margin: 0; font-size: 0.95rem; color: var(--fg); text-transform: none; letter-spacing: 0; }
-  .modalHead button { background: transparent; border: 1px solid var(--border); color: var(--dim);
-    border-radius: 6px; padding: 3px 10px; font: inherit; font-size: 0.78rem; cursor: pointer; }
-  .modalHead button:hover { color: var(--fg); border-color: var(--dim); }
-  #promptModalMeta { margin: 6px 0 10px; }
-  #promptModalBody { white-space: pre-wrap; word-break: break-word; max-height: 60vh;
-    overflow: auto; margin: 0; font-family: var(--mono); font-size: 0.82rem; }
+  /* halt */
+  .halt { background: transparent; border: 1px solid var(--border); color: var(--dim);
+          border-radius: 6px; padding: 4px 12px; font: inherit; font-size: 0.78rem;
+          cursor: pointer; }
+  .halt:hover { color: var(--fg); border-color: var(--dim); }
+  .halt.on { border-color: var(--warn); color: var(--warn); font-weight: 600; }
+  body.halted .mono-list, body.halted #backendsCard { outline: 1px solid rgba(210,153,34,0.35); }
 </style>
 </head>
 <body>
@@ -116,6 +108,7 @@
     <button data-mode="model" class="on">model</button>
     <button data-mode="host">host</button>
   </span>
+  <button class="halt" id="halt" title="Freeze the view so rows stop moving under the cursor (h)">halt</button>
 </header>
 
 <div class="cols">
@@ -162,17 +155,6 @@
   </div>
 </div>
 
-<dialog id="promptModal">
-  <form method="dialog">
-    <div class="modalHead">
-      <h2 id="promptModalTitle"></h2>
-      <button value="cancel">close</button>
-    </div>
-    <div class="sub" id="promptModalMeta"></div>
-    <pre id="promptModalBody"></pre>
-  </form>
-</dialog>
-
 <script>
 "use strict";
 
@@ -192,7 +174,17 @@ const MAX_ACTIVITY = 60;
 const promptHistory = new Map();  // key -> {rid, addr, host, model, dest, task, t, done}
 const promptOrder = [];           // keys in first-seen order, oldest first
 const MAX_PROMPTS = 100;
-let selectedPromptKey = null;
+
+// Halt freezes the view. It queues incoming events instead of applying them,
+// rather than merely skipping the re-render, because the two lists evict as
+// they grow: a frozen render over a mutating map would leave rows on screen
+// whose entries had already been dropped underneath. Nothing is lost — the
+// queue drains in order on resume — and the queue is capped so a halt left on
+// overnight cannot grow without bound.
+let halted = false;
+let pendingEvents = [];           // raw activity events received while halted
+let pendingCluster = null;        // newest cluster snapshot received while halted
+const MAX_PENDING = 1000;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -369,10 +361,22 @@ function renderInflight() {
 }
 
 // ---------------------------------------------------------------------------
-// Render + interact: prompt history (a link per completed/in-flight request;
-// clicking highlights the row and opens the native <dialog> with the full
-// prompt, fetched on demand rather than carried on every SSE event).
+// Render: prompt history. Each row is an <a> to /prompt, not a click handler
+// opening a dialog — a real href is what makes cmd-click, middle-click and
+// "open in new tab" work, so a batch of requests can be sent to background
+// tabs and read side by side. target=_blank keeps this live view intact on a
+// plain click too. The prompt and output text itself is never carried here;
+// that page fetches it on demand, as the modal did.
 // ---------------------------------------------------------------------------
+function promptHref(r) {
+  const p = new URLSearchParams({ rid: String(r.rid), addr: r.addr || "" });
+  if (r.model) p.set("model", r.model);
+  if (r.dest) p.set("dest", r.dest);
+  if (r.host) p.set("host", r.host);
+  if (r.task) p.set("task", r.task);
+  return "/prompt?" + p.toString();
+}
+
 function renderPrompts() {
   const el = $("prompts");
   $("promptCount").textContent = promptOrder.length ? String(promptOrder.length) : "";
@@ -383,20 +387,16 @@ function renderPrompts() {
     const r = promptHistory.get(key);
     if (!r) return "";
     const t = new Date(r.t * 1000).toLocaleTimeString();
-    const cls = "row prompt-row" + (r.done ? "" : " running") + (key === selectedPromptKey ? " selected" : "");
-    return `<div class="${cls}" data-key="${esc(key)}">` +
+    const cls = "row prompt-row" + (r.done ? "" : " running");
+    return `<a class="${cls}" href="${esc(promptHref(r))}" target="_blank" rel="noopener">` +
       `<span class="host">${t}</span>` +
       (r.task ? `<span class="task">[${esc(r.task)}]</span>` : "") +
       `<span>${esc(r.model)}</span>` +
       `<span class="arrow">→</span><span>${esc(r.dest)}</span>` +
       `<span class="host">@${esc(r.host)}</span>` +
-      `<span class="promptlink">prompt ↗</span>` +
-      `</div>`;
+      `<span class="promptlink">open ↗</span>` +
+      `</a>`;
   }).join("");
-
-  el.querySelectorAll(".prompt-row").forEach(row => {
-    row.onclick = () => openPromptModal(row.dataset.key);
-  });
 }
 
 // recordPrompt tracks one (node, rid) across its start and done/aborted
@@ -410,9 +410,7 @@ function recordPrompt(e, host) {
   if (!promptHistory.has(key)) {
     promptOrder.push(key);
     if (promptOrder.length > MAX_PROMPTS) {
-      const evicted = promptOrder.shift();
-      promptHistory.delete(evicted);
-      if (selectedPromptKey === evicted) selectedPromptKey = null;
+      promptHistory.delete(promptOrder.shift());
     }
   }
   promptHistory.set(key, {
@@ -424,30 +422,6 @@ function recordPrompt(e, host) {
     done: isDone
   });
   renderPrompts();
-}
-
-function openPromptModal(key) {
-  const r = promptHistory.get(key);
-  if (!r) return;
-  selectedPromptKey = key;
-  renderPrompts();
-
-  $("promptModalTitle").textContent = `${r.model} → ${r.dest}`;
-  $("promptModalMeta").textContent =
-    `@${r.host} · ${new Date(r.t * 1000).toLocaleString()}` +
-    (r.task ? ` · task ${r.task}` : "") + (r.done ? "" : " · in flight");
-  $("promptModalBody").textContent = "Loading…";
-  $("promptModal").showModal();
-
-  const params = new URLSearchParams({ rid: String(r.rid), addr: r.addr });
-  fetch("/v1/mesh/prompt?" + params.toString())
-    .then(resp => resp.ok ? resp.json() : Promise.reject(resp.status))
-    .then(data => { $("promptModalBody").textContent = data.prompt || "(empty)"; })
-    .catch(() => {
-      $("promptModalBody").textContent =
-        "(prompt unavailable — it may have aged out of the 100-entry history, " +
-        "or the owning node restarted since this request ran)";
-    });
 }
 
 function renderActivity() {
@@ -489,13 +463,35 @@ function connectStream() {
   const es = new EventSource("/v1/mesh/stream");
 
   es.addEventListener("cluster", ev => {
-    try { applyCluster(JSON.parse(ev.data)); } catch {}
+    let c;
+    try { c = JSON.parse(ev.data); } catch { return; }
+    // Snapshots are whole state, not deltas, so a halt keeps only the newest
+    // one rather than a queue of them.
+    if (halted) { pendingCluster = c; updateHaltLabel(); return; }
+    applyCluster(c);
   });
 
   es.addEventListener("activity", ev => {
     let e;
     try { e = JSON.parse(ev.data); } catch { return; }
+    if (halted) {
+      pendingEvents.push(e);
+      if (pendingEvents.length > MAX_PENDING) pendingEvents.shift();
+      updateHaltLabel();
+      return;
+    }
+    applyActivity(e);
+  });
 
+  es.onerror = () => {
+    // EventSource reconnects on its own; surface it without tearing anything down.
+    $("scope").textContent += " · stream reconnecting…";
+  };
+}
+
+// applyActivity folds one event into the view. Split out of the stream handler
+// so a halt can queue events and replay them here, unchanged, on resume.
+function applyActivity(e) {
     const host = e.hostname || e.addr || "local";
     if (e.type === "request" && e.rid) {
       const key = (e.node_id || host) + "#" + e.rid;
@@ -521,12 +517,29 @@ function connectStream() {
     activityRows.unshift({ t: e.t, host, message: e.message || "" });
     if (activityRows.length > MAX_ACTIVITY) activityRows.length = MAX_ACTIVITY;
     renderActivity();
-  });
+}
 
-  es.onerror = () => {
-    // EventSource reconnects on its own; surface it without tearing anything down.
-    $("scope").textContent += " · stream reconnecting…";
-  };
+// ---------------------------------------------------------------------------
+// Halt: freeze the view for reading, without dropping what arrives meanwhile
+// ---------------------------------------------------------------------------
+function updateHaltLabel() {
+  const n = pendingEvents.length + (pendingCluster ? 1 : 0);
+  $("halt").textContent = halted ? (n ? `resume (${n})` : "resume") : "halt";
+}
+
+function setHalted(on) {
+  halted = on;
+  $("halt").classList.toggle("on", on);
+  document.body.classList.toggle("halted", on);
+  if (!on) {
+    // Drain in arrival order, so the reconstructed in-flight set lands in the
+    // same state it would have reached had the halt never happened.
+    const queued = pendingEvents;
+    pendingEvents = [];
+    for (const e of queued) applyActivity(e);
+    if (pendingCluster) { applyCluster(pendingCluster); pendingCluster = null; }
+  }
+  updateHaltLabel();
 }
 
 // ---------------------------------------------------------------------------
@@ -538,14 +551,21 @@ $("groupToggle").querySelectorAll("button").forEach(b => b.onclick = () => {
   renderBackends();
 });
 
-$("promptModal").addEventListener("close", () => {
-  selectedPromptKey = null;
-  renderPrompts();
+$("halt").onclick = () => setHalted(!halted);
+
+// A one-key toggle earns its place here: the reason to halt is usually that a
+// row is about to move out from under the pointer.
+document.addEventListener("keydown", ev => {
+  if (ev.key !== "h" || ev.metaKey || ev.ctrlKey || ev.altKey) return;
+  const el = document.activeElement;
+  if (el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return;
+  setHalted(!halted);
 });
 
 connectStream();
-// In-flight ages must tick even when no events arrive.
-setInterval(renderInflight, 200);
+// In-flight ages must tick even when no events arrive — but not while halted,
+// since a running counter is exactly the movement halt exists to stop.
+setInterval(() => { if (!halted) renderInflight(); }, 200);
 </script>
 </body>
 </html>

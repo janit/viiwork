@@ -1,6 +1,24 @@
 server:
   host: 0.0.0.0
   port: 8080
+  # cors: which browser ORIGINS may read this API. Only relevant when a page
+  # served from somewhere else fetches viiwork directly; a server-side caller
+  # (curl, a backend proxying on behalf of its own UI) is unaffected by CORS
+  # and ignores all of this.
+  #
+  # Read the default as a deliberate policy, not boilerplate: viiwork
+  # authenticates nothing, so anything a browser is allowed to call here, it is
+  # allowed to drive the fleet with. The list below is the whole control.
+  #
+  #   "*.example.com" matches subdomains only, never the bare apex.
+  #   Any other entry must match the host exactly.
+  #   allow_origins: []  turns CORS off entirely (the pre-1.0 behaviour).
+  #
+  # cors:
+  #   allow_origins: ["*.ts.net", "localhost", "127.0.0.1", "*.your-app.example"]
+  #   allow_tailnet_ips: true   # also allow 100.64.0.0/10 and fd7a:115c:a1e0::/48
+  #                             # literals, since a tailnet host is reached by
+  #                             # address about as often as by MagicDNS name.
 
 model:
   # Any GGUF llama.cpp can load. gemma-4-26B-A4B (MoE, 4B active) is a good
@@ -53,6 +71,18 @@ health:
   # starved during prompt-eval contention and an aggressive timeout triggers
   # respawn cascades. Lower this only if you're confident in your CPU headroom.
   timeout: 30s
+  # max_failures x interval must cover the COLD LOAD, not just a restart.
+  # llama-server answers /health with 503 "Loading model" for the entire time
+  # it is reading tensors, so every probe during load counts as a failure and
+  # the ladder can respawn a backend that was about to become ready — throwing
+  # away all the work and starting the load over.
+  #
+  # 3 x 5s = 15s is fine for a small model on NVMe. It is nowhere near enough
+  # for a large model on slow storage: a 104 GB model read at ~30 MB/s needs
+  # ~60 min, i.e. ~700 probes at 5s. Size it as roughly
+  #     model_bytes / observed_read_bytes_per_sec / interval
+  # and then double it. Erring high only delays detection of a genuinely dead
+  # backend on first start; erring low can make a big model never load at all.
   max_failures: 3
   # respawn_grace: max wait for in-flight requests to drain on an unhealthy
   # backend before forcing respawn. 0 disables (legacy: kill immediately on
