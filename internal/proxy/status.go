@@ -53,6 +53,9 @@ func NewStatusHandler(nodeID string, localModel string, backends []*balancer.Bac
 			TotalBackends: len(backends),
 			PromptHistory: loc.PromptHistory,
 		}
+		// Host RAM travels with the status payload so any node can render
+		// memory pressure for every host, the same way GPU load already does.
+		resp.HostMemTotalMB, resp.HostMemUsedMB = readHostMemory()
 		for _, b := range backends {
 			var gpuIDs []int
 			if len(b.GPUIDs) > 0 {
@@ -69,6 +72,11 @@ func NewStatusHandler(nodeID string, localModel string, backends []*balancer.Bac
 		if power != nil {
 			resp.PowerWatts = power.Watts()
 			resp.PowerAvailable = power.Available()
+			// Optional interface rather than a widened PowerReader: reporting
+			// the source is diagnostic, not something every reader must supply.
+			if named, ok := power.(interface{ SourceName() string }); ok && resp.PowerAvailable {
+				resp.PowerSource = named.SourceName()
+			}
 		}
 		if cost != nil && cost.Available() {
 			resp.CostAvailable = true

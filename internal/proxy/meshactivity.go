@@ -122,18 +122,12 @@ func (h *Handler) handleMeshStream(w http.ResponseWriter, r *http.Request) {
 	if h.registry != nil {
 		go func() {
 			var last []byte
+			deadband := newHostMemDeadband()
 			ticker := time.NewTicker(clusterPushInterval)
 			defer ticker.Stop()
 			for {
 				state := BuildClusterState(h.registry)
-				// Host memory is stripped, not merely ignored. The mesh view does
-				// not show it, but it ticks every second on a live host, so
-				// leaving it in defeats the change-detection below entirely — the
-				// stream then pushes a full snapshot every second forever for a
-				// field nothing renders. Measured: 4 pushes in 4 idle seconds,
-				// every one of them differing only in host_mem_used_mb.
-				state.Local.HostMemTotalMB = 0
-				state.Local.HostMemUsedMB = 0
+				deadband.apply(&state)
 				if b, err := json.Marshal(state); err == nil && !bytes.Equal(b, last) {
 					last = b
 					if !send("cluster", state) {
@@ -245,4 +239,61 @@ func hostOnly(addr string) string {
 		return addr[:i]
 	}
 	return addr
+}
+
+// hostMemBuckets is how many distinct levels of host memory survive into the
+// pushed snapshot. 64 puts a step at ~1 GB on a 64 GB host and ~2 GB on a
+// 128 GB one, which is under a pixel on the strip that renders it.
+const hostMemBuckets = 64
+
+// hostMemDeadband coarsens host memory before the snapshot is diffed.
+//
+// This field used to be stripped outright, because it ticks every second on a
+// live host (measured on gb1: ~86 MB of movement per second, spiking past
+// 600 MB) and an exact value defeats the change detection in the push loop --
+// the stream then sends a full snapshot every second forever, every one of
+// them differing only in host_mem_used_mb. Stripping was the right call while
+// nothing rendered it. Now the mesh view draws a per-host memory strip, which
+// needs about a hundred levels, not a megabyte, so the field is made exactly
+// as precise as the only thing that reads it.
+//
+// Rounding alone is not enough: a host sitting near a bucket boundary flips
+// between two levels on every tick and pushes just as hard as before. So the
+// published value is held until the reading drifts a full step away from it.
+// That is a deadband, and it is what makes the suppression hold for a host
+// whose memory hovers rather than moves.
+//
+// State is per stream, and /v1/cluster keeps the exact figures for anything
+// that needs them.
+type hostMemDeadband struct{ published map[string]int64 }
+
+func newHostMemDeadband() *hostMemDeadband {
+	return &hostMemDeadband{published: make(map[string]int64)}
+}
+
+func (d *hostMemDeadband) apply(state *peer.ClusterResponse) {
+	state.Local.HostMemUsedMB = d.value("\x00local", state.Local.HostMemUsedMB, state.Local.HostMemTotalMB)
+	for i := range state.Peers {
+		p := &state.Peers[i]
+		p.HostMemUsedMB = d.value(p.Addr, p.HostMemUsedMB, p.HostMemTotalMB)
+	}
+}
+
+func (d *hostMemDeadband) value(key string, usedMB, totalMB int64) int64 {
+	// A node that reports no total -- an older peer, or an unreadable
+	// /proc/meminfo -- has nothing to scale a step from, so it passes through.
+	if usedMB <= 0 || totalMB <= 0 { return usedMB }
+	step := totalMB / hostMemBuckets
+	if step < 1 { return usedMB }
+	if prev, ok := d.published[key]; ok && absInt64(usedMB-prev) < step {
+		return prev
+	}
+	v := (usedMB + step/2) / step * step
+	d.published[key] = v
+	return v
+}
+
+func absInt64(v int64) int64 {
+	if v < 0 { return -v }
+	return v
 }

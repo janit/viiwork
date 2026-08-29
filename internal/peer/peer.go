@@ -29,6 +29,11 @@ type StatusResponse struct {
 	TotalBackends   int           `json:"total_backends"`
 	PowerWatts      float64       `json:"power_watts"`
 	PowerAvailable  bool          `json:"power_available"`
+	// PowerSource names which IPMI reading this node settled on ("dcmi",
+	// `sdr type "Power Supply"`, "sensor:SYS_POWER"). It exists so a fleet-wide
+	// power outage of the reporting kind is visible without reading logs on
+	// five hosts. Absent from nodes older than the probing sampler.
+	PowerSource string `json:"power_source,omitempty"`
 	CostAvailable  bool               `json:"cost_available"`
 	CostEURPerHour float64            `json:"cost_eur_per_hour,omitempty"`
 	CostTodayEUR   float64            `json:"cost_today_eur,omitempty"`
@@ -41,6 +46,13 @@ type StatusResponse struct {
 	// for. Absent from nodes older than v1.1.1, which is why a consumer must
 	// read zero as "unknown", not as "keeps nothing".
 	PromptHistory int `json:"prompt_history,omitempty"`
+
+	// Host RAM, so the mesh view can show memory pressure for every host and
+	// not only the one it is served from. Used is MemTotal - MemAvailable, so
+	// reclaimable page cache is not counted as pressure. Absent from older
+	// nodes, and a zero total means "unknown", not "no memory".
+	HostMemTotalMB int64 `json:"host_mem_total_mb,omitempty"`
+	HostMemUsedMB  int64 `json:"host_mem_used_mb,omitempty"`
 }
 
 type BackendInfo struct {
@@ -101,6 +113,9 @@ type PeerState struct {
 	totalBackends   int
 	powerWatts      float64
 	powerAvailable  bool
+	powerSource     string
+	hostMemTotalMB  int64
+	hostMemUsedMB   int64
 	costAvailable  bool
 	costEURPerHour float64
 	costTodayEUR   float64
@@ -135,6 +150,9 @@ func (p *PeerState) Update(resp StatusResponse) {
 	p.totalBackends = resp.TotalBackends
 	p.powerWatts = resp.PowerWatts
 	p.powerAvailable = resp.PowerAvailable
+	p.powerSource = resp.PowerSource
+	p.hostMemTotalMB = resp.HostMemTotalMB
+	p.hostMemUsedMB = resp.HostMemUsedMB
 	p.costAvailable = resp.CostAvailable
 	p.costEURPerHour = resp.CostEURPerHour
 	p.costTodayEUR = resp.CostTodayEUR
@@ -151,6 +169,9 @@ func (p *PeerState) MarkUnreachable() {
 	p.gpus = nil
 	p.powerWatts = 0
 	p.powerAvailable = false
+	p.powerSource = ""
+	p.hostMemTotalMB = 0
+	p.hostMemUsedMB = 0
 	p.costAvailable = false
 	p.costEURPerHour = 0
 	p.costTodayEUR = 0
@@ -210,6 +231,14 @@ func (p *PeerState) PowerWatts() float64 {
 	defer p.mu.RUnlock()
 	return p.powerWatts
 }
+
+func (p *PeerState) HostMem() (totalMB, usedMB int64) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.hostMemTotalMB, p.hostMemUsedMB
+}
+
+func (p *PeerState) PowerSource() string { p.mu.RLock(); defer p.mu.RUnlock(); return p.powerSource }
 
 func (p *PeerState) PowerAvailable() bool {
 	p.mu.RLock()

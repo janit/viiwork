@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/janit/viiwork/internal/pipeline"
+	"github.com/janit/viiwork/internal/power"
 	"gopkg.in/yaml.v3"
 )
 
@@ -167,6 +169,45 @@ type CostConfig struct {
 	VATPercent             float64        `yaml:"vat_percent"`
 }
 
+// PowerConfig selects how node wattage is read over IPMI. The right answer is
+// board-specific: the "Power Supply" sensor class carries wattage on some BMCs
+// and only presence flags on others (every Gigabyte board in the gfx906 fleet),
+// which is why probing replaced the single hardcoded command.
+type PowerConfig struct {
+	// Source is one of:
+	//   auto           probe dcmi, then the Power Supply class, then any
+	//                  Watts-valued sensor; keep the first that answers
+	//   dcmi           DCMI whole-node power reading
+	//   sdr            sum the Power Supply sensor class
+	//   sensor:<NAME>  read one named sensor, e.g. sensor:SYS_POWER
+	//   none           disable power monitoring without probing
+	// Empty means auto.
+	Source string `yaml:"source"`
+}
+
+// EnergyConfig configures the durable kWh store. Disabled by default: it needs
+// a writable directory that outlives the container, and defaulting it on would
+// happily write to a container filesystem and lose everything on restart --
+// durable in name only.
+//
+// Node wattage is a whole-host measurement. Running several viiwork instances on
+// one host (the way multi-model hosts are deployed) and enabling this on more
+// than one would record that same host draw several times over, so enable it on
+// exactly one instance per host.
+type EnergyConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Dir     string `yaml:"dir"`
+	// SampleInterval is how often power is read. Records are always one per
+	// minute; sampling faster is what makes that minute an average rather than
+	// a coin flip on a BMC that refreshes every ~60s.
+	SampleInterval Duration `yaml:"sample_interval"`
+	// Slot counts are ring lengths, and therefore the retention. Changing one
+	// changes the file geometry and discards that ring's history.
+	MinuteSlots int `yaml:"minute_slots"`
+	HourSlots   int `yaml:"hour_slots"`
+	DaySlots    int `yaml:"day_slots"`
+}
+
 type Config struct {
 	Server    ServerConfig                       `yaml:"server"`
 	Model     ModelConfig                        `yaml:"model"`
@@ -177,6 +218,8 @@ type Config struct {
 	Balancer  BalancerConfig                     `yaml:"balancer"`
 	Peers     PeersConfig                        `yaml:"peers"`
 	Cost      CostConfig                         `yaml:"cost"`
+	Power     PowerConfig                        `yaml:"power"`
+	Energy    EnergyConfig                       `yaml:"energy"`
 	Pipelines map[string]pipeline.PipelineConfig `yaml:"pipelines"`
 }
 
@@ -225,6 +268,17 @@ func (c *Config) Validate() error {
 	}
 	if c.Health.RespawnGrace.Duration < 0 {
 		return fmt.Errorf("health.respawn_grace must be >= 0")
+	}
+	if err := validatePowerSource(c.Power.Source); err != nil {
+		return err
+	}
+	if c.Energy.Enabled {
+		if c.Energy.Dir == "" {
+			return fmt.Errorf("energy.dir is required when energy.enabled is true")
+		}
+		if c.Energy.SampleInterval.Duration <= 0 {
+			return fmt.Errorf("energy.sample_interval must be positive")
+		}
 	}
 	if c.Backend.Threads < 0 {
 		return fmt.Errorf("backend.threads must be >= 0 (0 = auto-derive max(1, nproc/n_backends))")
@@ -383,4 +437,22 @@ func (c *Config) ApplyOverrides(overrides map[string]string) error {
 		}
 	}
 	return nil
+}
+
+// validatePowerSource rejects a misspelled source at startup. Without this a
+// typo would fall through the sampler's probe and silently disable power and
+// cost tracking, which is exactly the failure mode this feature exists to end.
+func validatePowerSource(source string) error {
+	switch s := strings.TrimSpace(source); {
+	case s == "", s == power.SourceAuto, s == power.SourceDCMI,
+		s == power.SourceSDR, s == power.SourceNone:
+		return nil
+	case strings.HasPrefix(s, power.SourceSensorPrefix):
+		if strings.TrimSpace(strings.TrimPrefix(s, power.SourceSensorPrefix)) == "" {
+			return fmt.Errorf("power.source %q needs a sensor name, e.g. %qSYS_POWER", s, power.SourceSensorPrefix)
+		}
+		return nil
+	default:
+		return fmt.Errorf("power.source %q must be one of: auto, dcmi, sdr, none, sensor:<NAME>", s)
+	}
 }

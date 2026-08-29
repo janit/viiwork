@@ -45,6 +45,21 @@ func NewHistory(maxSize int) *History {
 	return &History{buffers: make(map[int]*RingBuffer), maxSize: maxSize}
 }
 
+// GPUIDs returns every GPU the collector has seen, sorted. This is every card
+// rocm-smi reports, not just the ones this instance was configured with, which
+// is what energy attribution needs: the marginal-power denominator has to cover
+// the whole host or a co-tenant instance's load is charged to this one's GPUs.
+func (h *History) GPUIDs() []int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	ids := make([]int, 0, len(h.buffers))
+	for id := range h.buffers {
+		ids = append(ids, id)
+	}
+	sort.Ints(ids)
+	return ids
+}
+
 func (h *History) Record(s GPUSample) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
