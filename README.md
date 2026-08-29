@@ -2,7 +2,7 @@
 
 LLM inference load balancer for AMD Radeon VII GPUs. Runs multiple llama-server instances and exposes a single OpenAI-compatible API with adaptive load balancing. Multiple nodes can form a mesh cluster where any node is an entry point and requests route by model.
 
-![viiwork dashboard](viiwork-260405.webp)
+![viiwork mesh dashboard](viiwork-v150.webp)
 
 ## Background
 

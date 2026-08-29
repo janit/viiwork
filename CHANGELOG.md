@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.5.1
+
+Documentation only, no code change.
+
+- **New README screenshot**, showing the mesh dashboard as of v1.5.0: fleet
+  totals, live power with 24-hour and 30-day energy, the per-host RAM strip,
+  and the listen ports on model groups. The previous one predated all of it.
+
 ## v1.5.0
 
 ### Chassis power control from the mesh dashboard
