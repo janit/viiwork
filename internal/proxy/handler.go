@@ -753,8 +753,21 @@ func (h *Handler) handleActivityStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
+	// Subscribe before reading the backlog, never after: an event landing
+	// between the two would otherwise fall in the gap and be delivered by
+	// neither. The overlap this creates instead — an event in both the backlog
+	// and the live feed — is the safe direction, and consumers deduplicate.
 	ch := h.activity.Subscribe()
 	defer h.activity.Unsubscribe(ch)
+
+	for _, ev := range h.activity.Backlog() {
+		b, err := json.Marshal(ev)
+		if err != nil {
+			continue
+		}
+		fmt.Fprintf(w, "data: %s\n\n", b)
+	}
+	f.Flush()
 
 	for {
 		select {

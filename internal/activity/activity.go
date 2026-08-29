@@ -22,6 +22,12 @@ type Event struct {
 	GPUID     int    `json:"gpu_id,omitempty"`
 	RequestID int64  `json:"rid,omitempty"`
 	TaskID    string `json:"task_id,omitempty"`
+	// Replay marks an event delivered from the ring when a stream opens,
+	// rather than as it happened. A consumer that reconstructs state from the
+	// stream needs it: replayed events are the authoritative rebuild of that
+	// state, while a consumer keeping a visible event list has to deduplicate
+	// them against what it already shows.
+	Replay bool `json:"replay,omitempty"`
 }
 
 const maxEvents = 200
@@ -116,6 +122,26 @@ func (l *Log) emit(ev Event) {
 		default: // skip slow clients
 		}
 	}
+}
+
+// Backlog returns the ring marked as replay, for a stream that has just
+// opened.
+//
+// This is what makes a dropped connection recoverable. A consumer
+// reconstructing in-flight requests from start/done pairs loses the pairing for
+// anything that completes while it is away — a laptop sleeping, a tab throttled
+// in the background, a node restarting — and a start with no matching done
+// strands a row that never leaves. Replaying the ring hands back both halves.
+//
+// The ring bounds how far back that works. A gap longer than maxEvents on a
+// given node cannot be repaired from here, which is why a consumer should also
+// treat a reconnect as a reason to rebuild rather than to carry state across.
+func (l *Log) Backlog() []Event {
+	out := l.Recent()
+	for i := range out {
+		out[i].Replay = true
+	}
+	return out
 }
 
 func (l *Log) Recent() []Event {

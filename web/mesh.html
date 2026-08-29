@@ -89,6 +89,16 @@
   .prompt-row.running .arrow { color: var(--warn); }
   .promptlink { margin-left: auto; color: var(--accent); font-size: 0.76rem; white-space: nowrap; }
 
+  /* fleet totals — three readings, no charts. The first thing on the page,
+     because "is the fleet busy and is it full" is the question that brings
+     someone here. */
+  .totals { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 18px; }
+  .tot { background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; }
+  .tot .v { font-family: var(--mono); font-size: 1.35rem; font-weight: 600; letter-spacing: -0.02em;
+            line-height: 1.15; white-space: nowrap; }
+  .tot .k { font-size: 0.72rem; color: var(--dimmer); margin-top: 3px; }
+  @media (max-width: 560px) { .totals { grid-template-columns: 1fr; } }
+
   /* fleet power */
   .powerhead { display: flex; align-items: baseline; gap: 10px; padding: 10px 12px 2px; }
   .hero { font-family: var(--mono); font-size: 1.7rem; font-weight: 600; letter-spacing: -0.02em; line-height: 1.1; }
@@ -152,6 +162,14 @@
 <div class="cols">
   <!-- LEFT -->
   <div>
+    <section>
+      <div class="totals" id="totals">
+        <div class="tot"><div class="v" id="totGpu">—</div><div class="k" id="totGpuK">GPUs busy</div></div>
+        <div class="tot"><div class="v" id="totVram">—</div><div class="k" id="totVramK">VRAM</div></div>
+        <div class="tot"><div class="v" id="totRam">—</div><div class="k" id="totRamK">Host RAM</div></div>
+      </div>
+    </section>
+
     <section>
       <h2>Mesh Models</h2>
       <div class="pills" id="models"></div>
@@ -224,6 +242,14 @@ let cluster = null;               // last /v1/cluster payload
 const inflight = new Map();       // rid -> {startMs, model, dest, task, host}
 const activityRows = [];          // newest-first, capped
 const MAX_ACTIVITY = 60;
+// Streams replay their ring when they open, so the same event can arrive twice:
+// once live before a disconnect, once replayed after it. In-flight and prompt
+// state is keyed and therefore idempotent, but the activity feed is an append
+// list and would show doubles. Held a few times deeper than the feed so a full
+// replay cannot re-admit a row the feed has already evicted.
+const seenEvents = new Set();
+const seenOrder = [];
+const MAX_SEEN = 600;
 
 // Prompt history: one entry per distinct (node, rid), oldest evicted past
 // maxPrompts. In memory only — nothing here is persisted or sent anywhere
@@ -505,6 +531,79 @@ function renderActivity() {
 }
 
 // ---------------------------------------------------------------------------
+// Fleet totals
+//
+// Three readings, no charts: how much of the fleet is working, how full its
+// VRAM is, and how full its RAM is.
+//
+// Every one of these has to be deduplicated by host, and the GPU list is the
+// sharpest case. rocm-smi reports every card on a machine, not only the ones an
+// instance owns, so each of the several viiwork instances on a multi-model host
+// publishes that host's full GPU list. Summing the payload as it arrives counts
+// them once per instance: measured on the reference fleet, 110 GPU entries for
+// 50 actual cards. Keyed by host and gpu_id, the totals come out right.
+// ---------------------------------------------------------------------------
+function meshGPUs(c) {
+  const seen = new Map();   // "host#gpu_id" -> gpu
+  const take = (host, gpus) => {
+    for (const g of (gpus || [])) {
+      if (!host || g.gpu_id == null) continue;
+      const k = host + "#" + g.gpu_id;
+      if (!seen.has(k)) seen.set(k, g);
+    }
+  };
+  if (c) {
+    take(c.hostname, c.local && c.local.gpus);
+    for (const p of (c.peers || [])) {
+      if (p.status !== "reachable") continue;
+      take(p.hostname || p.addr, p.gpus);
+    }
+  }
+  return [...seen.values()];
+}
+
+const fmtTB = mb => {
+  const gb = (mb || 0) / 1024;
+  return gb >= 1000 ? (gb / 1024).toFixed(2) + " TB" : gb.toFixed(1) + " GB";
+};
+
+function renderTotals() {
+  const gpus = meshGPUs(cluster);
+  // "Busy" is utilisation above zero rather than a loaded backend: a model
+  // sitting resident on an idle card is not work being done, and rocm-smi
+  // reports a genuine 0 for it.
+  const busy = gpus.filter(g => (g.util || 0) > 0).length;
+  const vramUsed = gpus.reduce((a, g) => a + (g.vram_used_mb || 0), 0);
+  const vramTotal = gpus.reduce((a, g) => a + (g.vram_total_mb || 0), 0);
+
+  const hosts = hostMem(cluster);
+  const ramUsed = hosts.reduce((a, h) => a + h.used, 0);
+  const ramTotal = hosts.reduce((a, h) => a + h.total, 0);
+
+  // The capacity sits in the label rather than beside the value: the reading is
+  // the number someone came for, and "of 815.2 GB" is the context that makes it
+  // mean something. Keeping them on one line makes the tile read as a fraction
+  // and buries the figure that matters.
+  const setTile = (vid, kid, value, label) => {
+    $(vid).textContent = value;
+    $(kid).textContent = label;
+  };
+
+  setTile("totGpu", "totGpuK", gpus.length ? `${busy}/${gpus.length}` : "—", "GPUs busy");
+  setTile("totVram", "totVramK", vramTotal ? fmtTB(vramUsed) : "—",
+          vramTotal ? "VRAM of " + fmtTB(vramTotal) : "VRAM");
+
+  // Host RAM covers only the hosts that report it, which is not necessarily
+  // every host in the mesh — a host on an older build reports none. The label
+  // says so only when they disagree, rather than carrying a count that is
+  // noise whenever the fleet is uniform.
+  const reporting = hosts.length, total = meshHosts(cluster).size;
+  let ramLabel = ramTotal ? "RAM of " + fmtTB(ramTotal) : "Host RAM";
+  if (ramTotal && total && reporting < total) ramLabel += ` · ${reporting}/${total} hosts`;
+  setTile("totRam", "totRamK", ramTotal ? fmtTB(ramUsed) : "—", ramLabel);
+}
+
+// ---------------------------------------------------------------------------
 // Fleet power
 //
 // Samples come off the cluster snapshots the stream already pushes, so this
@@ -551,7 +650,11 @@ function hostPower(c) {
       take(p.hostname || p.addr, p.power_watts, p.power_available, p.power_source);
     }
   }
-  return [...seen.values()];
+  // Sorted by host name, not by value: a fleet reads as gb0, gb1, gb2… and a
+  // row that keeps its place is one you can find again. Ranking by watts made
+  // the legend reorder itself under the cursor every time load shifted.
+  // Colours are unaffected — those follow the host, assigned on first sight.
+  return [...seen.values()].sort((a, b) => a.host.localeCompare(b.host, undefined, { numeric: true }));
 }
 
 // Distinct hosts in the mesh, whether or not they can read power. The
@@ -604,7 +707,7 @@ function renderPowerNumbers() {
   // value, reachable without hovering the chart.
   const body = $("powerLegend");
   body.textContent = "";
-  for (const h of [...hosts].sort((a, b) => b.watts - a.watts)) {
+  for (const h of hosts) {
     const tr = document.createElement("tr");
     const sw = document.createElement("td");
     sw.className = "sw";
@@ -666,10 +769,13 @@ function drawPower() {
     return;
   }
 
-  // Host order is the colour order, so a band never swaps places in the stack.
+  // Bands stack in host-name order, matching the legend beneath, so a row and
+  // its band are found in the same place. Colour is independent of this — a
+  // host keeps the slot it was given on first sight, so a host appearing or
+  // dropping out never repaints the others.
   const present = new Set();
   for (const s of powerSeries) for (const h of s.hosts) present.add(h.host);
-  const order = [...hostColor.keys()].filter(h => present.has(h));
+  const order = [...present].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
 
   const totals = powerSeries.map(s => s.hosts.reduce((a, h) => a + h.watts, 0));
   const yMax = niceMax(Math.max(...totals));
@@ -755,7 +861,7 @@ function powerTooltip(ev) {
   when.className = "when";
   when.textContent = hhmmss(s.t);
   tip.appendChild(when);
-  for (const h of [...s.hosts].sort((a, b) => b.watts - a.watts)) {
+  for (const h of s.hosts) {
     const row = document.createElement("div");
     row.className = "r";
     const dot = document.createElement("span");
@@ -821,7 +927,7 @@ function hostMem(c) {
       take(p.hostname || p.addr, p.host_mem_used_mb, p.host_mem_total_mb);
     }
   }
-  return [...seen.values()];
+  return [...seen.values()].sort((a, b) => a.host.localeCompare(b.host, undefined, { numeric: true }));
 }
 
 function recordMem(c) {
@@ -972,6 +1078,7 @@ function applyCluster(c) {
   drawPower();
   recordMem(c);
   renderMemStrip();
+  renderTotals();
 }
 
 // ---------------------------------------------------------------------------
@@ -987,6 +1094,22 @@ function connectStream() {
   // page never polls: cluster snapshots are pushed when they change, and the
   // server suppresses identical ones so an idle mesh is silent.
   const es = new EventSource("/v1/mesh/stream");
+
+  // A reconnect rebuilds the in-flight set rather than carrying it across.
+  //
+  // In-flight is reconstructed from start/done pairs, so anything that finished
+  // while the connection was down leaves a start with no done — a row that ages
+  // in red forever. That is exactly what a slept laptop or a throttled
+  // background tab produces. The server replays its ring when the stream opens,
+  // so clearing here is not a loss: whatever is genuinely still running is
+  // re-added within milliseconds by the replay, and only the phantoms stay
+  // gone. A request older than the node's ring is dropped and not re-added,
+  // which under-reports rather than inventing work — and the Backends table
+  // keeps showing the true count either way.
+  es.onopen = () => {
+    inflight.clear();
+    renderInflight();
+  };
 
   es.addEventListener("cluster", ev => {
     let c;
@@ -1010,8 +1133,10 @@ function connectStream() {
   });
 
   es.onerror = () => {
-    // EventSource reconnects on its own; surface it without tearing anything down.
-    $("scope").textContent += " · stream reconnecting…";
+    // EventSource reconnects on its own; surface it without tearing anything
+    // down. Assigning rather than appending: onerror can fire repeatedly while
+    // a network is down, and appending grew the line once per attempt.
+    $("scope").textContent = "stream reconnecting…";
   };
 }
 
@@ -1039,6 +1164,14 @@ function applyActivity(e) {
       renderInflight();
       recordPrompt(e, host);
     }
+
+    // State above is keyed, so replaying it is free. The feed is not: dedupe
+    // before appending, or a reconnect repaints every row it already shows.
+    const seenKey = (e.node_id || host) + "#" + (e.rid || 0) + "#" + (e.t || 0) + "#" + (e.message || "");
+    if (seenEvents.has(seenKey)) return;
+    seenEvents.add(seenKey);
+    seenOrder.push(seenKey);
+    if (seenOrder.length > MAX_SEEN) seenEvents.delete(seenOrder.shift());
 
     activityRows.unshift({ t: e.t, host, message: e.message || "" });
     if (activityRows.length > MAX_ACTIVITY) activityRows.length = MAX_ACTIVITY;

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/janit/viiwork/internal/activity"
 	"github.com/janit/viiwork/internal/balancer"
 	"github.com/janit/viiwork/internal/gpu"
 	"github.com/janit/viiwork/internal/peer"
@@ -214,4 +215,98 @@ func TestHostMemDeadbandUnknownTotal(t *testing.T) {
 	newHostMemDeadband().apply(&c)
 	if c.Local.HostMemUsedMB != 1234 { t.Errorf("expected passthrough, got %d", c.Local.HostMemUsedMB) }
 	if c.Peers[0].HostMemUsedMB != 0 { t.Errorf("expected 0, got %d", c.Peers[0].HostMemUsedMB) }
+}
+
+// readSSE runs a streaming handler with an already-cancelled context: the
+// handler writes whatever it has for a client that just connected, then returns
+// at its first select on ctx.Done. That is exactly the backlog.
+func readSSE(t *testing.T, h *Handler, path string) string {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", path, nil).WithContext(ctx))
+	return rec.Body.String()
+}
+
+// Replaying the ring on connect is what makes a dropped connection
+// recoverable. A consumer reconstructing in-flight requests from start/done
+// pairs loses the pairing for anything that finishes while it is away — a
+// slept laptop, a throttled background tab — and a start with no done strands
+// a row that never leaves.
+func TestActivityStreamReplaysBacklog(t *testing.T) {
+	log := activity.NewLog()
+	log.EmitRequest(1, 0, "model-a → gpu-0")
+	log.EmitRequest(1, 0, "model-a → gpu-0 done (1.2s)")
+	log.EmitRequest(2, 1, "model-b → gpu-1")
+
+	h := &Handler{}
+	h.SetActivity(log)
+	body := readSSE(t, h, "/v1/activity/stream")
+
+	var got []activity.Event
+	for _, line := range strings.Split(body, "\n") {
+		if !strings.HasPrefix(line, "data: ") { continue }
+		var ev activity.Event
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ev); err != nil {
+			t.Fatalf("decode %q: %v", line, err)
+		}
+		got = append(got, ev)
+	}
+
+	if len(got) != 3 {
+		t.Fatalf("replayed %d events, want 3 — without the backlog a reconnect cannot repair its in-flight set", len(got))
+	}
+	for i, ev := range got {
+		if !ev.Replay {
+			t.Errorf("event %d not marked replay; a consumer cannot tell it from a live event and will double-render it", i)
+		}
+	}
+	// Both halves of the finished request, so it cancels out on rebuild; only
+	// the start of the one still running, so it survives.
+	if got[0].RequestID != 1 || !strings.Contains(got[1].Message, "done") || got[2].RequestID != 2 {
+		t.Errorf("backlog out of order or incomplete: %+v", got)
+	}
+}
+
+func TestMeshStreamReplaysBacklog(t *testing.T) {
+	log := activity.NewLog()
+	log.EmitRequest(7, 0, "model-a → gpu-0")
+
+	reg := peer.NewRegistry("node-a", "model-a", newTestBackendState(t), nil, time.Second)
+	reg.SetLocation("hostA", "hostA:8080")
+	h := NewMeshHandler(nil, reg, time.Second)
+	h.SetActivity(log)
+
+	body := readSSE(t, h, "/v1/mesh/stream")
+	if !strings.Contains(body, "event: activity") {
+		t.Fatalf("no replayed activity event on connect:\n%s", body)
+	}
+	var ev MeshEvent
+	for _, line := range strings.Split(body, "\n") {
+		if !strings.HasPrefix(line, "data: ") { continue }
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ev); err != nil { continue }
+		if ev.RequestID == 7 { break }
+	}
+	if ev.RequestID != 7 || !ev.Replay {
+		t.Fatalf("expected replayed rid 7, got %+v", ev)
+	}
+	// Tagged with the node, or the consumer cannot attribute it to a host --
+	// request ids are per-process, so an untagged replay is unusable.
+	if ev.NodeID != "node-a" || ev.Hostname != "hostA" {
+		t.Errorf("replayed event not tagged with its node: node_id=%q hostname=%q", ev.NodeID, ev.Hostname)
+	}
+}
+
+// Recent() feeds /v1/activity, which is a plain history read and must not
+// claim its events are replays.
+func TestBacklogMarksOnlyItsOwnCopy(t *testing.T) {
+	log := activity.NewLog()
+	log.EmitRequest(1, 0, "model-a → gpu-0")
+	if log.Backlog()[0].Replay != true {
+		t.Error("Backlog must mark events as replay")
+	}
+	if log.Recent()[0].Replay != false {
+		t.Error("Recent must not mark events as replay — it is a history read, not a stream rebuild")
+	}
 }
