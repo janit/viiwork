@@ -226,6 +226,8 @@ whichever host you can reach and you see the whole mesh:
 - **Prompts** — the most recent requests across the mesh, newest first. Every
   row is a link to a full-page view of that request's prompt and output. See
   *Prompt and output history* below.
+- **Fleet totals** — GPUs busy, VRAM and host RAM across the whole mesh, as
+  three plain readings at the top of the page
 - **Fleet Power** — live wattage for the whole mesh: a headline total, a stacked
   graph of the last few hundred readings with one band per host, and a table
   naming each host's draw and which IPMI reading it came from. See *Fleet power*
@@ -236,6 +238,19 @@ whichever host you can reach and you see the whole mesh:
 - **Backends** — GPU, host, in-flight, RSS, GPU%, VRAM and context use for every
   host, grouped by model or by host. Grouped by host, each host header also
   carries that host's wattage.
+
+Hosts are listed by name throughout — the power rows, the stacked bands and the
+RAM strip all read gb0, gb1, gb2… rather than reordering themselves as load
+shifts.
+
+In-flight requests are reconstructed by your browser from the event stream,
+because no endpoint returns "what is running now". The stream replays its recent
+history when it connects, so opening the page mid-flight shows the jobs already
+running, and a laptop coming back from sleep gets the completions it missed
+instead of leaving rows counting up in red forever. A gap longer than the node's
+event ring is not recoverable: the view then shows fewer requests than are
+really running rather than phantom ones, and the Backends table's in-flight
+counts stay correct either way.
 
 **Halt** (the button in the header, or press `h`) freezes the whole view so rows
 stop moving while you read or click them. Events that arrive during a halt are

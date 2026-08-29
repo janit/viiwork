@@ -607,25 +607,58 @@ function escapeHtml(s) {
   return d.innerHTML;
 }
 
-async function initActivity() {
-  try {
-    const resp = await fetch('/v1/activity');
-    const data = await resp.json();
-    for (const ev of (data.events || [])) appendActivity(ev);
-  } catch (e) { /* ignore */ }
+// Streams replay their ring when they open, so the same event can arrive twice
+// — once live before a disconnect, once replayed after it. Held deeper than the
+// visible log so a full replay cannot re-admit a line the log already evicted.
+const seenActivity = new Set();
+const seenActivityOrder = [];
+const MAX_SEEN_ACTIVITY = 600;
 
-  const es = new EventSource('/v1/activity/stream');
-  es.onmessage = (e) => {
-    try { appendActivity(JSON.parse(e.data)); } catch (err) { /* skip */ }
-  };
+function activitySeen(ev) {
+  const key = (ev.rid || 0) + '#' + (ev.t || 0) + '#' + (ev.message || '');
+  if (seenActivity.has(key)) return true;
+  seenActivity.add(key);
+  seenActivityOrder.push(key);
+  if (seenActivityOrder.length > MAX_SEEN_ACTIVITY) seenActivity.delete(seenActivityOrder.shift());
+  return false;
 }
 
-initActivity();
+function initActivity() {
+  // No separate /v1/activity prefetch: the stream replays its ring on open,
+  // which is the same events. Fetching as well showed every line twice and
+  // left a duplicate DOM node per in-flight request.
+  const es = new EventSource('/v1/activity/stream');
+
+  // A reconnect rebuilds the in-flight set rather than carrying it across.
+  // In-flight is reconstructed from start/done pairs, so anything that finished
+  // while the connection was down leaves a start with no done — a timer that
+  // counts up in red forever, which is what a slept laptop produces. The
+  // replay re-adds whatever is genuinely still running.
+  es.onopen = () => {
+    for (const [, req] of inflightRequests) {
+      if (req.el && req.el.parentNode) req.el.remove();
+    }
+    inflightRequests.clear();
+    inflightSection.style.display = 'none';
+  };
+
+  es.onmessage = (e) => {
+    try {
+      const ev = JSON.parse(e.data);
+      handleInflightEvent(ev);
+      if (!activitySeen(ev)) appendActivity(ev);
+    } catch (err) { /* skip */ }
+  };
+}
 
 // --- In-Flight Request Timers ---
 const inflightSection = document.getElementById('inflight-section');
 const inflightList = document.getElementById('inflight-list');
 const inflightRequests = new Map(); // key -> {gpu, model, startTime, el}
+
+// Started here rather than at its definition: the stream handlers close over
+// the in-flight state declared just above.
+initActivity();
 
 function inflightColor(seconds) {
   if (seconds < 5) return '#3fb950';   // green: fast
@@ -680,12 +713,10 @@ function updateInflightTimers() {
   requestAnimationFrame(updateInflightTimers);
 }
 
-// Patch appendActivity to also track in-flight
-const _origAppendActivity = appendActivity;
-appendActivity = function(ev) {
-  _origAppendActivity(ev);
-  handleInflightEvent(ev);
-};
+// In-flight tracking is driven from the stream handler, not from a wrapper
+// around appendActivity. It has to see every event including replayed ones,
+// while the visible log deduplicates them — funnelling both through one
+// function would either skip the rebuild or double-add its DOM node.
 
 requestAnimationFrame(updateInflightTimers);
 

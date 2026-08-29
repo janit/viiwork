@@ -1,5 +1,46 @@
 # Changelog
 
+## v1.3.0
+
+### Stale in-flight rows after a sleep or a background tab
+
+The mesh and node dashboards reconstruct in-flight requests from the event
+stream — a start event adds a row, a done event removes it — and nothing
+replayed the events lost while a browser was away. A laptop waking from sleep,
+or a tab throttled in the background, came back with rows that had finished
+hours earlier and counted up in red forever.
+
+Both streams now replay their event ring when the connection opens, marked
+`"replay": true`, and both dashboards clear the reconstructed set on reconnect
+and let the replay rebuild it. A gap longer than the ring is still not
+recoverable, but the result is then a short count rather than invented work.
+Opening the page mid-flight now also shows the jobs already running, which it
+never did before.
+
+If you consume `/v1/mesh/stream` or `/v1/activity/stream` yourself, see the
+notes in `docs/api-integration.md`: rebuild on reconnect rather than carrying
+state across, and deduplicate anything you display, since replayed events
+repeat what a visible log already shows.
+
+### Fleet totals on the mesh dashboard
+
+GPUs busy, VRAM and host RAM across the whole mesh, as three readings above the
+model list. All three are counted per host: `rocm-smi` reports every card on a
+machine rather than only the ones an instance owns, so a naive sum over the
+payload reported 110 GPUs for 50 actual cards on a fleet with co-located
+instances.
+
+Hosts now sort by name in the power rows, the stacked bands and the RAM strip,
+instead of by value.
+
+### Fixed
+
+- **The single-node dashboard showed every activity line twice** once streams
+  began replaying, because it also fetched `/v1/activity` separately. The fetch
+  is gone; the stream carries it.
+- **`stream reconnecting…` accumulated** on the mesh header, once per retry,
+  while a network was down.
+
 ## v1.2.0
 
 ### Power probing, per-GPU wattage, and a durable energy store
@@ -179,6 +220,18 @@ Two implementation details that were easy to get wrong and are pinned by tests:
   already did this; this target was the odd one out.
 
 ## Upgrading
+
+### To v1.3.0
+
+Nothing to do on a node. The change that matters is for anything consuming
+`/v1/mesh/stream` or `/v1/activity/stream` in your own code: both now replay
+their recent event ring when a connection opens, so a consumer that appends
+every event it receives to a visible list will show the replayed ones a second
+time. Deduplicate on node, request id, timestamp and message, and rebuild
+reconstructed state on reconnect rather than carrying it across. See
+`docs/api-integration.md` §6.
+
+Dashboards served by viiwork already handle both.
 
 ### To v1.2.0
 

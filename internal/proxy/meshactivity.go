@@ -102,9 +102,22 @@ func (h *Handler) handleMeshStream(w http.ResponseWriter, r *http.Request) {
 		localHost = h.registry.Hostname()
 	}
 
-	// Local events.
+	// Local events. Subscribe before replaying the backlog so nothing falls
+	// between the two; the overlap that creates is deduplicated downstream.
 	sub := h.activity.Subscribe()
 	defer h.activity.Unsubscribe(sub)
+
+	// Replaying on open is what makes a dropped connection recoverable. The
+	// mesh view reconstructs in-flight requests from start/done pairs, so an
+	// event lost while a browser is away strands a row that never leaves —
+	// which is what a slept laptop or a throttled background tab produces.
+	// Peer backlogs arrive on their own: each peer's /v1/activity/stream
+	// replays too, and this handler opens fresh peer connections per client.
+	for _, ev := range h.activity.Backlog() {
+		if !send("activity", MeshEvent{Event: ev, NodeID: localID, Hostname: localHost}) {
+			return
+		}
+	}
 
 	// Peer events. Each peer gets a goroutine that follows its activity stream
 	// and reconnects with backoff, so a peer that is down or restarting does not

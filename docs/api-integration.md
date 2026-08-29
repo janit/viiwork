@@ -333,10 +333,27 @@ by the consumer from the event stream: a `request` event adds an entry, a
 matching event whose message contains *done* or *aborted* removes it, keyed as
 above.
 
-This means a consumer that connects mid-flight does not see jobs that started
-before it connected. That is inherent, not a bug to fix — the aggregate counts
-in `/v1/cluster` (`in_flight` per backend) remain correct and are what to trust
-for totals.
+Both streams replay their event ring when the connection opens, which repairs
+most of what that costs. Replayed events carry `"replay": true` and arrive
+before live ones, so a consumer that connects mid-flight sees the jobs already
+running, and one that reconnects gets the *done* events it missed while away.
+
+Two obligations come with it:
+
+- **Rebuild on reconnect, do not carry state across.** Anything that finished
+  during a gap leaves a start with no done — a row that ages forever. Clear the
+  reconstructed set when the stream opens and let the replay repopulate it. A
+  request older than the node's ring is then dropped rather than re-added,
+  which under-reports rather than inventing work; the aggregate counts stay
+  correct either way.
+- **Deduplicate anything you display.** Reconstructed state is keyed and so
+  replays for free, but an append-only event log will show every replayed line
+  a second time. Key on node, request id, timestamp and message, and hold the
+  set deeper than the list you render.
+
+The ring bounds it: a gap longer than `maxEvents` on a given node cannot be
+repaired from the replay. The aggregate counts in `/v1/cluster` (`in_flight`
+per backend) remain correct regardless and are what to trust for totals.
 
 ### Freshness differs by column
 
