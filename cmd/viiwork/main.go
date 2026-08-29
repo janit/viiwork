@@ -17,6 +17,7 @@ import (
 	"github.com/janit/viiwork/internal/balancer"
 	"github.com/janit/viiwork/internal/config"
 	"github.com/janit/viiwork/internal/cost"
+	"github.com/janit/viiwork/internal/energy"
 	"github.com/janit/viiwork/internal/gpu"
 	"github.com/janit/viiwork/internal/logging"
 	"github.com/janit/viiwork/internal/model"
@@ -82,7 +83,7 @@ func main() {
 	nodeID := generateNodeID()
 	log.Printf("viiwork %s starting with %d GPUs, model: %s", nodeID, cfg.GPUs.Count, cfg.Model.Path)
 
-	sampler := power.NewSampler()
+	sampler := power.NewSampler(cfg.Power.Source)
 
 	// Build peer list
 	var peers []*peer.PeerState
@@ -181,6 +182,10 @@ func main() {
 	go mgr.RunHealthLoop(ctx)
 	go reg.Run(ctx, cfg.Peers.PollInterval.Duration)
 
+	if cfg.Energy.Enabled {
+		startEnergyRecorder(ctx, cfg, hist, sampler, reg)
+	}
+
 	if len(peers) > 0 {
 		log.Printf("mesh enabled with %d peer(s)", len(peers))
 	}
@@ -232,3 +237,64 @@ func parseDotpathArgs(args []string) map[string]string {
 	}
 	return overrides
 }
+
+// startEnergyRecorder wires the durable kWh store to the power sampler and the
+// GPU collector. A failure here disables energy tracking and leaves the node
+// serving, matching how power, cost and GPU metrics already degrade: a node
+// that cannot write history is still a node that can answer requests.
+func startEnergyRecorder(ctx context.Context, cfg *config.Config, hist *gpu.History, sampler *power.Sampler, reg *peer.Registry) {
+	// Every GPU rocm-smi reports, not just this instance's. Attribution divides
+	// by total marginal draw across the host, so omitting a co-tenant's cards
+	// would charge their load to this instance's models.
+	gpuIDs := hist.GPUIDs()
+	if len(gpuIDs) == 0 {
+		gpuIDs = cfg.GPUs.ResolvedDevices()
+	}
+
+	loc, err := time.LoadLocation(cfg.Cost.Timezone)
+	if err != nil {
+		loc = time.UTC
+	}
+
+	store, err := energy.Open(energy.Config{
+		Dir:         cfg.Energy.Dir,
+		GPUIDs:      gpuIDs,
+		MinuteSlots: cfg.Energy.MinuteSlots,
+		HourSlots:   cfg.Energy.HourSlots,
+		DaySlots:    cfg.Energy.DaySlots,
+		Location:    loc,
+	}, nil)
+	if err != nil {
+		log.Printf("[energy] disabled: %v", err)
+		return
+	}
+
+	nodeWatts := func() (float64, bool) { return sampler.Watts(), sampler.Available() }
+	readings := func() []energy.GPUReading {
+		// Resolved per sample, not once: peers may not have been polled yet
+		// at startup, and the host's GPU-to-model layout changes.
+		owned := reg.GPUModels()
+		out := make([]energy.GPUReading, 0, len(gpuIDs))
+		for _, id := range gpuIDs {
+			samples := hist.Samples(id)
+			if len(samples) == 0 {
+				continue
+			}
+			latest := samples[len(samples)-1]
+			if latest.PowerW <= 0 {
+				continue
+			}
+			out = append(out, energy.GPUReading{GPUID: id, Watts: latest.PowerW, Model: owned[id]})
+		}
+		return out
+	}
+
+	recorder := energy.NewRecorder(store, cfg.Energy.SampleInterval.Duration, nodeWatts, readings, nil)
+	go func() {
+		recorder.Run(ctx)
+		store.Close()
+	}()
+	log.Printf("[energy] recording every %s for %d GPUs (node wattage is per-host: enable this on one instance per host)",
+		cfg.Energy.SampleInterval.Duration, len(gpuIDs))
+}
+

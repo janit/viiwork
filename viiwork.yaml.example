@@ -120,6 +120,45 @@ balancer:
 #   poll_interval: 10s
 #   timeout: 3s
 
+# Node power reading over IPMI. Requires ipmitool and /dev/ipmi0 in the
+# container (add "- /dev/ipmi0:/dev/ipmi0" to the compose devices list).
+#
+# The default "auto" probes DCMI, then the Power Supply sensor class, then any
+# Watts-valued sensor, and logs which one it settled on. Pin a source only if
+# auto picks the wrong one -- on boards exposing several Watts sensors it warns
+# and lists the alternatives.
+#
+#   auto           probe, keep the first that answers (default)
+#   dcmi           DCMI whole-node reading
+#   sdr            sum the "Power Supply" sensor class
+#   sensor:<NAME>  one named sensor, e.g. sensor:SYS_POWER
+#   none           disable without probing
+#
+# power:
+#   source: auto
+
+# Durable energy history: per-host kWh and a per-model split of it.
+#
+# Needs a volume that outlives the container, plus /dev/ipmi0 for node power and
+# rocm-smi for the per-GPU split. Disabled by default because writing to a
+# container filesystem would be durable in name only.
+#
+# Node wattage is a whole-host measurement, so on a host running several viiwork
+# instances (the multi-model layout) enable this on exactly ONE of them --
+# otherwise the same host draw is recorded several times over.
+#
+# Disk is fixed at creation and cannot grow: ~2.6 MB for a 10-GPU host, ~660 KB
+# for two. Slot counts are ring lengths and therefore the retention; changing one
+# discards that ring's history.
+#
+# energy:
+#   enabled: true
+#   dir: /var/lib/viiwork/energy
+#   sample_interval: 30s   # 2x the BMC refresh; records are always 1/minute
+#   minute_slots: 1440     # 24h at 1-minute resolution
+#   hour_slots: 8760       # 365d at 1-hour resolution
+#   day_slots: 365         # 365d of daily totals
+
 # Electricity cost tracking: uncomment and set ENTSOE_API_KEY in .env
 # cost:
 #   bidding_zone: 10YFI-1--------U  # Finland

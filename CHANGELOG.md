@@ -1,5 +1,70 @@
 # Changelog
 
+## v1.2.0
+
+### Power probing, per-GPU wattage, and a durable energy store
+
+Node power had been silently reporting 0 W across the whole gfx906 fleet, which
+also kept cost tracking switched off — `cost.Tracker` gives up when power is
+unavailable. Every Gigabyte board here answers `sdr type "Power Supply"` with
+presence flags and no wattage, so the previous hardcoded command summed nothing
+and reported a confident zero. The sampler now probes for a reading that is
+actually above zero: DCMI first (the standardised whole-node reading), then the
+`Power Supply` sensor class, then any Watts-valued sensor. `power.source` pins
+it to `dcmi`, `sdr`, `sensor:<NAME>` or `none` if you would rather not probe,
+and whichever source was adopted is logged and published as `power_source`.
+
+`rocm-smi` is now also asked for per-GPU package power, with a fallback to the
+original flags if that arg set is rejected — wattage is a bonus, and losing
+utilisation and VRAM to gain it would be a bad trade.
+
+On top of those, `internal/energy` keeps a durable per-host, per-model kWh
+history: node draw, per-GPU draw, and a marginal-power split between the models
+causing the load and the baseline a host draws just by being switched on. Off by
+default; see *Energy History* in the README. Enable it on exactly one instance
+per host — node wattage is a whole-host measurement.
+
+### The mesh dashboard shows fleet power
+
+`/mesh` gains a **Fleet Power** panel: the mesh total as a headline number, a
+stacked graph with one band per host, and a table naming each host's draw and
+which IPMI reading it came from. Grouped by host, the backends table also carries
+each host's wattage on its group header.
+
+It needs no configuration and adds no polling — the samples come off the cluster
+snapshots the dashboard already receives. The window is since page load, capped
+at 720 readings; it is a live view, not history.
+
+Under it is a film strip of per-host RAM: one small sparkline per host, sharing
+one time window, each scaled 0 to that host's total so height reads as memory
+pressure. Host memory now travels on `/v1/status`, so the strip covers every
+host rather than only the one serving the page.
+
+Host memory used to be stripped from the pushed mesh snapshot, because an exact
+figure moves every second on a live host and made the stream push a full
+snapshot that often. It is now coarsened to 64 buckets with a deadband instead —
+a bucket is under a pixel on the strip, and `/v1/cluster` still carries the exact
+figures.
+
+### Fixed
+
+- **Cluster wattage counted multi-instance hosts several times.** A host running
+  one viiwork instance per model reports the same whole-host BMC reading from
+  each of them, and both dashboards summed the payload as it arrived — three
+  times over on a three-tenant host. Both now key by hostname and count each
+  host once.
+- **Co-located instances appeared as two hosts.** `/v1/cluster` derived a peer's
+  hostname from the address it is dialled on, but co-located peers are
+  configured by IP, so one machine showed up under both its hostname and its
+  address.
+  The hostname the peer actually reports is now preferred, with the
+  address-derived one kept as the fallback for peers too old to report one.
+- **A single energy recorder left most of its host unattributed.** Recording
+  runs on one instance per host, and that instance labelled only the GPUs it
+  owns — one card in ten on a 10-GPU host. Model labels for a co-tenant's cards
+  now come from the peer poll, which already carries `gpu_ids`, a model and a
+  hostname.
+
 ## v1.1.1
 
 ### Prompt history depth is configurable, and defaults to 1000
@@ -114,6 +179,28 @@ Two implementation details that were easy to get wrong and are pinned by tests:
   already did this; this target was the odd one out.
 
 ## Upgrading
+
+### To v1.2.0
+
+Nothing in this release changes behaviour on an existing deployment until you
+opt in, and the API additions are all `omitempty` — a node on 1.2.0 meshes with
+one on 1.1.x, each simply showing blanks for what the other does not report.
+
+Two things are worth doing per host:
+
+- **Give one container per host the BMC device** (`- /dev/ipmi0:/dev/ipmi0`) to
+  get node wattage on the dashboard. Without it a host reads 0 W exactly as
+  before, and cost tracking stays off, since it gives up when power is
+  unavailable.
+- **Enable the energy store on exactly one instance per host**, with a volume
+  that outlives the container. Node wattage is a whole-host measurement, so
+  enabling it on several instances of a multi-model host records the same draw
+  several times over.
+
+If you consume `/v1/cluster` from your own application, read the notes on
+`hostname`, `power_watts` and `host_mem_used_mb` in `docs/api-integration.md`:
+per-host figures must be grouped by hostname rather than summed across
+instances, and host memory on the pushed stream is now coarsened.
 
 **Rolling upgrade is safe, and a mixed fleet works.** A v1.1.0 node meshes with
 v1.0.0 peers in both directions:

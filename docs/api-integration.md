@@ -135,7 +135,7 @@ one endpoint a fleet overview needs.
   "local": {
     "model": "some-model-27B-Q4_K_XL",
     "listen_addr": "node0:8080",
-    "power_watts": 0, "power_available": false,
+    "power_watts": 549, "power_available": true, "power_source": "dcmi",
     "host_mem_total_mb": 64196, "host_mem_used_mb": 31426,
     "gpus": [ { "gpu_id": 0, "util": 0, "vram_used_mb": 12488.1, "vram_total_mb": 16368 } ],
     "backends": [ {
@@ -151,6 +151,8 @@ one endpoint a fleet overview needs.
     "status": "reachable", "node_id": "viiwork-52ebd96f1c30321c",
     "models": ["another-model-8b"],
     "healthy_backends": 1,
+    "power_watts": 210, "power_available": true, "power_source": "sdr:Power Supply",
+    "host_mem_total_mb": 128395, "host_mem_used_mb": 41220,
     "backends": [ ], "gpus": [ ]
   } ]
 }
@@ -159,6 +161,7 @@ one endpoint a fleet overview needs.
 | Field | Meaning |
 |---|---|
 | `version` | Build string of the node answering. Absent on older builds — treat absence as "pre-1.1.0". |
+| `hostname`, `peers[].hostname` | The hostname each node reports for itself, which is how you tell co-located instances apart from separate machines. It is the **grouping key for anything measured per host** — see the wattage row below. Older nodes may not report one, in which case the peer's entry falls back to the host part of its configured address; a consumer should not assume the two forms never mix. |
 | `single_host` | True when every peer is co-located on this machine — several viiwork instances on one host, meshed via localhost. Render those as instances of one host, not as separate hosts. |
 | `peers[].status` | `reachable` or `unreachable`. An unreachable peer still appears, with its other fields blank. Show it as unreachable rather than hiding it. |
 | `backends[].gpu_id` | `-1` means a tensor-split group; read `gpu_ids` instead. A plain replica has `gpu_id >= 0` and no `gpu_ids`. |
@@ -166,6 +169,9 @@ one endpoint a fleet overview needs.
 | `slot_ctx`, `slot_count`, `slot_active` | Context window per slot, slots configured, slots busy. Context *use* is `slot_active / slot_count`. |
 | `tok_decoded`, `tok_remain` | Tokens produced and budget left across active slots. |
 | `power_available`, `cost_available` | False where power or price data is not configured. When false, ignore the accompanying numbers rather than rendering zeros. |
+| `power_watts` | **A whole-host measurement, not a per-instance one.** A host running one viiwork instance per model reports the same BMC reading from every one of them, so summing this field across `local` + `peers` counts such a host once per instance. Group by `hostname` and take one reading per host. |
+| `power_source` | Which IPMI reading the node settled on: `dcmi`, `sdr:Power Supply`, or `sensor:<NAME>`. Probed at startup because it is board-specific. Diagnostic only — surface it where an operator is asking why a host reads what it does. Absent on older nodes and whenever `power_available` is false. |
+| `host_mem_total_mb`, `host_mem_used_mb` | Host RAM, `used` being `MemTotal - MemAvailable` so reclaimable page cache is not counted as pressure. Also whole-host, so group by `hostname` as with wattage. Absent on nodes older than this field; read a zero total as "unknown", not as "no memory". On the pushed stream these are coarsened — see §6. |
 
 ### `GET /v1/status`
 
@@ -343,12 +349,23 @@ for totals.
 Do not present all three as equally current. A job appearing instantly next to a
 GPU utilisation figure that is ten seconds stale reads as a contradiction.
 
-### Host memory is stripped from pushed snapshots
+### Host memory is coarsened on pushed snapshots
 
 Snapshots on `/v1/mesh/stream` are diffed server-side and sent only when they
-change; host memory ticks every second and would defeat that entirely, so it is
-deliberately removed from the pushed copy. If you need it, call `/v1/cluster`
-directly.
+change. Host memory ticks every second on a live host — measured at ~86 MB/s,
+spiking past 600 MB — and an exact figure defeats that entirely, so it used to
+be removed from the pushed copy altogether.
+
+It is now included but coarsened: quantized to 64 buckets of the host's total,
+and held at the published level until the reading drifts a full step away from
+it. In practice the value moves only when memory moves visibly, and a host that
+is merely idling republishes nothing. Two consequences for a consumer:
+
+- **Treat `host_mem_used_mb` from the stream as approximate**, within about one
+  bucket (~1 GB on a 64 GB host). Render it as a level or a percentage, not as
+  an exact figure, and never diff two stream values to infer an allocation.
+- **`/v1/cluster` remains exact.** Call it directly if you need the real number
+  — for an alert threshold, a capacity report, or anything a human will quote.
 
 ### SSE, not WebSockets
 

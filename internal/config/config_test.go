@@ -314,3 +314,27 @@ gpus:
 	if cfg.Cost.BiddingZone != "" { t.Errorf("expected empty default zone, got %s", cfg.Cost.BiddingZone) }
 	if cfg.GPUs.PowerLimitWatts != 0 { t.Errorf("expected 0 power limit, got %d", cfg.GPUs.PowerLimitWatts) }
 }
+
+func TestValidatePowerSource(t *testing.T) {
+	valid := []string{"", "auto", "dcmi", "sdr", "none", "sensor:SYS_POWER", " dcmi "}
+	for _, source := range valid {
+		if err := validatePowerSource(source); err != nil {
+			t.Errorf("power.source %q should be valid: %v", source, err)
+		}
+	}
+
+	// A typo must fail loudly at startup rather than silently disabling power
+	// and cost tracking, which is the failure this feature exists to end.
+	invalid := []string{"dmci", "ipmi", "sensor:", "sensor: ", "Auto"}
+	for _, source := range invalid {
+		if err := validatePowerSource(source); err == nil {
+			t.Errorf("power.source %q should be rejected", source)
+		}
+	}
+}
+
+func TestDefaultPowerSourceIsAuto(t *testing.T) {
+	if got := Defaults().Power.Source; got != "auto" {
+		t.Errorf("expected default power.source auto, got %q", got)
+	}
+}

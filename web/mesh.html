@@ -89,6 +89,44 @@
   .prompt-row.running .arrow { color: var(--warn); }
   .promptlink { margin-left: auto; color: var(--accent); font-size: 0.76rem; white-space: nowrap; }
 
+  /* fleet power */
+  .powerhead { display: flex; align-items: baseline; gap: 10px; padding: 10px 12px 2px; }
+  .hero { font-family: var(--mono); font-size: 1.7rem; font-weight: 600; letter-spacing: -0.02em; line-height: 1.1; }
+  .hero .unit { font-size: 0.85rem; font-weight: 400; color: var(--dim); margin-left: 3px; }
+  .chartwrap { position: relative; padding: 2px 12px 8px; }
+  #powerChart { display: block; width: 100%; height: 140px; }
+  .tip { position: absolute; z-index: 5; pointer-events: none; background: rgba(13,17,23,0.96);
+         border: 1px solid var(--border); border-radius: 5px; padding: 6px 8px;
+         font-family: var(--mono); font-size: 0.74rem; white-space: nowrap;
+         box-shadow: 0 4px 14px rgba(0,0,0,0.55); }
+  .tip .when { color: var(--dimmer); margin-bottom: 4px; }
+  .tip .r { display: flex; gap: 8px; align-items: baseline; }
+  .tip .r .v { margin-left: auto; font-weight: 600; color: var(--fg); }
+  .tip .r .n { color: var(--dim); }
+  .tip .r.total { border-top: 1px solid var(--border); margin-top: 4px; padding-top: 4px; }
+  .swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; flex: none; }
+  table.legend td { padding: 4px 12px; border-bottom: 0; }
+  table.legend td.sw { width: 1%; padding-right: 0; }
+  table.legend td.name { width: 1%; padding-right: 10px; }
+  table.legend .src { color: var(--dimmer); font-size: 0.74rem; }
+
+  /* host RAM film strip — deliberately recessive: it sits under the power
+     panel as context, not as a second headline. */
+  .strip { border-top: 1px solid var(--border); padding: 8px 12px 10px; }
+  .strip .cap { font-family: var(--mono); font-size: 0.68rem; letter-spacing: 0.08em;
+                text-transform: uppercase; color: var(--dimmer); margin-bottom: 6px; }
+  /* auto-fit so a full fleet divides the width evenly, plus a cap so a mesh
+     reporting one host gets a frame rather than a full-width bar. */
+  .frames { display: grid; grid-template-columns: repeat(auto-fit, minmax(92px, 1fr)); gap: 6px 14px; }
+  .frame { max-width: 190px; }
+  .frame .lbl { display: flex; align-items: baseline; gap: 5px; font-family: var(--mono);
+                font-size: 0.7rem; color: var(--dimmer); margin-bottom: 3px; }
+  /* The percentage sits next to its host name, not pushed to the frame's far
+     edge -- against the neighbouring frame it would read as that host's. */
+  .frame .lbl .h { color: var(--dim); overflow: hidden; text-overflow: ellipsis; flex: none; }
+  .frame .lbl .p { font-variant-numeric: tabular-nums; }
+  .frame canvas { display: block; width: 100%; height: 26px; }
+
   /* halt */
   .halt { background: transparent; border: 1px solid var(--border); color: var(--dim);
           border-radius: 6px; padding: 4px 12px; font: inherit; font-size: 0.78rem;
@@ -137,6 +175,25 @@
 
   <!-- RIGHT -->
   <div>
+    <section>
+      <h2>Fleet Power <span class="sub" id="powerScope"></span></h2>
+      <div class="card">
+        <div class="powerhead">
+          <span class="hero" id="powerNow">—<span class="unit">W</span></span>
+          <span class="sub" id="powerSub"></span>
+        </div>
+        <div class="chartwrap">
+          <canvas id="powerChart"></canvas>
+          <div class="tip" id="powerTip" hidden></div>
+        </div>
+        <table class="legend"><tbody id="powerLegend"></tbody></table>
+        <div class="strip" id="memStripWrap" hidden>
+          <div class="cap">Host RAM</div>
+          <div class="frames" id="memStrip"></div>
+        </div>
+      </div>
+    </section>
+
     <section>
       <h2>Backends <span class="sub" id="backendSummary"></span></h2>
       <div class="card" id="backendsCard">
@@ -286,6 +343,7 @@ function renderBackends() {
     groups.get(key(r)).push(r);
   }
 
+  const hostWatts = new Map(hostPower(cluster).map(h => [h.host, h.watts]));
   const totalInFlight = rows.reduce((a, r) => a + r.inFlight, 0);
   $("backendSummary").textContent =
     `${rows.length} backend${rows.length === 1 ? "" : "s"} · ${groups.size} ${groupMode}${groups.size === 1 ? "" : "s"} · ${totalInFlight} in flight`;
@@ -293,9 +351,15 @@ function renderBackends() {
   let html = "";
   for (const [name, list] of [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
     const busy = list.reduce((a, r) => a + r.inFlight, 0);
+    // Grouped by host, the host's own draw belongs on its header. Grouped by
+    // model it does not: node wattage is a whole-host figure and several
+    // models share a host, so printing it per model would imply a split the
+    // BMC cannot make. That split is the energy store's job, not this table's.
+    const w = groupMode === "host" ? hostWatts.get(name) : null;
     html += `<tr class="grouphead"><td colspan="8">${esc(name)}` +
             `<span class="cnt"> · ${list.length} backend${list.length === 1 ? "" : "s"}` +
-            `${busy ? " · " + busy + " in flight" : ""}</span></td></tr>`;
+            `${busy ? " · " + busy + " in flight" : ""}` +
+            `${w ? " · " + esc(fmtW(w)) + " W" : ""}</span></td></tr>`;
     for (const r of list) {
       const ctxFrac = r.slotCtx ? r.tokDecoded / r.slotCtx : 0;
       const vramFrac = r.vramTotal ? r.vramUsed / r.vramTotal : 0;
@@ -441,6 +505,454 @@ function renderActivity() {
 }
 
 // ---------------------------------------------------------------------------
+// Fleet power
+//
+// Samples come off the cluster snapshots the stream already pushes, so this
+// adds no polling and no new payload. One snapshot carries every host at a
+// single instant, and that is what makes stacking honest: the bands share a
+// real time grid instead of being interpolated onto one.
+//
+// The window is therefore since page load, not durable history — a reload
+// starts it over, and a halt leaves a gap, because halted snapshots collapse
+// to the newest one rather than queueing. Durable per-host kWh is the
+// energy store's job (see internal/energy), not this graph's.
+// ---------------------------------------------------------------------------
+
+// Categorical slots in fixed order, stepped for a dark surface. A host takes a
+// slot on first sight and keeps it: colour follows the host, never its rank,
+// so one host dropping out cannot repaint the others.
+const POWER_COLORS = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"];
+const hostColor = new Map();
+function colorFor(host) {
+  if (!hostColor.has(host)) hostColor.set(host, POWER_COLORS[hostColor.size % POWER_COLORS.length]);
+  return hostColor.get(host);
+}
+
+const MAX_POWER_SAMPLES = 720;
+let powerSeries = [];       // [{t, sig, hosts:[{host, watts, source}]}]
+let powerHoverIdx = null;   // sample index under the pointer, or null
+
+// Node wattage is a whole-host measurement, but a multi-model host runs one
+// viiwork instance per model and every one of them reports the same BMC
+// reading. Summing the payload as it arrives would count that host once per
+// instance — three times over on the reference gb1 layout. So: key by
+// hostname, first reading wins, local before peers.
+function hostPower(c) {
+  const seen = new Map();
+  const take = (host, watts, avail, source) => {
+    if (!host || !avail || !(watts > 0) || seen.has(host)) return;
+    seen.set(host, { host, watts, source: source || "" });
+  };
+  if (c) {
+    take(c.hostname, c.local && c.local.power_watts, c.local && c.local.power_available,
+         c.local && c.local.power_source);
+    for (const p of (c.peers || [])) {
+      if (p.status !== "reachable") continue;
+      take(p.hostname || p.addr, p.power_watts, p.power_available, p.power_source);
+    }
+  }
+  return [...seen.values()];
+}
+
+// Distinct hosts in the mesh, whether or not they can read power. The
+// difference between this and hostPower() is what the "n of m reporting" line
+// exists to show: a host with no /dev/ipmi0 is invisible to the graph and
+// should not be silently mistaken for a host drawing nothing.
+function meshHosts(c) {
+  const set = new Set();
+  if (c) {
+    if (c.hostname) set.add(c.hostname);
+    for (const p of (c.peers || [])) {
+      if (p.status === "reachable") set.add(p.hostname || p.addr);
+    }
+  }
+  return set;
+}
+
+function recordPower(c) {
+  const hosts = hostPower(c);
+  if (!hosts.length) return;
+  const t = Date.now();
+  const sig = hosts.map(h => h.host + "=" + h.watts).join(",");
+  const n = powerSeries.length;
+  // Snapshots are pushed whenever anything in the payload changes, and most
+  // changes are not power. An unchanged reading extends the current plateau
+  // instead of adding a step for someone else's change — two points, its
+  // start and its moving end.
+  if (n >= 2 && powerSeries[n - 1].sig === sig && powerSeries[n - 2].sig === sig) {
+    powerSeries[n - 1].t = t;
+    return;
+  }
+  powerSeries.push({ t, sig, hosts });
+  if (powerSeries.length > MAX_POWER_SAMPLES) powerSeries.shift();
+}
+
+const fmtW = w => Math.round(w).toLocaleString();
+
+function renderPowerNumbers() {
+  const hosts = hostPower(cluster);
+  const all = meshHosts(cluster);
+  const total = hosts.reduce((a, h) => a + h.watts, 0);
+
+  $("powerNow").innerHTML = (total > 0 ? esc(fmtW(total)) : "—") + '<span class="unit">W</span>';
+  $("powerScope").textContent = all.size ? `${hosts.length}/${all.size} hosts reporting` : "";
+  $("powerSub").textContent = hosts.length
+    ? "across the mesh, live"
+    : "no host is reporting power — needs /dev/ipmi0 on the container";
+
+  // The legend is also the table view: every series named, with its current
+  // value, reachable without hovering the chart.
+  const body = $("powerLegend");
+  body.textContent = "";
+  for (const h of [...hosts].sort((a, b) => b.watts - a.watts)) {
+    const tr = document.createElement("tr");
+    const sw = document.createElement("td");
+    sw.className = "sw";
+    const dot = document.createElement("span");
+    dot.className = "swatch";
+    dot.style.background = colorFor(h.host);
+    sw.appendChild(dot);
+    const name = document.createElement("td");
+    name.className = "name";
+    name.textContent = h.host;                       // hostnames are peer-supplied
+    const src = document.createElement("td");
+    src.className = "src";
+    src.textContent = h.source;
+    const val = document.createElement("td");
+    val.className = "num";
+    val.style.textAlign = "right";
+    val.textContent = fmtW(h.watts) + " W";
+    tr.append(sw, name, src, val);
+    body.appendChild(tr);
+  }
+}
+
+function niceMax(v) {
+  if (!(v > 0)) return 100;
+  const pow = Math.pow(10, Math.floor(Math.log10(v)));
+  for (const m of [1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8]) {
+    if (v <= m * pow) return m * pow;
+  }
+  return 10 * pow;
+}
+
+const hhmmss = ms => new Date(ms).toLocaleTimeString();
+
+// Stacked area: each band is a host, the top edge is the fleet total. Bands
+// are washed rather than saturated so the total edge stays the loudest thing
+// on the chart, and the boundaries are cut with a 2px stroke in the card
+// colour — the gap does the separating, not an outline.
+function drawPower() {
+  const canvas = $("powerChart");
+  if (!canvas) return;
+  const cssW = canvas.clientWidth || 420, cssH = 140;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.round(cssW * dpr);
+  canvas.height = Math.round(cssH * dpr);
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cssW, cssH);
+
+  const surface = getComputedStyle(document.body).getPropertyValue("--card").trim() || "#161b22";
+  const grid = "#21262d", ink = "#8b949e";
+  ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+
+  const pad = { l: 44, r: 8, t: 8, b: 16 };
+  const W = cssW - pad.l - pad.r, H = cssH - pad.t - pad.b;
+
+  if (powerSeries.length < 2) {
+    ctx.fillStyle = ink;
+    ctx.fillText(powerSeries.length ? "accumulating…" : "no readings yet", pad.l, pad.t + 12);
+    return;
+  }
+
+  // Host order is the colour order, so a band never swaps places in the stack.
+  const present = new Set();
+  for (const s of powerSeries) for (const h of s.hosts) present.add(h.host);
+  const order = [...hostColor.keys()].filter(h => present.has(h));
+
+  const totals = powerSeries.map(s => s.hosts.reduce((a, h) => a + h.watts, 0));
+  const yMax = niceMax(Math.max(...totals));
+  const tMin = powerSeries[0].t, tMax = powerSeries[powerSeries.length - 1].t;
+  const span = Math.max(1, tMax - tMin);
+  const X = t => pad.l + ((t - tMin) / span) * W;
+  const Y = w => pad.t + H - (w / yMax) * H;
+
+  // Gridlines: hairline, solid, recessive — and the y ticks carry the values
+  // no band is directly labelled with.
+  ctx.lineWidth = 1;
+  ctx.textAlign = "right";
+  ctx.textBaseline = "middle";
+  for (const f of [0, 0.5, 1]) {
+    const y = Math.round(Y(yMax * f)) + 0.5;
+    ctx.strokeStyle = grid;
+    ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(pad.l + W, y); ctx.stroke();
+    ctx.fillStyle = ink;
+    ctx.fillText(fmtW(yMax * f) + (f === 1 ? " W" : ""), pad.l - 6, y);
+  }
+
+  // Cumulative stack, bottom band first.
+  const at = (s, host) => { const h = s.hosts.find(x => x.host === host); return h ? h.watts : 0; };
+  let lower = powerSeries.map(() => 0);
+  for (const host of order) {
+    const upper = powerSeries.map((s, i) => lower[i] + at(s, host));
+    ctx.beginPath();
+    powerSeries.forEach((s, i) => { const x = X(s.t), y = Y(upper[i]); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+    for (let i = powerSeries.length - 1; i >= 0; i--) ctx.lineTo(X(powerSeries[i].t), Y(lower[i]));
+    ctx.closePath();
+    ctx.fillStyle = colorFor(host);
+    ctx.globalAlpha = 0.32;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+
+    // The band's own top edge, full hue, 2px round-joined.
+    ctx.beginPath();
+    powerSeries.forEach((s, i) => { const x = X(s.t), y = Y(upper[i]); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+    ctx.strokeStyle = surface; ctx.lineWidth = 4; ctx.lineJoin = "round"; ctx.lineCap = "round";
+    ctx.stroke();                       // 2px of surface either side = the gap
+    ctx.strokeStyle = colorFor(host); ctx.lineWidth = 2;
+    ctx.stroke();
+    lower = upper;
+  }
+
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
+  ctx.fillStyle = ink;
+  ctx.fillText(hhmmss(tMin), pad.l, cssH - 4);
+  ctx.textAlign = "right";
+  ctx.fillText(hhmmss(tMax), pad.l + W, cssH - 4);
+
+  // Crosshair: the reader aims at a time, not at a 2px line.
+  if (powerHoverIdx !== null && powerSeries[powerHoverIdx]) {
+    const x = Math.round(X(powerSeries[powerHoverIdx].t)) + 0.5;
+    ctx.strokeStyle = ink; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x, pad.t); ctx.lineTo(x, pad.t + H); ctx.stroke();
+  }
+}
+
+// One tooltip, every series: the readout lists each host at that time plus the
+// fleet total, so the pointer never has to land on a band to get a value.
+function powerTooltip(ev) {
+  const canvas = $("powerChart"), tip = $("powerTip");
+  if (powerSeries.length < 2) return;
+  const r = canvas.getBoundingClientRect();
+  const pad = { l: 44, r: 8 };
+  const W = r.width - pad.l - pad.r;
+  const tMin = powerSeries[0].t, tMax = powerSeries[powerSeries.length - 1].t;
+  const frac = Math.max(0, Math.min(1, (ev.clientX - r.left - pad.l) / Math.max(1, W)));
+  const want = tMin + frac * Math.max(1, tMax - tMin);
+
+  let best = 0;
+  for (let i = 1; i < powerSeries.length; i++) {
+    if (Math.abs(powerSeries[i].t - want) < Math.abs(powerSeries[best].t - want)) best = i;
+  }
+  powerHoverIdx = best;
+  drawPower();
+
+  const s = powerSeries[best];
+  tip.textContent = "";
+  const when = document.createElement("div");
+  when.className = "when";
+  when.textContent = hhmmss(s.t);
+  tip.appendChild(when);
+  for (const h of [...s.hosts].sort((a, b) => b.watts - a.watts)) {
+    const row = document.createElement("div");
+    row.className = "r";
+    const dot = document.createElement("span");
+    dot.className = "swatch";
+    dot.style.background = colorFor(h.host);
+    const n = document.createElement("span");
+    n.className = "n";
+    n.textContent = h.host;
+    const v = document.createElement("span");
+    v.className = "v";
+    v.textContent = fmtW(h.watts) + " W";
+    row.append(dot, n, v);
+    tip.appendChild(row);
+  }
+  if (s.hosts.length > 1) {
+    const row = document.createElement("div");
+    row.className = "r total";
+    const n = document.createElement("span");
+    n.className = "n";
+    n.textContent = "fleet";
+    const v = document.createElement("span");
+    v.className = "v";
+    v.textContent = fmtW(s.hosts.reduce((a, h) => a + h.watts, 0)) + " W";
+    row.append(n, v);
+    tip.appendChild(row);
+  }
+
+  tip.hidden = false;
+  const wrap = canvas.parentElement.getBoundingClientRect();
+  const left = ev.clientX - wrap.left + 12;
+  tip.style.left = Math.min(left, wrap.width - tip.offsetWidth - 6) + "px";
+  tip.style.top = Math.max(4, ev.clientY - wrap.top - tip.offsetHeight - 10) + "px";
+}
+
+// ---------------------------------------------------------------------------
+// Host RAM film strip
+//
+// One small frame per host under the power panel: same time window in every
+// frame, so the strip is read across rather than one chart at a time. Each
+// frame's y axis is 0..that host's total, so height means memory pressure and
+// hosts with different amounts of RAM stay comparable.
+//
+// Host memory reaches the stream coarsened (see hostMemDeadband in
+// meshactivity.go): an exact figure moves every second and would make the
+// server push a full snapshot that often. The strip is sized so a bucket is
+// under a pixel, which is why it can be coarsened without the reader noticing.
+// ---------------------------------------------------------------------------
+const MAX_MEM_SAMPLES = 240;
+const memSeries = new Map();   // host -> [{t, used, total}]
+
+// Same whole-host reasoning as hostPower(): several viiwork instances on one
+// box all report that box's RAM, so key by hostname and take one.
+function hostMem(c) {
+  const seen = new Map();
+  const take = (host, used, total) => {
+    if (!host || !(total > 0) || !(used > 0) || seen.has(host)) return;
+    seen.set(host, { host, used, total });
+  };
+  if (c) {
+    take(c.hostname, c.local && c.local.host_mem_used_mb, c.local && c.local.host_mem_total_mb);
+    for (const p of (c.peers || [])) {
+      if (p.status !== "reachable") continue;
+      take(p.hostname || p.addr, p.host_mem_used_mb, p.host_mem_total_mb);
+    }
+  }
+  return [...seen.values()];
+}
+
+function recordMem(c) {
+  const t = Date.now();
+  for (const h of hostMem(c)) {
+    let a = memSeries.get(h.host);
+    if (!a) { a = []; memSeries.set(h.host, a); }
+    const last = a[a.length - 1];
+    // Coarsened upstream, so an unchanged value is genuinely "no visible
+    // movement" rather than a lost reading: extend the plateau.
+    if (a.length >= 2 && last.used === h.used && a[a.length - 2].used === h.used) {
+      last.t = t;
+    } else {
+      a.push({ t, used: h.used, total: h.total });
+      if (a.length > MAX_MEM_SAMPLES) a.shift();
+    }
+  }
+}
+
+function renderMemStrip() {
+  const hosts = hostMem(cluster);
+  const wrap = $("memStripWrap"), grid = $("memStrip");
+  wrap.hidden = hosts.length === 0;
+  if (!hosts.length) return;
+
+  // Rebuild only when the host set changes; redrawing canvases every snapshot
+  // is cheap, recreating DOM is not.
+  const key = hosts.map(h => h.host).join("|");
+  if (grid.dataset.key !== key) {
+    grid.dataset.key = key;
+    grid.textContent = "";
+    for (const h of hosts) {
+      const f = document.createElement("div");
+      f.className = "frame";
+      const lbl = document.createElement("div");
+      lbl.className = "lbl";
+      const name = document.createElement("span");
+      name.className = "h";
+      name.textContent = h.host;
+      const pct = document.createElement("span");
+      pct.className = "p";
+      lbl.append(name, pct);
+      const cv = document.createElement("canvas");
+      f.append(lbl, cv);
+      f.dataset.host = h.host;
+      grid.appendChild(f);
+    }
+  }
+
+  // One time window across every frame, so the strip reads left to right as a
+  // single span rather than as N charts with N different axes.
+  let tMin = Infinity, tMax = -Infinity;
+  for (const h of hosts) {
+    for (const s of (memSeries.get(h.host) || [])) {
+      if (s.t < tMin) tMin = s.t;
+      if (s.t > tMax) tMax = s.t;
+    }
+  }
+
+  for (const f of grid.children) {
+    const h = hosts.find(x => x.host === f.dataset.host);
+    if (!h) continue;
+    f.querySelector(".p").textContent = Math.round((h.used / h.total) * 100) + "%";
+    f.title = `${h.host} — ${fmtGB(h.used)} of ${fmtGB(h.total)} in use`;
+    drawMemSpark(f.querySelector("canvas"), h, tMin, tMax);
+  }
+}
+
+function drawMemSpark(canvas, h, tMin, tMax) {
+  const cssW = canvas.clientWidth || 92, cssH = 26;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.round(cssW * dpr);
+  canvas.height = Math.round(cssH * dpr);
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cssW, cssH);
+
+  // A hairline floor, so an empty or nearly-empty frame still reads as a chart
+  // rather than as a rendering failure.
+  ctx.strokeStyle = "#21262d";
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(0, cssH - 0.5); ctx.lineTo(cssW, cssH - 0.5); ctx.stroke();
+
+  const series = memSeries.get(h.host) || [];
+  if (!series.length) return;
+
+  const Y = mb => cssH - Math.max(0, Math.min(1, mb / h.total)) * (cssH - 2) - 1;
+  const col = colorFor(h.host);
+
+  // A frame with one reading is drawn flat across the window at that level
+  // rather than left blank. The level is the thing the strip is for, and it is
+  // the state a host stays in whenever memory is not moving -- which, since the
+  // stream coarsens this field, is most of the time. Waiting for a second
+  // sample would leave a host that never changes looking unmonitored.
+  const flat = series.length < 2 || !(tMax > tMin);
+  const pts = flat
+    ? [{ x: 0, y: Y(series[series.length - 1].used) }, { x: cssW, y: Y(series[series.length - 1].used) }]
+    : series.map(s => ({ x: ((s.t - tMin) / (tMax - tMin)) * cssW, y: Y(s.used) }));
+
+  const line = new Path2D();
+  pts.forEach((p, i) => (i ? line.lineTo(p.x, p.y) : line.moveTo(p.x, p.y)));
+
+  const area = new Path2D(line);
+  area.lineTo(pts[pts.length - 1].x, cssH);
+  area.lineTo(pts[0].x, cssH);
+  area.closePath();
+
+  ctx.fillStyle = col;
+  ctx.globalAlpha = 0.14;
+  ctx.fill(area);
+  ctx.globalAlpha = 0.65;
+  ctx.strokeStyle = col;
+  ctx.lineWidth = 1.5;
+  ctx.lineJoin = "round";
+  ctx.stroke(line);
+  ctx.globalAlpha = 1;
+}
+
+function wirePowerChart() {
+  const canvas = $("powerChart");
+  if (!canvas) return;
+  canvas.addEventListener("pointermove", powerTooltip);
+  canvas.addEventListener("pointerleave", () => {
+    powerHoverIdx = null;
+    $("powerTip").hidden = true;
+    drawPower();
+  });
+  addEventListener("resize", () => { drawPower(); renderMemStrip(); });
+}
+
+// ---------------------------------------------------------------------------
 // Data: cluster snapshots arrive pushed, not polled
 // ---------------------------------------------------------------------------
 function applyCluster(c) {
@@ -452,6 +964,14 @@ function applyCluster(c) {
     `${esc(cluster.hostname || "?")} · ${peers.length ? `${up}/${peers.length} peers reachable` : "no peers"} · v${esc(cluster.version || "?")}`;
   renderModels();
   renderBackends();
+  // Power last: it reads the snapshot the same way the tables do, and a halt
+  // gates it here rather than in the stream handler, so a frozen view stops
+  // accumulating instead of drawing a straight line across the pause.
+  recordPower(c);
+  renderPowerNumbers();
+  drawPower();
+  recordMem(c);
+  renderMemStrip();
 }
 
 // ---------------------------------------------------------------------------
@@ -583,6 +1103,7 @@ document.addEventListener("keydown", ev => {
   setHalted(!halted);
 });
 
+wirePowerChart();
 connectStream();
 // In-flight ages must tick even when no events arrive — but not while halted,
 // since a running counter is exactly the movement halt exists to stop.

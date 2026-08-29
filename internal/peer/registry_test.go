@@ -87,3 +87,112 @@ func TestRegistryPeerGoesDown(t *testing.T) {
 	reg.PollOnce(context.Background())
 	if peer.Status() != StatusUnreachable { t.Errorf("expected unreachable, got %v", peer.Status()) }
 }
+
+// GPUModels is what makes energy attribution useful on a multi-model host: the
+// recording instance owns a fraction of the cards and has to learn the rest
+// from the co-located instances it already polls.
+func TestRegistryGPUModelsCoLocatedPeers(t *testing.T) {
+	local := balancer.NewBackendState(2, "localhost:9801")
+	reg := NewRegistry("viiwork-granite", "granite-4.1-8b", []*balancer.BackendState{local}, nil, 3*time.Second)
+	reg.SetLocation("gb1", "0.0.0.0:9102")
+
+	sameHost := NewPeerState("127.0.0.1:9302")
+	sameHost.Update(StatusResponse{NodeID: "viiwork-qwen", Hostname: "gb1", Backends: []BackendInfo{
+		{GPUID: 0, GPUIDs: []int{0, 1}, Model: "qwen3.8-27b"},
+	}})
+	otherHost := NewPeerState("192.168.1.63:9101")
+	otherHost.Update(StatusResponse{NodeID: "viiwork-gb0", Hostname: "gb0", Backends: []BackendInfo{
+		{GPUID: 5, Model: "should-not-appear"},
+	}})
+	reg.peers = []*PeerState{sameHost, otherHost}
+
+	got := reg.GPUModels()
+	want := map[int]string{0: "qwen3.8-27b", 1: "qwen3.8-27b", 2: "granite-4.1-8b"}
+	if len(got) != len(want) { t.Fatalf("expected %d labelled GPUs, got %d: %v", len(want), len(got), got) }
+	for id, model := range want {
+		if got[id] != model { t.Errorf("gpu %d: expected %q, got %q", id, model, got[id]) }
+	}
+}
+
+// An instance that has stopped serving leaves its cards idle, so labelling
+// them from its last-known status would charge energy to a model that is not
+// running.
+func TestRegistryGPUModelsSkipsUnreachableAndUnknownHost(t *testing.T) {
+	reg := NewRegistry("viiwork-granite", "granite-4.1-8b", nil, nil, 3*time.Second)
+	reg.SetLocation("gb1", "0.0.0.0:9102")
+
+	dead := NewPeerState("127.0.0.1:9302")
+	dead.Update(StatusResponse{NodeID: "viiwork-qwen", Hostname: "gb1", Backends: []BackendInfo{{GPUID: 0, Model: "qwen3.8-27b"}}})
+	dead.MarkUnreachable()
+	// A pre-v1.0 peer omits hostname entirely; it cannot be assumed local.
+	noHostname := NewPeerState("127.0.0.1:9404")
+	noHostname.Update(StatusResponse{NodeID: "viiwork-old", Backends: []BackendInfo{{GPUID: 3, Model: "translategemma"}}})
+	reg.peers = []*PeerState{dead, noHostname}
+
+	if got := reg.GPUModels(); len(got) != 0 { t.Errorf("expected no labels, got %v", got) }
+}
+
+// The local instance is authoritative for its own cards: a peer entry that
+// points back at this node must not relabel them.
+func TestRegistryGPUModelsLocalWins(t *testing.T) {
+	local := balancer.NewBackendState(2, "localhost:9801")
+	reg := NewRegistry("viiwork-granite", "granite-4.1-8b", []*balancer.BackendState{local}, nil, 3*time.Second)
+	reg.SetLocation("gb1", "0.0.0.0:9102")
+
+	self := NewPeerState("127.0.0.1:9102")
+	self.Update(StatusResponse{NodeID: "viiwork-granite", Hostname: "gb1", Backends: []BackendInfo{{GPUID: 2, Model: "stale-name"}}})
+	reg.peers = []*PeerState{self}
+
+	if got := reg.GPUModels()[2]; got != "granite-4.1-8b" { t.Errorf("expected local model to win, got %q", got) }
+}
+
+// A backend with no GPU assigned yet must not create a label for gpu -1.
+func TestRegistryGPUModelsDropsUnassigned(t *testing.T) {
+	reg := NewRegistry("viiwork-test", "local-model", []*balancer.BackendState{balancer.NewBackendState(-1, "localhost:9001")}, nil, 3*time.Second)
+	reg.SetLocation("gb1", "0.0.0.0:8080")
+	if got := reg.GPUModels(); len(got) != 0 { t.Errorf("expected no labels for unassigned gpu, got %v", got) }
+}
+
+// A co-located instance is configured by IP, so deriving its hostname from the
+// dial address splits one machine into two on the cluster view -- and makes a
+// per-host wattage impossible to deduplicate.
+func TestClusterStatePrefersReportedHostname(t *testing.T) {
+	reg := NewRegistry("viiwork-granite", "granite-4.1-8b", nil, nil, 3*time.Second)
+	reg.SetLocation("gb1", "gb1:9102")
+
+	coLocated := NewPeerState("192.168.1.41:9302")
+	coLocated.Update(StatusResponse{NodeID: "viiwork-qwen", Hostname: "gb1", Models: []string{"qwen3.8-27b"}})
+	// A peer too old to report a hostname still has to land somewhere.
+	legacy := NewPeerState("192.168.1.63:9101")
+	legacy.Update(StatusResponse{NodeID: "viiwork-old", Models: []string{"granite"}})
+	reg.peers = []*PeerState{coLocated, legacy}
+
+	state := reg.ClusterState()
+	if got := state.Peers[0].Hostname; got != "gb1" {
+		t.Errorf("co-located peer: expected reported hostname gb1, got %q", got)
+	}
+	if got := state.Peers[1].Hostname; got != "192.168.1.63" {
+		t.Errorf("legacy peer: expected address fallback, got %q", got)
+	}
+}
+
+// power_source is diagnostic: the reading is board-specific and probed at
+// startup, so the mesh view has to be able to say which one a host adopted.
+func TestClusterStateCarriesPowerSource(t *testing.T) {
+	reg := NewRegistry("viiwork-granite", "granite-4.1-8b", nil, nil, 3*time.Second)
+	reg.SetLocation("gb1", "gb1:9102")
+	p := NewPeerState("192.168.1.63:9101")
+	p.Update(StatusResponse{NodeID: "viiwork-gb0", Hostname: "gb0", PowerWatts: 210, PowerAvailable: true, PowerSource: "dcmi"})
+	reg.peers = []*PeerState{p}
+
+	state := reg.ClusterState()
+	if got := state.Peers[0].PowerSource; got != "dcmi" {
+		t.Errorf("expected power_source dcmi, got %q", got)
+	}
+	// An unreachable peer must not keep publishing a stale source alongside a
+	// zeroed wattage.
+	p.MarkUnreachable()
+	if got := reg.ClusterState().Peers[0].PowerSource; got != "" {
+		t.Errorf("expected no power_source when unreachable, got %q", got)
+	}
+}

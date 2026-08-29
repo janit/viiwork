@@ -148,6 +148,49 @@ Track real-time electricity cost per node using Nord Pool spot prices.
 
 The dashboard shows per-node cost rate (EUR/h), daily accumulated cost, and cluster totals.
 
+## Energy History
+
+Cost tracking answers *what is this costing right now*. The energy store answers
+*where did the kilowatt-hours go* — a durable per-host, per-model history of node
+draw from IPMI and per-GPU draw from `rocm-smi`, kept for a year.
+
+It is off by default, because it needs a directory that outlives the container:
+
+```yaml
+energy:
+  enabled: true
+  dir: /var/lib/viiwork/energy
+  sample_interval: 30s   # 2x the BMC refresh; records are always 1/minute
+```
+
+```yaml
+    devices:
+      - /dev/ipmi0:/dev/ipmi0
+    volumes:
+      - /var/lib/viiwork/energy:/var/lib/viiwork/energy
+```
+
+Disk is fixed at creation and cannot grow: about 2.6 MB for a 10-GPU host, 660 KB
+for two. Three preallocated ring files per series hold a day at one-minute
+resolution, a year at one hour, and a year of daily totals; retention *is* the
+wrap, so there is no purge job and a restart needs no recovery.
+
+**Enable it on exactly one viiwork instance per host.** Node wattage is a
+whole-host measurement, so a multi-model host with three instances would
+otherwise record the same draw three times. The recording instance covers every
+GPU `rocm-smi` reports, not only its own — the attribution denominator has to
+span the host — and it learns the model on a co-tenant's cards from the peer
+poll, so a single recorder still produces a per-model split for the whole box.
+
+Power is attributed marginally: each GPU is charged a share of node power in
+proportion to how far it sits above its idle floor, and the baseline a host draws
+just by being switched on (fans, CPU, idle cards, PSU losses) is reported
+separately rather than smeared across models. Baseline plus every share equals
+measured node power, so no total is invented.
+
+Accuracy is ±15% on absolute watts. Compare models within a host freely, compare
+across hosts with care, and do not present it as billing grade.
+
 ## Pipelines
 
 Pipelines chain multiple LLM steps into virtual models. A consumer calls a virtual model name (e.g. `localize-fi` or `improve-en`) and viiwork executes a sequence of prompts across one or more real backend models.
@@ -183,8 +226,16 @@ whichever host you can reach and you see the whole mesh:
 - **Prompts** — the most recent requests across the mesh, newest first. Every
   row is a link to a full-page view of that request's prompt and output. See
   *Prompt and output history* below.
+- **Fleet Power** — live wattage for the whole mesh: a headline total, a stacked
+  graph of the last few hundred readings with one band per host, and a table
+  naming each host's draw and which IPMI reading it came from. See *Fleet power*
+  below.
+- **Host RAM** — a strip of small per-host sparklines under the power panel, each
+  scaled 0 to that host's total so the height reads as memory pressure. Hover a
+  frame for the absolute figures.
 - **Backends** — GPU, host, in-flight, RSS, GPU%, VRAM and context use for every
-  host, grouped by model or by host
+  host, grouped by model or by host. Grouped by host, each host header also
+  carries that host's wattage.
 
 **Halt** (the button in the header, or press `h`) freezes the whole view so rows
 stop moving while you read or click them. Events that arrive during a halt are
@@ -198,6 +249,54 @@ not need to be reachable from wherever you are viewing.
 Peer *jobs* appear in real time. Peer *backend counts and GPU load* refresh on
 `peers.poll_interval` (10s by default) — lower it if you want the backends table
 to track remote hosts more tightly.
+
+### Fleet power
+
+The graph needs no configuration — it is drawn from the cluster snapshots the
+dashboard already receives, so it adds no polling and no extra request. A host
+appears in it as soon as that host can read its own power, which means giving one
+viiwork container per host access to the BMC:
+
+```yaml
+    devices:
+      - /dev/ipmi0:/dev/ipmi0
+```
+
+Hosts without it are counted in the "n/m hosts reporting" line but contribute no
+band, so a host that simply cannot be measured is never mistaken for a host
+drawing nothing. The RAM strip below needs no BMC at all — it reads
+`/proc/meminfo`, so every host appears in it.
+
+Three things are worth knowing before reading numbers off it:
+
+- **Wattage is per host, not per instance.** A host running several viiwork
+  instances (the multi-model layout) reports the same whole-host reading from
+  each of them. The view keys by hostname and counts each host once — give the
+  BMC device to one container per host and the arithmetic stays obvious.
+- **The window is since you opened the page**, capped at 720 readings. It is a
+  live view, not history: a reload starts it over, and a halt leaves a gap
+  rather than drawing a straight line across the pause. Durable per-host,
+  per-model kWh is a separate feature — see *Energy History* — and this graph is
+  not a substitute for it.
+- **±15% on absolute watts.** Compare hosts and watch trends freely; do not bill
+  anyone from it. The reading is whatever the board will answer with, and the
+  table names which one each host settled on (`dcmi`, `sdr:Power Supply`,
+  `sensor:<name>`).
+
+If a host has the BMC device but still reports nothing, the probe found no
+source that answers with a non-zero wattage — which is a real hardware answer,
+not a bug: some boards expose the `Power Supply` sensor class as presence flags
+with no watts. Startup logs name what was tried and what was adopted, and
+`power.source` pins it if `auto` picks the wrong one:
+
+```yaml
+power:
+  source: auto     # or dcmi | sdr | sensor:<NAME> | none
+```
+
+The RAM figures in the strip are approximate to about 1 GB — they are coarsened
+before being pushed so a value that moves every second cannot flood the live
+stream. `/v1/cluster` carries the exact numbers.
 
 ### Prompt and output history
 

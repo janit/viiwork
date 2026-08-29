@@ -126,8 +126,21 @@ function render(data) {
   const totalGPUs = localGPUCount + peerGPUCount;
   const healthyGPUs = localHealthyGPUs + peerHealthyGPUs;
 
-  const totalPower = (data.local.power_available ? data.local.power_watts : 0) +
-    peers.reduce((s, p) => s + (p.power_available ? p.power_watts : 0), 0);
+  // Node wattage is a whole-host measurement and a multi-model host runs one
+  // viiwork instance per model, each reporting the same BMC reading. Summing
+  // the payload as it arrives counts such a host once per instance -- three
+  // times over on a three-tenant host. Key by hostname, local first.
+  const wattsByHost = new Map();
+  const takeWatts = (host, watts, avail) => {
+    if (!host || !avail || !(watts > 0) || wattsByHost.has(host)) return;
+    wattsByHost.set(host, watts);
+  };
+  takeWatts(data.hostname, data.local.power_watts, data.local.power_available);
+  for (const p of peers) {
+    if (p.status !== 'reachable') continue;
+    takeWatts(p.hostname || p.addr, p.power_watts, p.power_available);
+  }
+  const totalPower = [...wattsByHost.values()].reduce((s, w) => s + w, 0);
   const clusterCost = data.cluster_cost_eur_per_hour || 0;
   const clusterCostToday = data.cluster_cost_today_eur || 0;
 
@@ -158,7 +171,7 @@ function render(data) {
     <div><span>Models:</span> <strong>${(data.models || []).length}</strong></div>
     <div><span>GPUs:</span> <strong>${healthyGPUs}/${totalGPUs} healthy</strong></div>
     <div><span>${instLabel}:</span> ${instValue}</div>
-    <div><span>Power:</span> <strong>${totalPower > 0 ? totalPower + 'W' : 'N/A'}</strong></div>
+    <div><span>Power:</span> <strong>${totalPower > 0 ? Math.round(totalPower) + 'W' : 'N/A'}</strong></div>
     <div><span>Cost:</span> <strong>${clusterCost > 0 ? clusterCost.toFixed(2) + ' EUR/h' : 'N/A'}</strong></div>
     <div><span>Today:</span> <strong>${clusterCostToday > 0 ? clusterCostToday.toFixed(2) + ' EUR' : 'N/A'}</strong></div>
   `;

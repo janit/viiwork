@@ -4,6 +4,8 @@ import (
 	"time"
 
 	"github.com/janit/viiwork/internal/activity"
+	"github.com/janit/viiwork/internal/energy"
+	"github.com/janit/viiwork/internal/power"
 )
 
 func Defaults() Config {
@@ -63,6 +65,16 @@ func Defaults() Config {
 		},
 		Cost: CostConfig{
 			Timezone: "Europe/Helsinki",
+		},
+		Power: PowerConfig{
+			Source: power.SourceAuto,
+		},
+		Energy: EnergyConfig{
+			Dir:            "/var/lib/viiwork/energy",
+			SampleInterval: Duration{30 * time.Second},
+			MinuteSlots:    energy.DefaultMinuteSlots,
+			HourSlots:      energy.DefaultHourSlots,
+			DaySlots:       energy.DefaultDaySlots,
 		},
 	}
 }

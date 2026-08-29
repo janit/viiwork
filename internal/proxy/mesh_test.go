@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -144,4 +145,73 @@ func TestMeshPageServed(t *testing.T) {
 	if strings.Contains(body, "http://") && !strings.Contains(body, "http://localhost") {
 		t.Error("mesh page references an absolute http:// URL; it must be same-origin only")
 	}
+}
+
+// Host memory used to be stripped from the pushed snapshot because an exact
+// figure moves every second and defeats change detection. It is coarsened
+// instead now that the mesh view draws a per-host memory strip. These pin the
+// property that made stripping necessary in the first place.
+func TestHostMemDeadbandSuppressesJitter(t *testing.T) {
+	// Measured on gb1: ~86 MB of movement per second on a 64 GB host. 21050
+	// sits deliberately astride a bucket boundary -- plain rounding flips
+	// there on every tick, which is the case a deadband exists for.
+	const totalMB = 64 * 1024
+	d := newHostMemDeadband()
+	snap := func(localMB, peerMB int64) []byte {
+		c := peer.ClusterResponse{
+			Local: peer.ClusterLocalInfo{HostMemTotalMB: totalMB, HostMemUsedMB: localMB},
+			Peers: []peer.ClusterPeerInfo{{Addr: "10.0.0.1:9101", HostMemTotalMB: totalMB, HostMemUsedMB: peerMB}},
+		}
+		d.apply(&c)
+		b, _ := json.Marshal(c)
+		return b
+	}
+	first := snap(38477, 21050)
+	for _, j := range []struct{ l, p int64 }{{38477 + 86, 21050 - 60}, {38473, 21110}, {38636, 20990}, {38016, 21301}} {
+		if b := snap(j.l, j.p); !bytes.Equal(first, b) {
+			t.Errorf("second-to-second jitter must not produce a new snapshot:\n %s\n %s", first, b)
+		}
+	}
+}
+
+func TestHostMemDeadbandKeepsRealMovement(t *testing.T) {
+	const totalMB = 64 * 1024
+	d := newHostMemDeadband()
+	step := int64(totalMB / hostMemBuckets)
+
+	first := d.value("host", 20000, totalMB)
+	// The published figure has to stay honest to within one bucket, or the
+	// strip draws a level the host was never at.
+	if off := absInt64(first - 20000); off > step/2 {
+		t.Errorf("published value drifted %d MB from the reading (step %d)", off, step)
+	}
+	if moved := d.value("host", 28000, totalMB); moved == first {
+		t.Error("an 8 GB swing must still change the snapshot")
+	} else if off := absInt64(moved - 28000); off > step/2 {
+		t.Errorf("published value drifted %d MB after moving (step %d)", off, step)
+	}
+}
+
+// Each host is held independently: one host moving must not drag another's
+// published level with it.
+func TestHostMemDeadbandIsPerHost(t *testing.T) {
+	const totalMB = 64 * 1024
+	d := newHostMemDeadband()
+	a := d.value("gb0", 20000, totalMB)
+	d.value("gb1", 50000, totalMB)
+	if got := d.value("gb0", 20050, totalMB); got != a {
+		t.Errorf("gb0 should be held at %d, got %d", a, got)
+	}
+}
+
+// A node that reports no total -- older peer, or /proc/meminfo unreadable --
+// must pass through untouched rather than being snapped against a zero step.
+func TestHostMemDeadbandUnknownTotal(t *testing.T) {
+	c := peer.ClusterResponse{
+		Local: peer.ClusterLocalInfo{HostMemUsedMB: 1234},
+		Peers: []peer.ClusterPeerInfo{{Addr: "a", HostMemTotalMB: 0, HostMemUsedMB: 0}},
+	}
+	newHostMemDeadband().apply(&c)
+	if c.Local.HostMemUsedMB != 1234 { t.Errorf("expected passthrough, got %d", c.Local.HostMemUsedMB) }
+	if c.Peers[0].HostMemUsedMB != 0 { t.Errorf("expected 0, got %d", c.Peers[0].HostMemUsedMB) }
 }
