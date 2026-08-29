@@ -59,6 +59,8 @@ type StatusResponse struct {
 	// multi-model host the other instances report nothing rather than a second
 	// copy of it.
 	EnergyKWh24h float64 `json:"energy_kwh_24h,omitempty"`
+	// EnergyKWh30d is the same over the rolling last 30 days.
+	EnergyKWh30d float64 `json:"energy_kwh_30d,omitempty"`
 }
 
 type BackendInfo struct {
@@ -123,6 +125,7 @@ type PeerState struct {
 	hostMemTotalMB  int64
 	hostMemUsedMB   int64
 	energyKWh24h    float64
+	energyKWh30d    float64
 	costAvailable  bool
 	costEURPerHour float64
 	costTodayEUR   float64
@@ -161,6 +164,7 @@ func (p *PeerState) Update(resp StatusResponse) {
 	p.hostMemTotalMB = resp.HostMemTotalMB
 	p.hostMemUsedMB = resp.HostMemUsedMB
 	p.energyKWh24h = resp.EnergyKWh24h
+	p.energyKWh30d = resp.EnergyKWh30d
 	p.costAvailable = resp.CostAvailable
 	p.costEURPerHour = resp.CostEURPerHour
 	p.costTodayEUR = resp.CostTodayEUR
@@ -181,6 +185,7 @@ func (p *PeerState) MarkUnreachable() {
 	p.hostMemTotalMB = 0
 	p.hostMemUsedMB = 0
 	p.energyKWh24h = 0
+	p.energyKWh30d = 0
 	p.costAvailable = false
 	p.costEURPerHour = 0
 	p.costTodayEUR = 0
@@ -245,6 +250,12 @@ func (p *PeerState) EnergyKWh24h() float64 {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.energyKWh24h
+}
+
+func (p *PeerState) EnergyKWh30d() float64 {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.energyKWh30d
 }
 
 func (p *PeerState) HostMem() (totalMB, usedMB int64) {

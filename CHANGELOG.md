@@ -1,5 +1,45 @@
 # Changelog
 
+## v1.5.0
+
+### Chassis power control from the mesh dashboard
+
+Each host in the Fleet Power table can carry a power button. **Off by default**,
+and there is no wildcard: only hosts named in `power.control.hosts` can be
+targeted, by the dashboard or by anything else.
+
+A running host is controlled in-band by the node living on it, with no
+credentials — the mesh forwards the request to whichever node owns the target.
+A host that is **powered off** has no node to ask, so reaching it needs BMC
+credentials; without them it can be switched off but not back on, and the
+button says so rather than failing. Hosts in the allowlist appear in the table
+even when they are absent from the mesh, which is exactly the state a
+powered-off host is in.
+
+Guards, none of which is authentication: the allowlist, a confirmation prompt
+naming host and action, and a node's refusal to power off its own host — that
+would destroy the answer to the request and the page asking it, so its button
+is disabled and the server refuses it too.
+
+### Ports on model groups
+
+Grouped by model, each backends group header lists the ports that model is
+served on. Not shown when grouped by host, where the ports belong to different
+models and listing them together would imply an addressing that does not exist.
+
+### A 30-day energy total alongside the 24-hour one
+
+The Fleet Power headline carries the rolling 30-day total at its far right,
+opposite the live reading, and each host's row now has `now`, `24h` and `30d`
+columns rather than one packed value. Two bare kWh figures side by side are
+indistinguishable, so the columns are named once in a header instead of
+repeating the window on every row.
+
+Published as `energy_kwh_30d` beside `energy_kwh_24h`. It reads the day tier —
+30 buckets against 720 hourly ones — and like the 24-hour figure it is a
+whole-host number: group by `hostname` rather than summing across instances. A
+store younger than a day reports the same value for both windows.
+
 ## v1.4.0
 
 ### Energy beside live power
@@ -239,6 +279,32 @@ Two implementation details that were easy to get wrong and are pinned by tests:
   already did this; this target was the odd one out.
 
 ## Upgrading
+
+### To v1.5.0
+
+Nothing changes on a node until you opt in. Power control is off by default and
+has no wildcard: it does nothing until you name hosts.
+
+```yaml
+power:
+  control:
+    enabled: true
+    hosts: [host-a, host-b]
+```
+
+That much controls hosts that are **running**, in-band, with no credentials. To
+reach a host that is **powered off** you also need a `bmc` block with
+credentials — see *Power control* in the README. Without it a host can be
+switched off but not back on, and the dashboard shows a disabled button saying
+so.
+
+Enabling it is a real grant: **the API authenticates nothing**, so anything that
+can reach a node can power off any host in that node's allowlist. Keep the list
+to the hosts you actually want reachable this way. A node still refuses to power
+off its own host, so a dashboard cannot kill the machine serving it.
+
+New consumer-visible fields: `power_control` on `/v1/cluster` (absent unless
+enabled), and `energy_kwh_30d` beside `energy_kwh_24h`.
 
 ### To v1.4.0
 

@@ -183,6 +183,44 @@ type PowerConfig struct {
 	//   none           disable power monitoring without probing
 	// Empty means auto.
 	Source string `yaml:"source"`
+
+	// Control turns on chassis power control. Off by default, and off is the
+	// only safe default: this is the one part of the API that can switch a
+	// machine off, on a service that authenticates nothing.
+	Control PowerControlConfig `yaml:"control"`
+}
+
+// PowerControlConfig gates chassis power control.
+//
+// Hosts is an allowlist and there is no wildcard. On an API with no
+// authentication, "someone wrote this hostname down" is the whole guard, so it
+// has to be deliberate rather than inferred from the mesh — a node should not
+// gain power over a machine merely by having been peered with it.
+type PowerControlConfig struct {
+	Enabled bool     `yaml:"enabled"`
+	Hosts   []string `yaml:"hosts"`
+	// BMC is the out-of-band path, needed only for hosts that must be
+	// controllable while powered off. A running host is reached in-band, with
+	// no credentials at all.
+	BMC BMCConfig `yaml:"bmc"`
+}
+
+type BMCConfig struct {
+	Username string `yaml:"username"`
+	// PasswordEnv names the environment variable holding the BMC password.
+	// Preferred over Password: viiwork.yaml is deployment-specific but still a
+	// file people paste into issues, and .env is already how the ENTSO-E key
+	// is supplied. Defaults to BMC_PASSWORD.
+	PasswordEnv string `yaml:"password_env"`
+	// Password is the inline fallback. Works, but puts a credential that can
+	// power off a machine into a config file.
+	Password string `yaml:"password"`
+	// Addresses maps hostname to BMC address. Optional per host: a node
+	// discovers its own BMC address in-band and publishes it, so a host seen
+	// online at least once needs no entry. Write one for a host that must be
+	// reachable before this node has ever seen it up -- and note these are
+	// often DHCP, so a written address can go stale while a learned one cannot.
+	Addresses map[string]string `yaml:"addresses"`
 }
 
 // EnergyConfig configures the durable kWh store. Disabled by default: it needs
@@ -268,6 +306,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Health.RespawnGrace.Duration < 0 {
 		return fmt.Errorf("health.respawn_grace must be >= 0")
+	}
+	if err := validatePowerControl(&c.Power.Control); err != nil {
+		return err
 	}
 	if err := validatePowerSource(c.Power.Source); err != nil {
 		return err
@@ -434,6 +475,25 @@ func (c *Config) ApplyOverrides(overrides map[string]string) error {
 			c.Balancer.LatencyWindow = Duration{d}
 		default:
 			return fmt.Errorf("unknown override key: %s", key)
+		}
+	}
+	return nil
+}
+
+// validatePowerControl fails startup on a power-control block that would not do
+// what it appears to say. Enabling control with no hosts listed is the case
+// worth catching: it looks armed and controls nothing, and the operator finds
+// out by clicking a button that refuses.
+func validatePowerControl(pc *PowerControlConfig) error {
+	if !pc.Enabled {
+		return nil
+	}
+	if len(pc.Hosts) == 0 {
+		return fmt.Errorf("power.control.enabled is true but power.control.hosts is empty: list the hosts that may be controlled")
+	}
+	for _, h := range pc.Hosts {
+		if strings.TrimSpace(h) == "" {
+			return fmt.Errorf("power.control.hosts contains an empty hostname")
 		}
 	}
 	return nil

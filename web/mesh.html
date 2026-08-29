@@ -121,6 +121,29 @@
   table.legend td.name { width: 1%; padding-right: 10px; }
   table.legend .src { color: var(--dimmer); font-size: 0.74rem; }
   table.legend .u { color: var(--dimmer); font-weight: 400; }
+  /* power control: recessive until hovered — this is the one control on the
+     page that can switch a machine off. */
+  table.legend td.pw { width: 1%; padding-left: 4px; }
+  .pwbtn { background: transparent; border: 1px solid var(--border); color: var(--dim);
+           border-radius: 5px; font: inherit; font-size: 0.7rem; font-family: var(--mono);
+           padding: 1px 8px; cursor: pointer; min-width: 34px; }
+  .pwbtn:hover:not(:disabled) { border-color: var(--bad); color: var(--bad); }
+  .pwbtn.on:hover:not(:disabled) { border-color: var(--ok); color: var(--ok); }
+  .pwbtn:disabled { opacity: 0.35; cursor: not-allowed; }
+  .pwbtn.busy { opacity: 0.5; cursor: progress; }
+  tr.offline td.name { color: var(--dimmer); }
+  tr.offline td.name::after { content: " off"; color: var(--bad); font-size: 0.68rem; }
+
+  table.legend td.val { text-align: right; font-family: var(--mono); white-space: nowrap; }
+  table.legend thead th { font-size: 0.66rem; letter-spacing: 0.08em; text-transform: uppercase;
+                          color: var(--dimmer); font-weight: 400; padding: 2px 12px 4px;
+                          border-bottom: 0; text-align: right; }
+  /* The month total sits at the far right of the headline, opposite the live
+     reading: same panel, opposite ends, so the eye is not asked to compare
+     two numbers of different meaning that happen to sit adjacent. */
+  .month { margin-left: auto; font-family: var(--mono); font-size: 0.82rem; color: var(--dim);
+           white-space: nowrap; align-self: baseline; }
+  .month b { font-weight: 600; color: var(--fg); }
 
   /* host RAM film strip — deliberately recessive: it sits under the power
      panel as context, not as a second headline. */
@@ -201,12 +224,18 @@
         <div class="powerhead">
           <span class="hero" id="powerNow">—<span class="unit">W</span></span>
           <span class="sub" id="powerSub"></span>
+          <span class="month" id="powerMonth"></span>
         </div>
         <div class="chartwrap">
           <canvas id="powerChart"></canvas>
           <div class="tip" id="powerTip" hidden></div>
         </div>
-        <table class="legend"><tbody id="powerLegend"></tbody></table>
+        <table class="legend">
+          <thead id="powerLegendHead" hidden><tr>
+            <th></th><th></th><th></th><th>now</th><th>24h</th><th>30d</th><th></th>
+          </tr></thead>
+          <tbody id="powerLegend"></tbody>
+        </table>
         <div class="strip" id="memStripWrap" hidden>
           <div class="cap">Host RAM</div>
           <div class="frames" id="memStrip"></div>
@@ -317,7 +346,15 @@ function flattenBackends(c) {
   const rows = [];
   if (!c) return rows;
 
-  const push = (b, host, model, gpus, reachable) => {
+  // The listen port is what someone needs to actually call a model, and the
+  // fleet's port scheme encodes which family an instance belongs to — so it is
+  // the one piece of addressing worth surfacing next to a model name.
+  const portOf = addr => {
+    const i = String(addr || "").lastIndexOf(":");
+    return i > 0 ? String(addr).slice(i + 1) : "";
+  };
+
+  const push = (b, host, model, gpus, reachable, port) => {
     // GPU util/VRAM are reported per physical GPU; a tensor-split backend spans
     // several, so aggregate: utilisation is the max (the group is only as idle
     // as its busiest card) and VRAM is summed.
@@ -335,17 +372,19 @@ function flattenBackends(c) {
       gpuHTML: gpuLabel(b), inFlight: b.in_flight || 0,
       rssMB: b.rss_mb || 0, util, vramUsed: used, vramTotal: total,
       slotCtx: b.slot_ctx || 0, tokDecoded: b.tok_decoded || 0,
-      reachable
+      reachable, port
     });
   };
 
   const localHost = c.hostname || "local";
-  (c.local?.backends || []).forEach(b => push(b, localHost, c.local?.model, c.local?.gpus, true));
+  const localPort = portOf(c.local?.listen_addr);
+  (c.local?.backends || []).forEach(b => push(b, localHost, c.local?.model, c.local?.gpus, true, localPort));
 
   (c.peers || []).forEach(p => {
     const host = p.hostname || p.addr;
     const reachable = p.status === "reachable";
-    (p.backends || []).forEach(b => push(b, host, (p.models || [])[0], p.gpus, reachable));
+    const port = portOf(p.addr);
+    (p.backends || []).forEach(b => push(b, host, (p.models || [])[0], p.gpus, reachable, port));
   });
   return rows;
 }
@@ -384,10 +423,18 @@ function renderBackends() {
     // models share a host, so printing it per model would imply a split the
     // BMC cannot make. That split is the energy store's job, not this table's.
     const w = groupMode === "host" ? hostWatts.get(name) : null;
+    // Ports on a model group, not a host group: a model is reached at a port,
+    // and the same model on several hosts usually shares one. Grouped by host
+    // the ports belong to different models and listing them together would
+    // imply an addressing that does not exist.
+    const ports = groupMode === "model"
+      ? [...new Set(list.map(r => r.port).filter(Boolean))].sort((a, b) => a - b)
+      : [];
     html += `<tr class="grouphead"><td colspan="8">${esc(name)}` +
             `<span class="cnt"> · ${list.length} backend${list.length === 1 ? "" : "s"}` +
             `${busy ? " · " + busy + " in flight" : ""}` +
-            `${w ? " · " + esc(fmtW(w)) + " W" : ""}</span></td></tr>`;
+            `${w ? " · " + esc(fmtW(w)) + " W" : ""}` +
+            `${ports.length ? " · :" + ports.map(esc).join(" :") : ""}</span></td></tr>`;
     for (const r of list) {
       const ctxFrac = r.slotCtx ? r.tokDecoded / r.slotCtx : 0;
       const vramFrac = r.vramTotal ? r.vramUsed / r.vramTotal : 0;
@@ -606,6 +653,79 @@ function renderTotals() {
 }
 
 // ---------------------------------------------------------------------------
+// Chassis power control
+//
+// Rows come from the union of "hosts reporting power" and the node's
+// power.control allowlist, because the host an operator most wants to act on is
+// the one that is off — and a host that is off is absent from the mesh
+// entirely, so the allowlist is the only place its name still exists.
+//
+// The button is contextual rather than a toggle: a host in the mesh is up and
+// offers "off", a host missing from it offers "on". The action is named on the
+// button so what is about to happen is legible before the confirm, not only
+// inside it.
+// ---------------------------------------------------------------------------
+function powerControlInfo() {
+  const pc = cluster && cluster.power_control;
+  return (pc && Array.isArray(pc.hosts) && pc.hosts.length) ? pc : null;
+}
+
+async function sendPower(host, action, btn) {
+  // Native confirm on purpose: this switches a machine off, and a bespoke
+  // dialog is one CSS mistake away from being dismissed by accident.
+  const verb = action === "on" ? "Power ON" : "Power OFF";
+  if (!confirm(`${verb} ${host}?\n\nThis acts on the physical machine through its BMC.`)) return;
+
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.classList.add("busy");
+  btn.textContent = "…";
+  try {
+    const resp = await fetch("/v1/mesh/power", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ host, action })
+    });
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok || body.error) {
+      alert(`${host}: ${body.error || ("HTTP " + resp.status)}`);
+    }
+  } catch (e) {
+    alert(`${host}: ${e}`);
+  } finally {
+    btn.classList.remove("busy");
+    btn.textContent = label;
+    // Left disabled: the mesh takes a poll interval to reflect the new state,
+    // and re-arming instantly invites a second click on a stale label.
+    setTimeout(() => { btn.disabled = false; }, 5000);
+  }
+}
+
+function powerButton(host, isOnline, pc) {
+  const btn = document.createElement("button");
+  btn.className = "pwbtn" + (isOnline ? "" : " on");
+  const action = isOnline ? "off" : "on";
+  btn.textContent = action;
+
+  const self = cluster && cluster.hostname;
+  if (self && host.toLowerCase() === String(self).toLowerCase()) {
+    // The node serving this page will not act on its own machine — the server
+    // refuses it too, this is just the honest version of that refusal.
+    btn.disabled = true;
+    btn.title = `${host} is serving this dashboard; open another node's /mesh to control it`;
+    return btn;
+  }
+  if (!isOnline && !(pc.out_of_band || []).some(h => h.toLowerCase() === host.toLowerCase())) {
+    btn.disabled = true;
+    btn.title = `${host} is off and has no out-of-band BMC configured, so it cannot be reached`;
+    return btn;
+  }
+  btn.title = `${action === "on" ? "Power on" : "Power off"} ${host}`;
+  btn.onclick = () => sendPower(host, action, btn);
+  return btn;
+}
+
+// ---------------------------------------------------------------------------
 // Fleet power
 //
 // Samples come off the cluster snapshots the stream already pushes, so this
@@ -664,16 +784,17 @@ function hostPower(c) {
 // nothing at all here rather than a second copy. Keying by host is what keeps
 // that true if a second instance is ever enabled by mistake.
 function hostEnergy(c) {
-  const seen = new Map();
-  const take = (host, kwh) => {
-    if (!host || !(kwh > 0) || seen.has(host)) return;
-    seen.set(host, kwh);
+  const seen = new Map();   // host -> {d1, d30}
+  const take = (host, d1, d30) => {
+    if (!host || seen.has(host)) return;
+    if (!(d1 > 0) && !(d30 > 0)) return;
+    seen.set(host, { d1: d1 || 0, d30: d30 || 0 });
   };
   if (c) {
-    take(c.hostname, c.local && c.local.energy_kwh_24h);
+    take(c.hostname, c.local && c.local.energy_kwh_24h, c.local && c.local.energy_kwh_30d);
     for (const p of (c.peers || [])) {
       if (p.status !== "reachable") continue;
-      take(p.hostname || p.addr, p.energy_kwh_24h);
+      take(p.hostname || p.addr, p.energy_kwh_24h, p.energy_kwh_30d);
     }
   }
   return seen;
@@ -729,8 +850,8 @@ function renderPowerNumbers() {
   el.appendChild(document.createTextNode(total > 0 ? fmtW(total) : "—"));
   el.appendChild(unit("W"));
 
-  let kwh = 0;
-  for (const v of energy.values()) kwh += v;
+  let kwh = 0, kwh30 = 0;
+  for (const v of energy.values()) { kwh += v.d1; kwh30 += v.d30; }
   if (kwh > 0) {
     el.appendChild(unit(" / "));
     el.appendChild(document.createTextNode(kwh.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })));
@@ -750,17 +871,62 @@ function renderPowerNumbers() {
     ? "across the mesh"
     : "no host is reporting power — needs /dev/ipmi0 on the container";
 
+  const month = $("powerMonth");
+  month.textContent = "";
+  if (kwh30 > 0) {
+    const b = document.createElement("b");
+    b.textContent = kwh30.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+    month.appendChild(b);
+    month.appendChild(document.createTextNode(" kWh (30d)"));
+  }
+
   // The legend is also the table view: every series named, with its current
   // value, reachable without hovering the chart.
   const body = $("powerLegend");
   body.textContent = "";
-  for (const h of hosts) {
+  $("powerLegendHead").hidden = !(kwh > 0 || kwh30 > 0);
+
+  // Three columns rather than one packed cell: two bare kWh figures side by
+  // side are indistinguishable, and labelling each inline repeats the window on
+  // every row. The header names them once.
+  const fmtKWh = v => v.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  const cell = (v, unitText) => {
+    const td = document.createElement("td");
+    td.className = "val";
+    // A host with the BMC but no energy store shows a dash rather than a zero:
+    // the store is opt-in per host, so its absence is a configuration fact,
+    // not a reading of nothing.
+    if (v === null) { td.textContent = "—"; td.classList.add("src"); return td; }
+    td.appendChild(document.createTextNode(v));
+    const u = document.createElement("span");
+    u.className = "u";
+    u.textContent = " " + unitText;
+    td.appendChild(u);
+    return td;
+  };
+
+  // Rows are the union of hosts reporting power and hosts this node may
+  // control. A powered-off host reports nothing and is absent from the mesh, so
+  // without the allowlist it would have no row at all — and no way back on.
+  const pc = powerControlInfo();
+  const onlineHosts = meshHosts(cluster);
+  const rows = hosts.map(h => ({ ...h, online: true }));
+  if (pc) {
+    for (const name of pc.hosts) {
+      if (rows.some(r => r.host.toLowerCase() === name.toLowerCase())) continue;
+      rows.push({ host: name, watts: null, source: "", online: onlineHosts.has(name) });
+    }
+    rows.sort((a, b) => a.host.localeCompare(b.host, undefined, { numeric: true }));
+  }
+
+  for (const h of rows) {
+    const e = energy.get(h.host);
     const tr = document.createElement("tr");
     const sw = document.createElement("td");
     sw.className = "sw";
     const dot = document.createElement("span");
     dot.className = "swatch";
-    dot.style.background = colorFor(h.host);
+    dot.style.background = h.watts === null ? "var(--dimmer)" : colorFor(h.host);
     sw.appendChild(dot);
     const name = document.createElement("td");
     name.className = "name";
@@ -768,24 +934,19 @@ function renderPowerNumbers() {
     const src = document.createElement("td");
     src.className = "src";
     src.textContent = h.source;
-    // Same pairing as the headline: draw now, energy over the same 24h window
-    // the headline names. A host with the
-    // BMC but no energy store shows watts alone rather than a placeholder —
-    // the store is opt-in per host, so its absence is a configuration fact,
-    // not a missing reading.
-    const val = document.createElement("td");
-    val.className = "num";
-    val.style.textAlign = "right";
-    const u = t => { const e = document.createElement("span"); e.className = "u"; e.textContent = t; return e; };
-    val.appendChild(document.createTextNode(fmtW(h.watts)));
-    val.appendChild(u(" W"));
-    const kwh = energy.get(h.host);
-    if (kwh > 0) {
-      val.appendChild(u(" / "));
-      val.appendChild(document.createTextNode(kwh.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })));
-      val.appendChild(u(" kWh"));
+    const val = h.watts === null ? cell(null) : cell(fmtW(h.watts), "W");
+    const c24 = (e && e.d1 > 0) ? cell(fmtKWh(e.d1), "kWh") : cell(null);
+    const c30 = (e && e.d30 > 0) ? cell(fmtKWh(e.d30), "kWh") : cell(null);
+    tr.append(sw, name, src, val, c24, c30);
+    if (pc) {
+      const td = document.createElement("td");
+      td.className = "pw";
+      if (pc.hosts.some(x => x.toLowerCase() === h.host.toLowerCase())) {
+        td.appendChild(powerButton(h.host, h.online, pc));
+      }
+      tr.append(td);
     }
-    tr.append(sw, name, src, val);
+    if (!h.online) tr.className = "offline";
     body.appendChild(tr);
   }
 }

@@ -33,6 +33,7 @@ type PowerReader interface {
 // enabled simply supplies nothing.
 type EnergyReader interface {
 	KWh24h() float64
+	KWh30d() float64
 }
 
 type CostReader interface {
@@ -198,8 +199,21 @@ type ClusterResponse struct {
 	Local                 ClusterLocalInfo  `json:"local"`
 	Peers                 []ClusterPeerInfo `json:"peers"`
 	Models                []string          `json:"models"`
+	// PowerControl lists the hosts this node will accept chassis commands for.
+	// Published because the dashboard has to render a row for a host that is
+	// powered off — which is precisely a host absent from the mesh, so the
+	// allowlist is the only place its name still exists.
+	PowerControl          *PowerControlInfo `json:"power_control,omitempty"`
 	ClusterCostEURPerHour float64           `json:"cluster_cost_eur_per_hour,omitempty"`
 	ClusterCostTodayEUR   float64           `json:"cluster_cost_today_eur,omitempty"`
+}
+
+type PowerControlInfo struct {
+	Hosts []string `json:"hosts"`
+	// OutOfBand lists the subset reachable while powered off. A host outside it
+	// can be switched off but not back on, and the view should say so rather
+	// than offering a button that will fail.
+	OutOfBand []string `json:"out_of_band,omitempty"`
 }
 
 type ClusterLocalInfo struct {
@@ -217,6 +231,7 @@ type ClusterLocalInfo struct {
 	// Whole-host like power_watts: group by hostname rather than summing
 	// across instances.
 	EnergyKWh24h   float64              `json:"energy_kwh_24h,omitempty"`
+	EnergyKWh30d   float64              `json:"energy_kwh_30d,omitempty"`
 	Backends       []ClusterBackendInfo `json:"backends"`
 	CostAvailable  bool                 `json:"cost_available,omitempty"`
 	CostEURPerHour float64              `json:"cost_eur_per_hour,omitempty"`
@@ -258,6 +273,7 @@ type ClusterPeerInfo struct {
 	PowerAvailable  bool                 `json:"power_available,omitempty"`
 	PowerSource     string               `json:"power_source,omitempty"`
 	EnergyKWh24h    float64              `json:"energy_kwh_24h,omitempty"`
+	EnergyKWh30d    float64              `json:"energy_kwh_30d,omitempty"`
 	HostMemTotalMB  int64                `json:"host_mem_total_mb,omitempty"`
 	HostMemUsedMB   int64                `json:"host_mem_used_mb,omitempty"`
 	CostAvailable   bool                 `json:"cost_available,omitempty"`
@@ -322,6 +338,7 @@ func (r *Registry) ClusterState() ClusterResponse {
 			info.PowerSource = p.PowerSource()
 			info.HostMemTotalMB, info.HostMemUsedMB = p.HostMem()
 			info.EnergyKWh24h = p.EnergyKWh24h()
+			info.EnergyKWh30d = p.EnergyKWh30d()
 			info.CostAvailable = p.CostAvailable()
 			info.CostEURPerHour = p.CostEURPerHour()
 			info.CostTodayEUR = p.CostTodayEUR()

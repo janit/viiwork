@@ -18,6 +18,7 @@ import (
 	"github.com/janit/viiwork/internal/logging"
 	"github.com/janit/viiwork/internal/peer"
 	"github.com/janit/viiwork/internal/pipeline"
+	"github.com/janit/viiwork/internal/power"
 	"github.com/janit/viiwork/web"
 )
 
@@ -38,6 +39,7 @@ type Handler struct {
 	pipelineExecutor   *pipeline.Executor
 	evictOnHardFailure bool
 	cors               *CORS
+	powerCtl           *power.Controller
 }
 
 // NewHandler creates a standalone handler (no mesh). Preserved for backward compatibility.
@@ -65,6 +67,12 @@ func (h *Handler) SetMetrics(history *gpu.History, broadcaster *gpu.Broadcaster,
 	h.metricsBroadcaster = broadcaster
 	h.metricsAvailable = available
 }
+
+// SetPowerControl attaches the chassis power controller. Left unset, both
+// power endpoints answer 503 rather than 404: the routes exist on every build,
+// so a consumer can tell "this node will not do that" from "this node is too
+// old to know what you mean".
+func (h *Handler) SetPowerControl(c *power.Controller) { h.powerCtl = c }
 
 func (h *Handler) SetActivity(actLog *activity.Log) {
 	h.activity = actLog
@@ -155,6 +163,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handlePromptLookup(w, r)
 	case r.URL.Path == "/v1/mesh/prompt" && r.Method == "GET":
 		h.handleMeshPrompt(w, r)
+	case r.URL.Path == "/v1/power" && r.Method == "POST":
+		h.handlePower(w, r)
+	case r.URL.Path == "/v1/mesh/power" && r.Method == "POST":
+		h.handleMeshPower(w, r)
 	case r.URL.Path == "/v1/embeddings" && r.Method == "POST":
 		h.handleProxy(w, r)
 	default:

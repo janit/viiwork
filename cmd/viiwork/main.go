@@ -148,6 +148,10 @@ func main() {
 	reg.SetPromptHistory(actLog.PromptHistoryMax())
 	handler := proxy.NewMeshHandler(bal, reg, cfg.Balancer.LatencyWindow.Duration)
 	handler.SetMetrics(hist, bcast, collector.Available)
+	if ctl := newPowerController(cfg, hostname); ctl != nil {
+		handler.SetPowerControl(ctl)
+		proxy.SetStatusPowerControl(ctl)
+	}
 	// Publish GPU load to peers as well as locally. Without this the /mesh view
 	// can show GPU% for this node only, because peers learn everything they know
 	// about us from /v1/status.
@@ -302,3 +306,53 @@ func startEnergyRecorder(ctx context.Context, cfg *config.Config, hist *gpu.Hist
 		cfg.Energy.SampleInterval.Duration, len(gpuIDs))
 }
 
+// newPowerController builds the chassis power controller, or nil when power
+// control is not configured. Nil rather than a disabled instance so the
+// endpoints answer "not enabled on this node" from one check.
+func newPowerController(cfg *config.Config, hostname string) *power.Controller {
+	pc := cfg.Power.Control
+	if !pc.Enabled {
+		return nil
+	}
+
+	pass := pc.BMC.Password
+	if pass == "" {
+		env := pc.BMC.PasswordEnv
+		if env == "" {
+			env = "BMC_PASSWORD"
+		}
+		pass = os.Getenv(env)
+	}
+
+	bmcs := make(map[string]power.BMC, len(pc.BMC.Addresses))
+	for host, addr := range pc.BMC.Addresses {
+		bmcs[host] = power.BMC{Addr: addr, Username: pc.BMC.Username, Password: pass}
+	}
+	// A host named for control but given no address still gets an entry, so it
+	// can pick up the address it reports for itself while it is up. Written
+	// addresses go stale here -- these BMCs are on DHCP.
+	for _, host := range pc.Hosts {
+		if _, ok := bmcs[host]; !ok {
+			bmcs[host] = power.BMC{Username: pc.BMC.Username, Password: pass}
+		}
+	}
+
+	ctl := power.NewController(power.ControlConfig{
+		Enabled: true, Hosts: pc.Hosts, BMCs: bmcs,
+	}, hostname)
+
+	// Learn this host's own BMC address and publish it, so peers can reach it
+	// once this node is no longer running to be asked.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if addr := power.LocalBMCAddr(ctx); addr != "" {
+		ctl.LearnBMCAddr(hostname, addr)
+		log.Printf("[power] chassis control enabled for %v (own BMC at %s)", pc.Hosts, addr)
+	} else {
+		log.Printf("[power] chassis control enabled for %v (own BMC address unknown)", pc.Hosts)
+	}
+	if pass == "" {
+		log.Printf("[power] no BMC password set: hosts that are powered off cannot be reached (set BMC_PASSWORD)")
+	}
+	return ctl
+}
