@@ -43,6 +43,16 @@ var statusGPUSource gpuLatest
 // rocm-smi simply reports no GPUs.
 func SetStatusGPUSource(g gpuLatest) { statusGPUSource = g }
 
+// statusEnergySource is the durable kWh store, attached the same way and for
+// the same reason: the store is opened after the backends are up, long after
+// the status handler is built.
+var statusEnergySource peer.EnergyReader
+
+// SetStatusEnergySource attaches the energy store that /v1/status and
+// /v1/cluster publish. Safe to leave unset — the field is omitempty, and the
+// store runs on one instance per host, so most nodes report nothing here.
+func SetStatusEnergySource(e peer.EnergyReader) { statusEnergySource = e }
+
 func NewStatusHandler(nodeID string, localModel string, backends []*balancer.BackendState, power peer.PowerReader, cost peer.CostReader, loc StatusLocation) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := peer.StatusResponse{
@@ -56,6 +66,9 @@ func NewStatusHandler(nodeID string, localModel string, backends []*balancer.Bac
 		// Host RAM travels with the status payload so any node can render
 		// memory pressure for every host, the same way GPU load already does.
 		resp.HostMemTotalMB, resp.HostMemUsedMB = readHostMemory()
+		if statusEnergySource != nil {
+			resp.EnergyKWh24h = statusEnergySource.KWh24h()
+		}
 		for _, b := range backends {
 			var gpuIDs []int
 			if len(b.GPUIDs) > 0 {
@@ -113,6 +126,12 @@ func BuildClusterState(reg *peer.Registry) peer.ClusterResponse {
 	totalMB, usedMB := readHostMemory()
 	state.Local.HostMemTotalMB = totalMB
 	state.Local.HostMemUsedMB = usedMB
+	// Local energy is filled here rather than in Registry.ClusterState because
+	// the store is wired to this package, not to the registry; peers' values
+	// arrive through their own /v1/status and are set there.
+	if statusEnergySource != nil {
+		state.Local.EnergyKWh24h = statusEnergySource.KWh24h()
+	}
 	if statusGPUSource != nil {
 		for _, g := range statusGPUSource.Latest() {
 			state.Local.GPUs = append(state.Local.GPUs, peer.GPUInfo{

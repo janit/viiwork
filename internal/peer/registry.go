@@ -28,6 +28,13 @@ type PowerReader interface {
 	Available() bool
 }
 
+// EnergyReader is the durable kWh store, as the API layer needs it: one
+// rolling figure. Kept narrow like PowerReader so a node without the store
+// enabled simply supplies nothing.
+type EnergyReader interface {
+	KWh24h() float64
+}
+
 type CostReader interface {
 	Available() bool
 	EURPerHour() float64
@@ -205,6 +212,11 @@ type ClusterLocalInfo struct {
 	// "sdr:Power Supply", "sensor:PSU1"). Board-specific and probed at
 	// startup, so the mesh view shows which one a host actually adopted.
 	PowerSource string `json:"power_source,omitempty"`
+	// EnergyKWh24h is whole-node energy over the rolling last 24 hours, from
+	// the durable store, which runs on exactly one instance per host.
+	// Whole-host like power_watts: group by hostname rather than summing
+	// across instances.
+	EnergyKWh24h   float64              `json:"energy_kwh_24h,omitempty"`
 	Backends       []ClusterBackendInfo `json:"backends"`
 	CostAvailable  bool                 `json:"cost_available,omitempty"`
 	CostEURPerHour float64              `json:"cost_eur_per_hour,omitempty"`
@@ -245,6 +257,7 @@ type ClusterPeerInfo struct {
 	PowerWatts      float64              `json:"power_watts,omitempty"`
 	PowerAvailable  bool                 `json:"power_available,omitempty"`
 	PowerSource     string               `json:"power_source,omitempty"`
+	EnergyKWh24h    float64              `json:"energy_kwh_24h,omitempty"`
 	HostMemTotalMB  int64                `json:"host_mem_total_mb,omitempty"`
 	HostMemUsedMB   int64                `json:"host_mem_used_mb,omitempty"`
 	CostAvailable   bool                 `json:"cost_available,omitempty"`
@@ -308,6 +321,7 @@ func (r *Registry) ClusterState() ClusterResponse {
 			info.PowerAvailable = p.PowerAvailable()
 			info.PowerSource = p.PowerSource()
 			info.HostMemTotalMB, info.HostMemUsedMB = p.HostMem()
+			info.EnergyKWh24h = p.EnergyKWh24h()
 			info.CostAvailable = p.CostAvailable()
 			info.CostEURPerHour = p.CostEURPerHour()
 			info.CostTodayEUR = p.CostTodayEUR()

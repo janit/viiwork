@@ -103,6 +103,7 @@
   .powerhead { display: flex; align-items: baseline; gap: 10px; padding: 10px 12px 2px; }
   .hero { font-family: var(--mono); font-size: 1.7rem; font-weight: 600; letter-spacing: -0.02em; line-height: 1.1; }
   .hero .unit { font-size: 0.85rem; font-weight: 400; color: var(--dim); margin-left: 3px; }
+  .hero .unit + .unit { margin-left: 0; }
   .chartwrap { position: relative; padding: 2px 12px 8px; }
   #powerChart { display: block; width: 100%; height: 140px; }
   .tip { position: absolute; z-index: 5; pointer-events: none; background: rgba(13,17,23,0.96);
@@ -119,6 +120,7 @@
   table.legend td.sw { width: 1%; padding-right: 0; }
   table.legend td.name { width: 1%; padding-right: 10px; }
   table.legend .src { color: var(--dimmer); font-size: 0.74rem; }
+  table.legend .u { color: var(--dimmer); font-weight: 400; }
 
   /* host RAM film strip — deliberately recessive: it sits under the power
      panel as context, not as a second headline. */
@@ -657,6 +659,26 @@ function hostPower(c) {
   return [...seen.values()].sort((a, b) => a.host.localeCompare(b.host, undefined, { numeric: true }));
 }
 
+// Rolling 24h energy, deduplicated the same way and for a stronger reason: the
+// durable store runs on exactly one instance per host, so the others report
+// nothing at all here rather than a second copy. Keying by host is what keeps
+// that true if a second instance is ever enabled by mistake.
+function hostEnergy(c) {
+  const seen = new Map();
+  const take = (host, kwh) => {
+    if (!host || !(kwh > 0) || seen.has(host)) return;
+    seen.set(host, kwh);
+  };
+  if (c) {
+    take(c.hostname, c.local && c.local.energy_kwh_24h);
+    for (const p of (c.peers || [])) {
+      if (p.status !== "reachable") continue;
+      take(p.hostname || p.addr, p.energy_kwh_24h);
+    }
+  }
+  return seen;
+}
+
 // Distinct hosts in the mesh, whether or not they can read power. The
 // difference between this and hostPower() is what the "n of m reporting" line
 // exists to show: a host with no /dev/ipmi0 is invisible to the graph and
@@ -695,12 +717,37 @@ const fmtW = w => Math.round(w).toLocaleString();
 function renderPowerNumbers() {
   const hosts = hostPower(cluster);
   const all = meshHosts(cluster);
+  const energy = hostEnergy(cluster);
   const total = hosts.reduce((a, h) => a + h.watts, 0);
 
-  $("powerNow").innerHTML = (total > 0 ? esc(fmtW(total)) : "—") + '<span class="unit">W</span>';
-  $("powerScope").textContent = all.size ? `${hosts.length}/${all.size} hosts reporting` : "";
+  // Live draw and the last 24 hours on one line: the watts answer "what is it
+  // doing now", the kWh "what has it been doing", and they are read together.
+  // Built as nodes rather than markup because both are numbers off the wire.
+  const el = $("powerNow");
+  el.textContent = "";
+  const unit = (t) => { const u = document.createElement("span"); u.className = "unit"; u.textContent = t; return u; };
+  el.appendChild(document.createTextNode(total > 0 ? fmtW(total) : "—"));
+  el.appendChild(unit("W"));
+
+  let kwh = 0;
+  for (const v of energy.values()) kwh += v;
+  if (kwh > 0) {
+    el.appendChild(unit(" / "));
+    el.appendChild(document.createTextNode(kwh.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })));
+    // The window is named once, here. The legend rows beneath sit inside the
+    // same card and inherit it; repeating "(24h)" on every row is noise.
+    el.appendChild(unit("kWh (24h)"));
+  }
+  const energyHosts = energy.size;
+  let scope = all.size ? `${hosts.length}/${all.size} hosts reporting` : "";
+  if (scope && energyHosts && energyHosts !== hosts.length) {
+    scope += ` · kWh from ${energyHosts}`;
+  }
+  $("powerScope").textContent = scope;
+  // Not "live" any more: half the line is a cumulative total, and calling it
+  // live would misread the kWh as an instantaneous figure.
   $("powerSub").textContent = hosts.length
-    ? "across the mesh, live"
+    ? "across the mesh"
     : "no host is reporting power — needs /dev/ipmi0 on the container";
 
   // The legend is also the table view: every series named, with its current
@@ -721,10 +768,23 @@ function renderPowerNumbers() {
     const src = document.createElement("td");
     src.className = "src";
     src.textContent = h.source;
+    // Same pairing as the headline: draw now, energy over the same 24h window
+    // the headline names. A host with the
+    // BMC but no energy store shows watts alone rather than a placeholder —
+    // the store is opt-in per host, so its absence is a configuration fact,
+    // not a missing reading.
     const val = document.createElement("td");
     val.className = "num";
     val.style.textAlign = "right";
-    val.textContent = fmtW(h.watts) + " W";
+    const u = t => { const e = document.createElement("span"); e.className = "u"; e.textContent = t; return e; };
+    val.appendChild(document.createTextNode(fmtW(h.watts)));
+    val.appendChild(u(" W"));
+    const kwh = energy.get(h.host);
+    if (kwh > 0) {
+      val.appendChild(u(" / "));
+      val.appendChild(document.createTextNode(kwh.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })));
+      val.appendChild(u(" kWh"));
+    }
     tr.append(sw, name, src, val);
     body.appendChild(tr);
   }

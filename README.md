@@ -228,7 +228,10 @@ whichever host you can reach and you see the whole mesh:
   *Prompt and output history* below.
 - **Fleet totals** — GPUs busy, VRAM and host RAM across the whole mesh, as
   three plain readings at the top of the page
-- **Fleet Power** — live wattage for the whole mesh: a headline total, a stacked
+- **Fleet Power** — live wattage and the last 24 hours' energy for the whole
+  mesh (`1,751 W / 12.4 kWh (24h)`), then the same pair per host. The kWh half
+  needs the energy store enabled — see *Energy History* — and the header says how many hosts it
+  covers when that is fewer than are reporting power. Live wattage for the mesh: a headline total, a stacked
   graph of the last few hundred readings with one band per host, and a table
   naming each host's draw and which IPMI reading it came from. See *Fleet power*
   below.

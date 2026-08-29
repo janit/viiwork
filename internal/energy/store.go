@@ -369,6 +369,24 @@ func (s *Store) ByModel(tier Tier, from, to time.Time) map[string]float64 {
 }
 
 // NodeKWh totals measured node energy over a window.
+// KWh24h is whole-node energy over the rolling last 24 hours.
+//
+// Read from the minute tier because that ring *is* 24 hours: 1440 one-minute
+// slots, so the window and the retention are the same span and no record is
+// counted twice or missed at the edge. Reads filter by timestamp, so a slot
+// still holding yesterday's value at the same clock minute is ignored rather
+// than mistaken for today's.
+//
+// The window slides continuously, but the value does not: buckets are
+// minute-aligned, so one leaves the window and one is written about once a
+// minute each. That matters because this rides on the pushed cluster snapshot,
+// which is suppressed when unchanged — a figure recomputed from `now` that
+// changed every second would defeat that, the way host memory once did.
+func (s *Store) KWh24h() float64 {
+	now := time.Now()
+	return s.NodeKWh(TierMinute, now.Add(-24*time.Hour), now.Add(time.Minute))
+}
+
 func (s *Store) NodeKWh(tier Tier, from, to time.Time) float64 {
 	var total float64
 	for _, rec := range s.ReadNode(tier, from, to) {

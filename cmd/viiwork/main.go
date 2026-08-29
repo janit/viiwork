@@ -289,6 +289,10 @@ func startEnergyRecorder(ctx context.Context, cfg *config.Config, hist *gpu.Hist
 		return out
 	}
 
+	// Publish the cumulative total on /v1/status and /v1/cluster, so the mesh
+	// view can show kWh beside live watts without a second endpoint to poll.
+	proxy.SetStatusEnergySource(store)
+
 	recorder := energy.NewRecorder(store, cfg.Energy.SampleInterval.Duration, nodeWatts, readings, nil)
 	go func() {
 		recorder.Run(ctx)
