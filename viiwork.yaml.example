@@ -137,6 +137,38 @@ balancer:
 # power:
 #   source: auto
 
+# Chassis power control (v1.5.0+). OFF by default, and off is the only safe
+# default: this is the one part of the API that can switch a machine off, on a
+# service that authenticates nothing.
+#
+# hosts is an allowlist and there is no wildcard. A host absent from it cannot
+# be targeted at all -- being peered with a node is not consent to switch its
+# machine off. The node serving a dashboard also refuses to act on its own
+# host, so a page cannot power off the machine answering it.
+#
+# A running host is reached IN-BAND through the node living on it (/dev/ipmi0,
+# no credentials). The bmc block is only needed for hosts that must be
+# controllable while POWERED OFF -- there is no node there to ask, so the BMC
+# has to be reached over the network. Without it, a host can be switched off
+# but not back on, and the dashboard says so instead of offering a button that
+# fails.
+#
+# Addresses are optional per host: a node discovers its own BMC address in-band
+# and shares it, so a host seen online at least once needs no entry. Write one
+# only for a host that must be reachable before this node has ever seen it up
+# -- and note these are often DHCP, so a written address can go stale while a
+# learned one cannot.
+#
+# power:
+#   control:
+#     enabled: true
+#     hosts: [gb0, gb1, gb2, gb3, gb4]
+#     bmc:
+#       username: admin
+#       password_env: BMC_PASSWORD   # set it in .env, not here
+#       addresses:
+#         gb0: 192.168.1.65
+
 # Durable energy history: per-host kWh and a per-model split of it.
 #
 # Needs a volume that outlives the container, plus /dev/ipmi0 for node power and

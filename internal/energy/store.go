@@ -387,6 +387,20 @@ func (s *Store) KWh24h() float64 {
 	return s.NodeKWh(TierMinute, now.Add(-24*time.Hour), now.Add(time.Minute))
 }
 
+// KWh30d is whole-node energy over the rolling last 30 days.
+//
+// Read from the day tier, not the hour tier: 30 days is 720 hourly buckets
+// against 30 daily ones, and nothing here needs the resolution. The current,
+// partly elapsed day is included — roll-ups rewrite a bucket's own slot rather
+// than appending, so today's is already there and already current.
+//
+// Changes once a day plus once per roll-up of the current day, so like KWh24h
+// it does not trouble the pushed snapshot's change detection.
+func (s *Store) KWh30d() float64 {
+	now := time.Now()
+	return s.NodeKWh(TierDay, now.AddDate(0, 0, -30), now.Add(time.Minute))
+}
+
 func (s *Store) NodeKWh(tier Tier, from, to time.Time) float64 {
 	var total float64
 	for _, rec := range s.ReadNode(tier, from, to) {

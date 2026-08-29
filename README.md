@@ -229,7 +229,8 @@ whichever host you can reach and you see the whole mesh:
 - **Fleet totals** — GPUs busy, VRAM and host RAM across the whole mesh, as
   three plain readings at the top of the page
 - **Fleet Power** — live wattage and the last 24 hours' energy for the whole
-  mesh (`1,751 W / 12.4 kWh (24h)`), then the same pair per host. The kWh half
+  mesh (`1,751 W / 12.4 kWh (24h)`), with the 30-day total at the far right,
+  then all three per host. The kWh half
   needs the energy store enabled — see *Energy History* — and the header says how many hosts it
   covers when that is fewer than are reporting power. Live wattage for the mesh: a headline total, a stacked
   graph of the last few hundred readings with one band per host, and a table
@@ -239,7 +240,8 @@ whichever host you can reach and you see the whole mesh:
   scaled 0 to that host's total so the height reads as memory pressure. Hover a
   frame for the absolute figures.
 - **Backends** — GPU, host, in-flight, RSS, GPU%, VRAM and context use for every
-  host, grouped by model or by host. Grouped by host, each host header also
+  host, grouped by model or by host. Grouped by model, each group header lists
+  the ports that model is served on. Grouped by host, each host header also
   carries that host's wattage.
 
 Hosts are listed by name throughout — the power rows, the stacked bands and the
@@ -315,6 +317,54 @@ power:
 The RAM figures in the strip are approximate to about 1 GB — they are coarsened
 before being pushed so a value that moves every second cannot flood the live
 stream. `/v1/cluster` carries the exact numbers.
+
+### Power control
+
+Each host in the Fleet Power table can carry a power button. It is **off by
+default** and there is no wildcard — only hosts you name can be targeted:
+
+```yaml
+power:
+  control:
+    enabled: true
+    hosts: [gb0, gb1, gb2, gb3, gb4]
+```
+
+That much works immediately for hosts that are **running**: the node living on
+a host controls it in-band through `/dev/ipmi0`, with no credentials, and the
+mesh forwards a request to whichever node owns the target.
+
+A host that is **powered off** has no node to ask, so its BMC has to be reached
+over the network. That needs credentials, and without them a host can be
+switched off but not back on — the dashboard shows a disabled button saying so
+rather than one that fails:
+
+```yaml
+    bmc:
+      username: admin
+      password_env: BMC_PASSWORD    # set in .env, not in the config file
+      addresses:
+        gb0: 192.168.1.65           # optional; see below
+```
+
+Addresses are optional per host. A node discovers its own BMC address in-band
+and shares it, so a host seen online at least once needs no entry — which also
+means a learned address cannot go stale the way a written one does when BMCs
+are on DHCP.
+
+Three things guard it, and none of them is authentication — viiwork has none,
+and this does not add any:
+
+- **The allowlist.** A host you did not name cannot be targeted, by the UI or
+  by curl.
+- **A node will not power off its own host.** Doing so would destroy the answer
+  to the request and the dashboard asking it. Its button is disabled, and the
+  server refuses it too — open another node's `/mesh` to control that host.
+- **A confirmation prompt** naming the host and the action.
+
+Anyone who can reach the API can use it. That is the same trust model as the
+rest of viiwork, but the consequence is larger, so keep the allowlist to the
+hosts you actually want reachable this way.
 
 ### Prompt and output history
 

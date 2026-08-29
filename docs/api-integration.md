@@ -136,7 +136,7 @@ one endpoint a fleet overview needs.
     "model": "some-model-27B-Q4_K_XL",
     "listen_addr": "node0:8080",
     "power_watts": 549, "power_available": true, "power_source": "dcmi",
-    "energy_kwh_24h": 12.4,
+    "energy_kwh_24h": 12.4, "energy_kwh_30d": 301.8,
     "host_mem_total_mb": 64196, "host_mem_used_mb": 31426,
     "gpus": [ { "gpu_id": 0, "util": 0, "vram_used_mb": 12488.1, "vram_total_mb": 16368 } ],
     "backends": [ {
@@ -172,7 +172,7 @@ one endpoint a fleet overview needs.
 | `power_available`, `cost_available` | False where power or price data is not configured. When false, ignore the accompanying numbers rather than rendering zeros. |
 | `power_watts` | **A whole-host measurement, not a per-instance one.** A host running one viiwork instance per model reports the same BMC reading from every one of them, so summing this field across `local` + `peers` counts such a host once per instance. Group by `hostname` and take one reading per host. |
 | `power_source` | Which IPMI reading the node settled on: `dcmi`, `sdr:Power Supply`, or `sensor:<NAME>`. Probed at startup because it is board-specific. Diagnostic only — surface it where an operator is asking why a host reads what it does. Absent on older nodes and whenever `power_available` is false. |
-| `energy_kwh_24h` | Whole-node energy over the **rolling last 24 hours**, in kWh, from the durable store. Present only on the one instance per host that records it, so it is **not** a per-instance figure — group by `hostname`, as with `power_watts`. Absent where the store is not enabled. Longer windows are held in the store but not published; ask if you need them. |
+| `energy_kwh_24h`, `energy_kwh_30d` | Whole-node energy over the **rolling last 24 hours** and **last 30 days**, in kWh, from the durable store. Present only on the one instance per host that records it, so these are **not** per-instance figures — group by `hostname`, as with `power_watts`. Absent where the store is not enabled, and a young store reports the same value for both. |
 | `host_mem_total_mb`, `host_mem_used_mb` | Host RAM, `used` being `MemTotal - MemAvailable` so reclaimable page cache is not counted as pressure. Also whole-host, so group by `hostname` as with wattage. Absent on nodes older than this field; read a zero total as "unknown", not as "no memory". On the pushed stream these are coarsened — see §6. |
 
 ### `GET /v1/status`
@@ -181,6 +181,35 @@ The asked node only — the same backend and GPU detail as `local` above, plus
 `total_in_flight`, `healthy_backends` and `total_backends`. This is what peers
 poll each other with. Use it only when addressing a specific node; otherwise
 `/v1/cluster` already contains it.
+
+### `POST /v1/power`, `POST /v1/mesh/power` — chassis power
+
+Both take `{"host": "...", "action": "status|on|off|cycle"}` and return
+`{"host", "action", "result", "via"}`, or `{"error"}`. Disabled by default;
+a node without it configured answers **503**, not 404, so you can tell "will
+not" from "does not know how".
+
+`/v1/mesh/power` is the one to call. It forwards to the node living on the
+target host, and reaches the host's BMC over the network only when nobody
+answers there — which is the only way to act on a host that is powered off.
+`/v1/power` is the executor and acts solely on the node you address it to.
+
+| Refusal | Meaning |
+|---|---|
+| 403, "not listed in power.control.hosts" | The host is not in the allowlist. There is no wildcard; being a peer is not enough. |
+| 403, "is serving this dashboard" | A node will not power off its own host — that would destroy the answer to the request. Ask a different node. `status` is still allowed. |
+| 400 | Unknown action, or `/v1/power` addressed at some other host. |
+| 502 | The host is unreachable and has no out-of-band BMC configured, so it cannot be woken. |
+
+**There is no authentication on this**, as with the rest of the API. Anything
+that can reach a node can power off any host in that node's allowlist. Keep the
+allowlist to the hosts you actually want reachable this way, and prefer a
+server-side proxy (Path A) if a browser needs to drive it.
+
+`power_control` on `/v1/cluster` lists what a node will accept — `hosts`, and
+`out_of_band` for the subset reachable while off. Hosts in that list may be
+absent from `peers` entirely: that is what a powered-off host looks like, and
+it is why the list is published at all.
 
 ### `GET /v1/models`
 

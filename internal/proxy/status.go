@@ -11,6 +11,7 @@ import (
 	"github.com/janit/viiwork/internal/balancer"
 	"github.com/janit/viiwork/internal/gpu"
 	"github.com/janit/viiwork/internal/peer"
+	"github.com/janit/viiwork/internal/power"
 )
 
 // StatusLocation carries the hostname and listen addr this node publishes in
@@ -53,6 +54,15 @@ var statusEnergySource peer.EnergyReader
 // store runs on one instance per host, so most nodes report nothing here.
 func SetStatusEnergySource(e peer.EnergyReader) { statusEnergySource = e }
 
+// statusPowerControl publishes the power-control allowlist on /v1/cluster.
+var statusPowerControl *power.Controller
+
+// SetStatusPowerControl attaches the controller whose allowlist /v1/cluster
+// advertises. Separate from SetPowerControl on the handler because the cluster
+// payload is built here, and a node that can control nothing must publish
+// nothing rather than an empty list that reads as "enabled, no hosts".
+func SetStatusPowerControl(c *power.Controller) { statusPowerControl = c }
+
 func NewStatusHandler(nodeID string, localModel string, backends []*balancer.BackendState, power peer.PowerReader, cost peer.CostReader, loc StatusLocation) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := peer.StatusResponse{
@@ -68,6 +78,7 @@ func NewStatusHandler(nodeID string, localModel string, backends []*balancer.Bac
 		resp.HostMemTotalMB, resp.HostMemUsedMB = readHostMemory()
 		if statusEnergySource != nil {
 			resp.EnergyKWh24h = statusEnergySource.KWh24h()
+			resp.EnergyKWh30d = statusEnergySource.KWh30d()
 		}
 		for _, b := range backends {
 			var gpuIDs []int
@@ -131,6 +142,16 @@ func BuildClusterState(reg *peer.Registry) peer.ClusterResponse {
 	// arrive through their own /v1/status and are set there.
 	if statusEnergySource != nil {
 		state.Local.EnergyKWh24h = statusEnergySource.KWh24h()
+		state.Local.EnergyKWh30d = statusEnergySource.KWh30d()
+	}
+	if statusPowerControl != nil && statusPowerControl.Enabled() {
+		info := &peer.PowerControlInfo{Hosts: statusPowerControl.Hosts()}
+		for _, h := range info.Hosts {
+			if statusPowerControl.HasBMC(h) {
+				info.OutOfBand = append(info.OutOfBand, h)
+			}
+		}
+		state.PowerControl = info
 	}
 	if statusGPUSource != nil {
 		for _, g := range statusGPUSource.Latest() {
