@@ -1,5 +1,35 @@
 # Changelog
 
+## v1.5.2
+
+### The mesh dashboard has a fixed address: port 8086 on every host
+
+`http://<any-host>:8086/` now serves the cluster view, and the number is the
+same on every host in the fleet.
+
+The cluster view was always served by every node; the problem was reaching one.
+A host runs one viiwork instance per model, each on its own `server.port`, so
+opening the dashboard meant knowing which instance was up on which host —
+precisely what you do not have when something is wrong.
+
+The port is **contended, not assigned**. Every instance asks for it at startup
+and the OS gives it to exactly one; the rest keep asking every 15 seconds. So
+it is up as long as *any* viiwork on that host is, it hands over on its own
+when the instance holding it restarts, and it needs no designated node, no
+per-host configuration and no reverse proxy. Which instance answers does not
+matter — the mesh view is built from peer state every node already has.
+
+A node reached on 8086 is an ordinary node in every other respect: only `/`
+moves, so the page's own `/v1/mesh/stream`, `/v1/mesh/power` and `/prompt`
+calls resolve against the same origin, and CORS applies as usual.
+
+**Upgrading:** this binds a second port that previous versions did not, on by
+default. Nothing else changes — `server.port` and the per-node dashboard are
+untouched, and a host where something else already holds 8086 simply never
+binds it and runs exactly as before. `server.mesh_port: 0` opts out;
+`server.mesh_port: <n>` moves it. There is a matching `--server.mesh_port`
+CLI override.
+
 ## v1.5.1
 
 Documentation only, no code change.

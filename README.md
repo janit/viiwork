@@ -217,8 +217,26 @@ A lightweight chat UI is available at `/chat` for quick model interaction.
 
 ## Mesh Dashboard
 
-`/mesh` is a cluster-wide view served identically by **every** node — open it on
-whichever host you can reach and you see the whole mesh:
+**`http://<any-host>:8086/`** — one address, the same on every host.
+
+The cluster view is served identically by **every** node, so any host you can
+reach shows you the whole mesh. The catch used to be reaching one: a host runs
+one viiwork instance per model, each on its own port, so opening the dashboard
+meant knowing which instance was up on which host — the thing you least have
+when something is wrong.
+
+Port **8086** answers that. Every instance asks for it at startup and the OS
+gives it to exactly one of them; the rest keep asking on a 15-second timer. So
+the port is up as long as *any* viiwork on that host is, moves on its own when
+the instance holding it restarts, and needs no designated node, no per-host
+configuration and no reverse proxy. Which instance answers does not matter —
+the mesh view is assembled from peer state every node already has.
+
+The node's own API and per-node dashboard stay on its configured `server.port`
+and are unaffected. `/mesh` still works there and on 8086. Set
+`server.mesh_port: 0` to opt out, or to another port to move it.
+
+What it shows:
 
 - **Mesh Models** — every model across the cluster; click one to filter the view
 - **In-Flight Requests** — live jobs with elapsed time, task tag, model, and the
@@ -469,7 +487,7 @@ an API that has none.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/` | GET | Status dashboard (this node) |
+| `/` | GET | Status dashboard (this node); the mesh dashboard on `server.mesh_port` |
 | `/mesh` | GET | Cluster-wide dashboard (all hosts, all models) |
 | `/prompt` | GET | Full-page prompt + output for one request (`?rid=N&addr=`) |
 | `/chat` | GET | Lightweight chat UI |

@@ -208,6 +208,19 @@ func main() {
 		}
 	}()
 
+	// A second, well-known port whose "/" is the mesh dashboard. Every
+	// instance on the host asks for it and one gets it, so the address is the
+	// same everywhere and does not depend on knowing which model this node
+	// serves. Skipped when it would be the node's own port, which already
+	// answers.
+	if mp := cfg.Server.MeshPort; mp > 0 {
+		if mp == cfg.Server.Port {
+			log.Printf("server.mesh_port equals server.port (%d), not starting a second listener", mp)
+		} else {
+			go proxy.ServeMeshPort(ctx, fmt.Sprintf("%s:%d", cfg.Server.Host, mp), handler)
+		}
+	}
+
 	<-sigCh
 	log.Println("shutdown signal received")
 

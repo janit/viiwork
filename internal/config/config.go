@@ -30,9 +30,17 @@ func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 }
 
 type ServerConfig struct {
-	Host string     `yaml:"host"`
-	Port int        `yaml:"port"`
-	CORS CORSConfig `yaml:"cors"`
+	Host string `yaml:"host"`
+	Port int    `yaml:"port"`
+	// MeshPort is a second, well-known port whose "/" is the mesh dashboard.
+	// It exists because Port is not guessable: a host runs one instance per
+	// model, each on its own port, and knowing which of them is up is the
+	// thing you do not have when you want to look at the fleet. Every instance
+	// asks for MeshPort and exactly one gets it, so the address is the same on
+	// every host and stays up while any instance on that host does. 0 disables
+	// it; see proxy.ServeMeshPort.
+	MeshPort int        `yaml:"mesh_port"`
+	CORS     CORSConfig `yaml:"cors"`
 }
 
 // CORSConfig controls which browser origins may read this node's API. It
@@ -292,6 +300,9 @@ func (c *Config) Validate() error {
 	if c.Server.Port < 1 || c.Server.Port > 65535 {
 		return fmt.Errorf("server.port must be 1-65535")
 	}
+	if c.Server.MeshPort < 0 || c.Server.MeshPort > 65535 {
+		return fmt.Errorf("server.mesh_port must be 0-65535 (0 disables)")
+	}
 	if c.Balancer.MaxInFlightPerGPU < 1 {
 		return fmt.Errorf("balancer.max_in_flight_per_gpu must be >= 1")
 	}
@@ -391,6 +402,12 @@ func (c *Config) ApplyOverrides(overrides map[string]string) error {
 				return fmt.Errorf("invalid server.port: %w", err)
 			}
 			c.Server.Port = v
+		case "server.mesh_port":
+			v, err := strconv.Atoi(val)
+			if err != nil {
+				return fmt.Errorf("invalid server.mesh_port: %w", err)
+			}
+			c.Server.MeshPort = v
 		case "model.path":
 			c.Model.Path = val
 		case "model.context_size":
