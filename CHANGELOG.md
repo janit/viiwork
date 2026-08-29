@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.4.0
+
+### Energy beside live power
+
+The mesh dashboard's Fleet Power headline now reads `1,751 W / 12.4 kWh (24h)`
+— what the fleet is drawing now, and what it has drawn over the rolling last
+24 hours. Each host's row carries the same pair.
+
+The figure rides on `/v1/status` and `/v1/cluster` as `energy_kwh_24h`, so the
+dashboard reads it off the snapshots it already receives rather than polling a
+new endpoint. It is a **whole-host** number like `power_watts`: the durable
+store runs on one instance per host, so consumers must group by hostname rather
+than summing across instances. It reads the minute tier, whose ring is exactly
+24 hours, so the window and the retention are the same span.
+
+Energy is opt-in per host while power is not, so the header says `· kWh from N`
+whenever fewer hosts contribute energy than are reporting power — a total from
+one host should not read as fleet-wide.
+
 ## v1.3.0
 
 ### Stale in-flight rows after a sleep or a background tab
@@ -220,6 +239,17 @@ Two implementation details that were easy to get wrong and are pinned by tests:
   already did this; this target was the odd one out.
 
 ## Upgrading
+
+### To v1.4.0
+
+Nothing to do on a node, and nothing to change in a consumer. The one addition
+is `energy_kwh_24h` on `/v1/status` and `/v1/cluster`, which appears only where
+the energy store is enabled.
+
+If you read it, treat it as a **whole-host** figure like `power_watts`: the
+store runs on one instance per host, so group by `hostname` rather than summing
+across instances. It covers the rolling last 24 hours, not the store's full
+history.
 
 ### To v1.3.0
 

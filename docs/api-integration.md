@@ -136,6 +136,7 @@ one endpoint a fleet overview needs.
     "model": "some-model-27B-Q4_K_XL",
     "listen_addr": "node0:8080",
     "power_watts": 549, "power_available": true, "power_source": "dcmi",
+    "energy_kwh_24h": 12.4,
     "host_mem_total_mb": 64196, "host_mem_used_mb": 31426,
     "gpus": [ { "gpu_id": 0, "util": 0, "vram_used_mb": 12488.1, "vram_total_mb": 16368 } ],
     "backends": [ {
@@ -171,6 +172,7 @@ one endpoint a fleet overview needs.
 | `power_available`, `cost_available` | False where power or price data is not configured. When false, ignore the accompanying numbers rather than rendering zeros. |
 | `power_watts` | **A whole-host measurement, not a per-instance one.** A host running one viiwork instance per model reports the same BMC reading from every one of them, so summing this field across `local` + `peers` counts such a host once per instance. Group by `hostname` and take one reading per host. |
 | `power_source` | Which IPMI reading the node settled on: `dcmi`, `sdr:Power Supply`, or `sensor:<NAME>`. Probed at startup because it is board-specific. Diagnostic only — surface it where an operator is asking why a host reads what it does. Absent on older nodes and whenever `power_available` is false. |
+| `energy_kwh_24h` | Whole-node energy over the **rolling last 24 hours**, in kWh, from the durable store. Present only on the one instance per host that records it, so it is **not** a per-instance figure — group by `hostname`, as with `power_watts`. Absent where the store is not enabled. Longer windows are held in the store but not published; ask if you need them. |
 | `host_mem_total_mb`, `host_mem_used_mb` | Host RAM, `used` being `MemTotal - MemAvailable` so reclaimable page cache is not counted as pressure. Also whole-host, so group by `hostname` as with wattage. Absent on nodes older than this field; read a zero total as "unknown", not as "no memory". On the pushed stream these are coarsened — see §6. |
 
 ### `GET /v1/status`

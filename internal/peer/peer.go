@@ -53,6 +53,12 @@ type StatusResponse struct {
 	// nodes, and a zero total means "unknown", not "no memory".
 	HostMemTotalMB int64 `json:"host_mem_total_mb,omitempty"`
 	HostMemUsedMB  int64 `json:"host_mem_used_mb,omitempty"`
+
+	// EnergyKWh24h is whole-node energy over the rolling last 24 hours, from
+	// the durable store, which runs on exactly one instance per host — so on a
+	// multi-model host the other instances report nothing rather than a second
+	// copy of it.
+	EnergyKWh24h float64 `json:"energy_kwh_24h,omitempty"`
 }
 
 type BackendInfo struct {
@@ -116,6 +122,7 @@ type PeerState struct {
 	powerSource     string
 	hostMemTotalMB  int64
 	hostMemUsedMB   int64
+	energyKWh24h    float64
 	costAvailable  bool
 	costEURPerHour float64
 	costTodayEUR   float64
@@ -153,6 +160,7 @@ func (p *PeerState) Update(resp StatusResponse) {
 	p.powerSource = resp.PowerSource
 	p.hostMemTotalMB = resp.HostMemTotalMB
 	p.hostMemUsedMB = resp.HostMemUsedMB
+	p.energyKWh24h = resp.EnergyKWh24h
 	p.costAvailable = resp.CostAvailable
 	p.costEURPerHour = resp.CostEURPerHour
 	p.costTodayEUR = resp.CostTodayEUR
@@ -172,6 +180,7 @@ func (p *PeerState) MarkUnreachable() {
 	p.powerSource = ""
 	p.hostMemTotalMB = 0
 	p.hostMemUsedMB = 0
+	p.energyKWh24h = 0
 	p.costAvailable = false
 	p.costEURPerHour = 0
 	p.costTodayEUR = 0
@@ -230,6 +239,12 @@ func (p *PeerState) PowerWatts() float64 {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.powerWatts
+}
+
+func (p *PeerState) EnergyKWh24h() float64 {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.energyKWh24h
 }
 
 func (p *PeerState) HostMem() (totalMB, usedMB int64) {
