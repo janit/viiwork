@@ -1,6 +1,20 @@
 server:
   host: 0.0.0.0
   port: 8080
+  # mesh_port: a second, well-known port whose "/" is the MESH dashboard.
+  #
+  # It exists because `port` above is not guessable. A host runs one instance
+  # per model, each on its own port, so reaching the fleet view means knowing
+  # which instance is up on which host -- exactly the thing you do not know
+  # when something is wrong. http://<any-host>:8086/ always answers instead.
+  #
+  # Every instance asks for this port and the OS gives it to one of them; the
+  # rest keep asking, so it stays up as long as ANY viiwork on the host does,
+  # and moves on its own when the holder restarts. Nothing needs designating,
+  # and the same value is correct on every instance on every host.
+  #
+  # The node's own API stays on `port` and is unaffected. Set 0 to opt out.
+  mesh_port: 8086
   # cors: which browser ORIGINS may read this API. Only relevant when a page
   # served from somewhere else fetches viiwork directly; a server-side caller
   # (curl, a backend proxying on behalf of its own UI) is unaffected by CORS

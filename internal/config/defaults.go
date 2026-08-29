@@ -13,6 +13,14 @@ func Defaults() Config {
 		Server: ServerConfig{
 			Host: "0.0.0.0",
 			Port: 8080,
+			// On by default, because the problem it solves is created by
+			// running viiwork at all: one instance per model means Port
+			// differs per instance and per host, and the mesh view is the
+			// one page you want to reach without looking anything up. A
+			// foreign service already holding 8086 costs nothing — the
+			// listener never binds and the node serves normally. Set 0 to
+			// stop asking for it.
+			MeshPort: 8086,
 			// Defaults cover the deployment viiwork documents — nodes on a
 			// tailnet — plus localhost for development. Your own application's
 			// origin is deployment-specific and belongs in your viiwork.yaml,
