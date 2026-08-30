@@ -45,13 +45,25 @@ type Config struct {
 	HourSlots   int
 	DaySlots    int
 	Location    *time.Location
+	// Source labels what NodeRecord.Watts actually measures, using the same
+	// vocabulary as the mesh wire field of the same name: "dcmi", "sdr",
+	// "sensor:<NAME>" for a whole-chassis IPMI reading, "nvidia-smi" for a sum
+	// of GPU board power. It is recorded in the store directory because the
+	// bytes on disk are otherwise identical whichever was measured, and a
+	// history read out of its mesh context carries no other clue. See
+	// Store.Source.
+	//
+	// Empty means the caller cannot say, which leaves any label the directory
+	// already carries untouched rather than erasing it.
+	Source string
 }
 
-// Store owns the six ring files and the model table.
+// Store owns the six ring files, the model table and the provenance label.
 type Store struct {
 	cfg     Config
 	logger  *log.Logger
 	models  *modelTable
+	source  string
 	gpuLane map[int]int
 
 	nodeMinute, nodeHour, nodeDay *ring
@@ -125,10 +137,64 @@ func Open(cfg Config, logger *log.Logger) (*Store, error) {
 	}
 	s.models = models
 
-	s.logger.Printf("store at %s: %d GPUs, %d minutes / %d hours / %d days, %s on disk",
-		cfg.Dir, lanes, cfg.MinuteSlots, cfg.HourSlots, cfg.DaySlots, humanBytes(s.DiskBytes()))
+	if err := s.adoptSource(filepath.Join(cfg.Dir, sourceFile)); err != nil {
+		s.Close()
+		return nil, err
+	}
+
+	s.logger.Printf("store at %s: %d GPUs, %d minutes / %d hours / %d days, %s on disk, node power via %s",
+		cfg.Dir, lanes, cfg.MinuteSlots, cfg.HourSlots, cfg.DaySlots, humanBytes(s.DiskBytes()), sourceLabel(s.source))
 	return s, nil
 }
+
+func sourceLabel(src string) string {
+	if src == "" {
+		return "an unrecorded source"
+	}
+	return src
+}
+
+// adoptSource reconciles the caller's label with whatever the directory
+// already records.
+func (s *Store) adoptSource(path string) error {
+	onDisk, err := readSource(path)
+	if err != nil {
+		return err
+	}
+
+	switch {
+	case s.cfg.Source == "":
+		// The caller cannot say. Keep the directory's own answer: a label
+		// already earned by this history is better than none, and blanking it
+		// would turn "unknown to this build" into "unknown, permanently".
+		s.source = onDisk
+	case onDisk == s.cfg.Source:
+		s.source = onDisk
+	default:
+		if onDisk != "" {
+			// Worth saying out loud rather than swapping the label silently:
+			// the retained history was measured one way and everything from
+			// here on is measured another, and only the operator can judge
+			// whether that is a re-probe of the same chassis reading or a
+			// change of what "node power" even means on this host.
+			s.logger.Printf("node power source changed from %q to %q; retained history was recorded under the old one", onDisk, s.cfg.Source)
+		}
+		if err := writeSource(path, s.cfg.Source); err != nil {
+			return err
+		}
+		s.source = s.cfg.Source
+	}
+	return nil
+}
+
+// Source reports what NodeRecord.Watts in this store measures — the label
+// passed as Config.Source by whichever implementation wrote the history.
+//
+// Empty means the store carries no label: either it predates v1.6.0, or every
+// process that opened it declined to say. Read that as "unknown", never as a
+// default; the two live implementations differ by hundreds of watts on the
+// same hardware, so guessing is worse than reporting nothing.
+func (s *Store) Source() string { return s.source }
 
 // DiskBytes is the fixed on-disk size. It cannot grow: every ring is
 // preallocated, so this is both the current and the final size.

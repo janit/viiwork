@@ -3,8 +3,8 @@ package config
 import (
 	"time"
 
+	"github.com/janit/viiwork/energy"
 	"github.com/janit/viiwork/internal/activity"
-	"github.com/janit/viiwork/internal/energy"
 	"github.com/janit/viiwork/internal/power"
 )
 
