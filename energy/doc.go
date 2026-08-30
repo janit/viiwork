@@ -54,6 +54,10 @@
 //     records nothing, rather than accumulating a confident zero.
 //   - [GPUReadingsFunc] reports each card's current draw and which model is
 //     resident on it.
+//   - [AttributeFunc] is optional, and decides how the bucket's node figure is
+//     split between cards. Omitting it (via [NewRecorder]) selects the
+//     whole-chassis model below; [Direct] is the counterpart for a node figure
+//     that is already the sum of its own per-GPU readings.
 //
 // viiwork fills them from ipmitool and rocm-smi; viiwork-nvidia fills them from
 // nvidia-smi. Nothing else differs, which is the argument for one shared
@@ -84,10 +88,20 @@
 // rather than smeared across models, and the split always reconciles — baseline
 // plus every share equals the measured node power, so no total is invented.
 //
-// An implementation that measures each board directly does not need either
-// call: a card's draw is its model's draw, with nothing to infer. Such a
-// producer supplies [GPURecord.AttrW] and RawW as the same measured value and
-// leaves the baseline to the node series.
+// An implementation that measures each board directly needs neither call: a
+// card's draw is its model's draw, with nothing to infer. Such a producer
+// passes [Direct] to [NewRecorderWithAttribution], which charges every card
+// exactly what it drew — [GPURecord.AttrW] equal to RawW, shares summing to the
+// node figure, baseline honestly zero.
+//
+// That is not merely tidier than letting the chassis model run. [Store.Floors]
+// falls back to the lowest current reading when it has no history, so on a
+// fresh store an evenly loaded host has no marginal power at all and every card
+// is attributed 0 W. Per-model energy then stays empty until a genuinely idle
+// minute is observed, which a busy inference node may not see for weeks.
+// Everything else the recorder does — per-minute averaging, CoveredS honesty,
+// dominant-model resolution — is shared, which is why the seam is one function
+// rather than a second recorder.
 //
 // Absolute accuracy is around ±15%, dominated by how the node reading itself is
 // obtained. Compare models within a host freely; compare across hosts with
