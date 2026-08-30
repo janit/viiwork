@@ -1,5 +1,34 @@
 # Changelog
 
+## v1.6.3
+
+### The mesh event stream no longer writes to a finished response
+
+`/v1/mesh/stream` runs one goroutine per peer plus a cluster-snapshot loop, and
+all of them wrote to the HTTP response directly, serialised by a mutex. The
+mutex made those writes mutually exclusive but said nothing about when they
+*stop*: the handler could return while a producer was still mid-write, and
+touching an `http.ResponseWriter` after the handler returns is a data race and
+a violation of `net/http`'s contract.
+
+It was reproducible — the race detector flagged it on roughly two runs in three
+— and it had been shipped in every build since the mesh stream gained peer
+fan-out.
+
+The handler is now the only writer of its own response. Producers hand encoded
+frames to it over a channel and never hold a reference to the response at all,
+so the problem is gone by construction rather than by lifetime bookkeeping.
+
+Waiting for the producers instead would have deadlocked, which is worth
+recording: an SSE response must not carry a `WriteTimeout`, so a connected but
+stalled client can block a write indefinitely — and the activity log closes the
+oldest subscriber's channel when it hits its subscriber limit, which returns the
+handler with the client still perfectly healthy. Waiting there would have hung
+the request on a producer that could not finish.
+
+**Upgrading:** nothing to do. No configuration, endpoint, wire field or on-disk
+format change, and the stream behaves identically from a consumer's side.
+
 ## v1.6.2
 
 ### Builds stamp the version they actually are
