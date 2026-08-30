@@ -9,7 +9,6 @@ import (
 	"log"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/janit/viiwork/internal/activity"
@@ -23,6 +22,17 @@ import (
 // second the view tracks in-flight changes closely while an idle mesh sends
 // nothing at all, because identical snapshots are suppressed.
 const clusterPushInterval = time.Second
+
+// frameBuffer absorbs a burst of producer events while the writer is busy. It
+// is backpressure, not a queue to be drained on shutdown: a producer that
+// cannot enqueue blocks until it can, or until ctx ends.
+const frameBuffer = 64
+
+// sseFrame is one encoded event on its way to the single writer.
+type sseFrame struct {
+	event string
+	data  []byte
+}
 
 // MeshEvent is an activity event tagged with the node it came from.
 //
@@ -74,26 +84,54 @@ func (h *Handler) handleMeshStream(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
-	ctx := r.Context()
+	// Cancelling on the way out is what stops the producers below. They are
+	// deliberately not waited for -- see the note on frames.
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
 
-	// out serialises writes from the local subscriber and every peer reader.
-	// http.ResponseWriter is not safe for concurrent use, and this handler has
-	// N+1 goroutines writing into it.
-	var mu sync.Mutex
-	send := func(event string, payload any) bool {
-		b, err := json.Marshal(payload)
-		if err != nil {
-			return true
-		}
-		mu.Lock()
-		defer mu.Unlock()
-		if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, b); err != nil {
+	// Every byte of this response is written by this goroutine and no other.
+	//
+	// The handler runs N+1 producers: one follower per peer, plus the cluster
+	// snapshot loop. They used to write to w directly under a mutex, which made
+	// those writes mutually exclusive but said nothing about when they *stop*.
+	// The handler can return while a producer is still inside Fprintf, and
+	// writing to an http.ResponseWriter after ServeHTTP returns is a data race
+	// and a violation of net/http's contract. It reproduced under -race.
+	//
+	// Waiting for the producers instead would deadlock. An SSE response must not
+	// carry a WriteTimeout, so a connected-but-stalled client can block a write
+	// indefinitely -- and the handler would then be waiting on a producer that
+	// cannot finish. That case is real rather than theoretical: the activity log
+	// closes the oldest subscriber's channel when maxSubscribers is reached,
+	// which returns this handler with the client still perfectly healthy.
+	//
+	// Funnelling through a channel removes the question instead of answering it.
+	// A producer that has lost its reader is freed by ctx, and it never held a
+	// reference to w to begin with.
+	frames := make(chan sseFrame, frameBuffer)
+
+	write := func(event string, data []byte) bool {
+		if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data); err != nil {
 			return false
 		}
 		flusher.Flush()
 		return true
 	}
-	emit := func(ev MeshEvent) bool { return send("activity", ev) }
+
+	// enqueue is the producers' half of that split. It never touches w.
+	enqueue := func(event string, payload any) bool {
+		b, err := json.Marshal(payload)
+		if err != nil {
+			return true
+		}
+		select {
+		case frames <- sseFrame{event: event, data: b}:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
+	emit := func(ev MeshEvent) bool { return enqueue("activity", ev) }
 
 	localID, localHost := "", ""
 	if h.registry != nil {
@@ -113,7 +151,11 @@ func (h *Handler) handleMeshStream(w http.ResponseWriter, r *http.Request) {
 	// Peer backlogs arrive on their own: each peer's /v1/activity/stream
 	// replays too, and this handler opens fresh peer connections per client.
 	for _, ev := range h.activity.Backlog() {
-		if !send("activity", MeshEvent{Event: ev, NodeID: localID, Hostname: localHost}) {
+		b, err := json.Marshal(MeshEvent{Event: ev, NodeID: localID, Hostname: localHost})
+		if err != nil {
+			continue
+		}
+		if !write("activity", b) {
 			return
 		}
 	}
@@ -142,7 +184,7 @@ func (h *Handler) handleMeshStream(w http.ResponseWriter, r *http.Request) {
 				deadband.apply(&state)
 				if b, err := json.Marshal(state); err == nil && !bytes.Equal(b, last) {
 					last = b
-					if !send("cluster", state) {
+					if !enqueue("cluster", state) {
 						return
 					}
 				}
@@ -159,8 +201,15 @@ func (h *Handler) handleMeshStream(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-ctx.Done():
 			return
+		case f := <-frames:
+			if !write(f.event, f.data) {
+				return
+			}
 		case raw, ok := <-sub:
 			if !ok {
+				// The log evicted this subscriber to make room for a newer one.
+				// The connection is still healthy; there is simply nothing more
+				// to send on it.
 				return
 			}
 			// Subscribe delivers already-encoded JSON, so it has to be decoded
@@ -170,7 +219,11 @@ func (h *Handler) handleMeshStream(w http.ResponseWriter, r *http.Request) {
 			if err := json.Unmarshal(raw, &ev); err != nil {
 				continue
 			}
-			if !emit(MeshEvent{Event: ev, NodeID: localID, Hostname: localHost}) {
+			b, err := json.Marshal(MeshEvent{Event: ev, NodeID: localID, Hostname: localHost})
+			if err != nil {
+				continue
+			}
+			if !write("activity", b) {
 				return
 			}
 		}
