@@ -1,6 +1,10 @@
 package activity
 
-import "sync"
+import (
+	"sync"
+
+	"github.com/janit/viiwork/meshapi"
+)
 
 // DefaultPromptHistory is the number of requests a node keeps when nothing is
 // configured. Memory is roughly this times maxPromptChars times two (prompt and
@@ -17,16 +21,9 @@ const maxPromptChars = 50000
 
 // PromptEntry is one captured request, keyed by RequestID: the prompt that
 // went in and, once the request finishes, the text that came back.
-type PromptEntry struct {
-	RequestID int64  `json:"rid"`
-	Time      int64  `json:"t"`
-	Model     string `json:"model"`
-	Prompt    string `json:"prompt"`
-	Output    string `json:"output,omitempty"`
-	// Elapsed is the wall time of the request in milliseconds, recorded with
-	// the output. Zero while the request is still running.
-	ElapsedMS int64 `json:"elapsed_ms,omitempty"`
-}
+// PromptEntry is defined in meshapi and aliased here: it is the response body
+// of /v1/prompts, which peers fetch from each other.
+type PromptEntry = meshapi.PromptEntry
 
 // PromptStore holds the last max request prompts in memory. It backs
 // the mesh dashboard's per-request prompt modal — nothing here is persisted,

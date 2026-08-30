@@ -15,6 +15,7 @@ import (
 	"github.com/janit/viiwork/internal/activity"
 	"github.com/janit/viiwork/internal/logging"
 	"github.com/janit/viiwork/internal/peer"
+	"github.com/janit/viiwork/meshapi"
 )
 
 // clusterPushInterval is how often the snapshot is rebuilt and compared. It is
@@ -29,12 +30,10 @@ const clusterPushInterval = time.Second
 // screen belongs to one host. The mesh view cannot: two nodes both reporting
 // "gpu-0" are different GPUs, and an in-flight request has to be attributed to
 // a host before it means anything.
-type MeshEvent struct {
-	activity.Event
-	NodeID   string `json:"node_id,omitempty"`
-	Hostname string `json:"hostname,omitempty"`
-	Addr     string `json:"addr,omitempty"`
-}
+// MeshEvent is defined in meshapi and aliased here. It is an activity Event
+// tagged with the node it came from, as pushed on the "activity" channel of
+// /v1/mesh/stream.
+type MeshEvent = meshapi.MeshEvent
 
 // handleMeshStream serves everything the mesh view needs over ONE held-open
 // connection: activity events from this node and every reachable peer, plus

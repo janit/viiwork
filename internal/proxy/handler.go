@@ -17,6 +17,7 @@ import (
 	"github.com/janit/viiwork/internal/gpu"
 	"github.com/janit/viiwork/internal/logging"
 	"github.com/janit/viiwork/internal/peer"
+	"github.com/janit/viiwork/meshapi"
 	"github.com/janit/viiwork/internal/pipeline"
 	"github.com/janit/viiwork/internal/power"
 	"github.com/janit/viiwork/web"
@@ -534,7 +535,7 @@ func (h *Handler) handleProxy(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[debug] %s → gpu-%d (in_flight=%d)", model, route.Backend.GPUID, route.Backend.InFlight())
 		}
 		if h.activity != nil {
-			h.activity.EmitRequestTask(rid, route.Backend.GPUID, taskID, "%s → %s", model, route.Backend.Label())
+			h.activity.EmitRequestTask(rid, route.Backend.GPUID, taskID, "%s", meshapi.RequestStarted(model, route.Backend.Label()))
 		}
 		aborted := proxyRequest(w, r, route.Backend, h.latencyWindow, thinkDisabled, h.evictOnHardFailure)
 		elapsed := time.Since(start).Round(time.Millisecond)
@@ -543,9 +544,9 @@ func (h *Handler) handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 		if h.activity != nil {
 			if aborted {
-				h.activity.EmitRequestTask(rid, route.Backend.GPUID, taskID, "%s → %s aborted by client (%s)", model, route.Backend.Label(), elapsed)
+				h.activity.EmitRequestTask(rid, route.Backend.GPUID, taskID, "%s", meshapi.RequestAborted(model, route.Backend.Label(), elapsed))
 			} else {
-				h.activity.EmitRequestTask(rid, route.Backend.GPUID, taskID, "%s → %s done (%s)", model, route.Backend.Label(), elapsed)
+				h.activity.EmitRequestTask(rid, route.Backend.GPUID, taskID, "%s", meshapi.RequestDone(model, route.Backend.Label(), elapsed))
 			}
 		}
 	} else {
@@ -553,7 +554,7 @@ func (h *Handler) handleProxy(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[debug] %s → peer %s", model, route.Addr)
 		}
 		if h.activity != nil {
-			h.activity.EmitRequestTask(rid, -1, taskID, "%s → peer %s", model, route.Addr)
+			h.activity.EmitRequestTask(rid, -1, taskID, "%s", meshapi.RequestStarted(model, meshapi.PeerLabel(route.Addr)))
 		}
 		// Write-through in-flight: subsequent picks on this node see the
 		// dispatch immediately, before the next poll of /v1/status updates
@@ -570,7 +571,7 @@ func (h *Handler) handleProxy(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[debug] %s → peer %s finished (elapsed=%s)", model, route.Addr, elapsed)
 		}
 		if h.activity != nil {
-			h.activity.EmitRequestTask(rid, -1, taskID, "%s → peer %s done (%s)", model, route.Addr, elapsed)
+			h.activity.EmitRequestTask(rid, -1, taskID, "%s", meshapi.RequestDone(model, meshapi.PeerLabel(route.Addr), elapsed))
 		}
 	}
 }

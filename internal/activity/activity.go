@@ -6,6 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/janit/viiwork/meshapi"
 )
 
 var nextRequestID atomic.Int64
@@ -15,20 +17,12 @@ func NewRequestID() int64 {
 	return nextRequestID.Add(1)
 }
 
-type Event struct {
-	Time      int64  `json:"t"`
-	Type      string `json:"type"` // "backend", "request", "system"
-	Message   string `json:"message"`
-	GPUID     int    `json:"gpu_id,omitempty"`
-	RequestID int64  `json:"rid,omitempty"`
-	TaskID    string `json:"task_id,omitempty"`
-	// Replay marks an event delivered from the ring when a stream opens,
-	// rather than as it happened. A consumer that reconstructs state from the
-	// stream needs it: replayed events are the authoritative rebuild of that
-	// state, while a consumer keeping a visible event list has to deduplicate
-	// them against what it already shows.
-	Replay bool `json:"replay,omitempty"`
-}
+// Event is defined in meshapi, the public mesh protocol package, and aliased
+// here so this package keeps its familiar name. The type travels on
+// /v1/activity/stream and is the sole basis on which every dashboard in the
+// fleet reconstructs in-flight requests, so its shape — and the grammar of its
+// Message field — is wire contract, not a local logging concern.
+type Event = meshapi.Event
 
 const maxEvents = 200
 const maxSubscribers = 16
