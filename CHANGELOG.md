@@ -1,5 +1,41 @@
 # Changelog
 
+## v1.6.1
+
+### `energy`: attribution is now swappable, for nodes that measure each card
+
+`energy/doc.go` told an implementation that measures per-board power to supply
+`AttrW` and `RawW` as the same value. `Recorder` gave it no way to do that — it
+ran the whole-chassis split unconditionally.
+
+That split is right when the node figure measures more than the GPUs do: fans,
+CPU, drives and PSU losses are drawn whether or not a model is serving, and
+charging them to a model would be wrong. It is meaningless when node power is
+*itself* the sum of the per-card readings, because then any residual is not
+overhead but idle draw on cards that exist to serve the resident model.
+
+The failure was not a small skew. Idle floors fall back to the lowest current
+reading when the store has no history, so on a fresh store an evenly loaded host
+has no marginal power at all and **every card is attributed 0 W** — per-model
+energy stays empty until a genuinely idle minute is observed, which a busy
+inference node may not see for weeks.
+
+- **`NewRecorderWithAttribution`** takes an `AttributeFunc` deciding how a
+  bucket's node figure is split between cards.
+- **`Direct`** is that function for a per-board producer: each card is charged
+  what it drew, the shares sum to the node figure, and the baseline is honestly
+  zero.
+- **`NewRecorder` is unchanged**, in signature and in behaviour — it passes nil
+  and gets the existing split. A test pins the two as byte-identical.
+
+Everything around the attribution step stays shared, which is the point: the
+per-minute averaging and the `CoveredS` accounting that keeps a restart
+mid-bucket from being extrapolated to a full minute are exactly what you would
+least want a second copy of.
+
+**Upgrading:** nothing to do. Additive API, no configuration, endpoint, wire
+field or on-disk format change, and what viiwork records is unchanged.
+
 ## v1.6.0
 
 ### The energy store is now a public package

@@ -175,7 +175,10 @@ share equals measured node power, so no total is invented. `AttrW` therefore
 sums to less than node power, and to more or less than `RawW` per card.
 
 A producer that measures each board directly has nothing to infer, and writes
-the same measured value to both fields.
+the same measured value to both fields — `AttrW == RawW`, with the shares
+summing to `NodeRecord.Watts` and no baseline. The Go package spells that
+mapping as `energy.Direct`, passed to `NewRecorderWithAttribution`; a
+non-Go implementation just writes the reading into both fields.
 
 ## `models.txt`
 
