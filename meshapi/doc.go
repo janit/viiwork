@@ -41,9 +41,19 @@
 // # What is not here
 //
 // Types that never leave a process stay in their own packages. The balancer's
-// BackendState, the process manager's Backend, the energy store's records and
-// the config structs are all internal to an implementation: two nodes agree on
-// what they *say* to each other, not on how either arrives at it. viiwork
-// picks routes by llama.cpp slot occupancy and viiwork-nvidia by vLLM's
-// scheduler queue; the mesh only ever sees the resulting InFlight count.
+// BackendState, the process manager's Backend and the config structs are all
+// internal to an implementation: two nodes agree on what they *say* to each
+// other, not on how either arrives at it. viiwork picks routes by llama.cpp
+// slot occupancy and viiwork-nvidia by vLLM's scheduler queue; the mesh only
+// ever sees the resulting InFlight count.
+//
+// The energy store is the one other shared package, and it is shared for the
+// same reason rather than as part of this contract. Its records are local
+// persistence, not wire: a store directory never crosses a host boundary, and
+// what does cross is only the EnergyKWh24h and EnergyKWh30d totals defined
+// here. github.com/janit/viiwork/energy is public because a second
+// implementation would otherwise have to reimplement the on-disk format, which
+// is the same drift problem this package solves for the wire. PowerSource is
+// where the two meet: it names which reading a node settled on, and the store
+// records the same label beside its own history.
 package meshapi

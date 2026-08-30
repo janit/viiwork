@@ -7,6 +7,15 @@ import (
 	"sync"
 )
 
+// The ring file's fixed prefix. Both values are compatibility surface, not
+// tunables: see docs/energy-store-format.md.
+//
+// ringMagic is bumped only when the meaning of the bytes after the header
+// changes -- a new record size, a new lane layout, a repurposed field. That
+// bump is what turns such a change into a refusal at Open (see openRing)
+// rather than a silent reinitialisation of somebody else's history. Adding a
+// sibling file, or changing a slot count, is not that kind of change and does
+// not bump it.
 const (
 	ringMagic     = "VIIWENG1"
 	ringHeaderLen = 32
@@ -29,9 +38,28 @@ type ring struct {
 	recSize int
 }
 
-// openRing opens or creates a ring file. A file whose geometry no longer
-// matches the configuration is recreated rather than misread; that discards
-// history, so the caller is expected to say so out loud.
+// ringHeader is the parsed 32-byte prefix of a ring file. See
+// docs/energy-store-format.md for the byte layout.
+type ringHeader struct {
+	magic   string
+	recSize int
+	slots   int
+	lanes   int
+}
+
+// openRing opens or creates a ring file, and draws a hard line between the two
+// kinds of mismatch it can meet.
+//
+// A *geometry* change — a different slot count, or a host that gained or lost
+// a GPU — is legitimately per-deployment configuration. The file is recreated,
+// which discards history, and the caller is expected to say so out loud.
+//
+// A *format* change — a foreign or newer magic, or a different record size —
+// is refused instead. That distinction is the whole point: with two
+// independent implementations writing this format, a build whose records
+// disagree about their own size would otherwise silently reinitialise the
+// other's history on first open, and the operator's first clue would be a
+// year of missing energy. Refusing is recoverable; a silent reinit is not.
 func openRing(path string, slots, lanes, recSize int) (*ring, bool, error) {
 	if slots < 1 || lanes < 1 {
 		return nil, false, fmt.Errorf("ring %s: slots and lanes must be >= 1", path)
@@ -51,7 +79,30 @@ func openRing(path string, slots, lanes, recSize int) (*ring, bool, error) {
 		return nil, false, err
 	}
 
-	if info.Size() == size && r.headerMatches() {
+	// A file this process just created has no header to disagree with.
+	if info.Size() == 0 {
+		if err := r.reinit(size); err != nil {
+			f.Close()
+			return nil, false, err
+		}
+		return r, false, nil
+	}
+
+	head, err := r.readHeader()
+	if err != nil {
+		f.Close()
+		return nil, false, fmt.Errorf("%s: cannot read the %d-byte header of an existing %d-byte file: %w (move the store directory aside to start a new history)", path, ringHeaderLen, info.Size(), err)
+	}
+	if head.magic != ringMagic {
+		f.Close()
+		return nil, false, fmt.Errorf("%s: on-disk format is %q, this build writes %q; refusing to overwrite it (move the store directory aside to start a new history)", path, head.magic, ringMagic)
+	}
+	if head.recSize != recSize {
+		f.Close()
+		return nil, false, fmt.Errorf("%s: records on disk are %d bytes, this build writes %d; refusing to overwrite it (move the store directory aside to start a new history)", path, head.recSize, recSize)
+	}
+
+	if head.slots == slots && head.lanes == lanes && info.Size() == size {
 		return r, false, nil
 	}
 
@@ -60,18 +111,20 @@ func openRing(path string, slots, lanes, recSize int) (*ring, bool, error) {
 		return nil, false, err
 	}
 	// reset is true when an existing file was discarded, not on first creation.
-	return r, info.Size() != 0, nil
+	return r, true, nil
 }
 
-func (r *ring) headerMatches() bool {
+func (r *ring) readHeader() (ringHeader, error) {
 	head := make([]byte, ringHeaderLen)
 	if _, err := r.f.ReadAt(head, 0); err != nil {
-		return false
+		return ringHeader{}, err
 	}
-	return string(head[0:8]) == ringMagic &&
-		int(binary.LittleEndian.Uint16(head[8:])) == r.recSize &&
-		int(binary.LittleEndian.Uint32(head[10:])) == r.slots &&
-		int(binary.LittleEndian.Uint32(head[14:])) == r.lanes
+	return ringHeader{
+		magic:   string(head[0:8]),
+		recSize: int(binary.LittleEndian.Uint16(head[8:])),
+		slots:   int(binary.LittleEndian.Uint32(head[10:])),
+		lanes:   int(binary.LittleEndian.Uint32(head[14:])),
+	}, nil
 }
 
 func (r *ring) reinit(size int64) error {

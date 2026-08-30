@@ -1,5 +1,56 @@
 # Changelog
 
+## v1.6.0
+
+### The energy store is now a public package
+
+`internal/energy` has moved to `github.com/janit/viiwork/energy`. It keeps a
+durable per-host, per-model kWh history — node draw, per-GPU draw, and a split
+of one between the models causing it — in a fixed-size on-disk store that never
+grows past a couple of megabytes.
+
+It moved for the same reason `meshapi` did in v1.5.3: the fleet has a second
+implementation. `viiwork-nvidia` drives vLLM on CUDA hardware and reports the
+same `energy_kwh_24h` to the same dashboard, and Go does not allow importing
+`internal/` across module boundaries. The alternative was a second copy of the
+ring, tier and model-table code — two independent producers of one binary
+format, with nothing keeping them in step.
+
+The seam that makes this work was already there. The package never runs a
+command or reads a sensor; it takes a `NodeWattsFunc` and a `GPUReadingsFunc`
+and knows nothing else about where power comes from. viiwork fills them from
+`ipmitool` and `rocm-smi`, and another implementation fills them from
+`nvidia-smi`.
+
+Three things came with the move, because a format with two producers is not the
+same object as a format with one:
+
+- **The on-disk layout is documented as a contract.**
+  `docs/energy-store-format.md` specifies it byte by byte — header, record
+  layouts, the timestamp-derived slot rule, the model table, roll-up weighting
+  — and states what may change and what may not. `energy/doc.go` covers the Go
+  API.
+
+- **A format mismatch is now refused rather than silently repaired.** Opening a
+  store whose magic or record size disagrees with the running build used to
+  recreate the file, which was a local annoyance with one producer and the
+  destruction of a year of somebody else's history with two — indistinguishable,
+  months later, from a node that had never been switched on. It now fails with
+  an error naming the file, and leaves the bytes untouched. Changing a slot
+  count or adding a GPU is *not* that kind of change: those are per-deployment
+  configuration and still recreate the file, saying so in the log as before.
+
+- **The store records what its node wattage actually measured.** A
+  whole-chassis IPMI reading and a sum of GPU board power are the same bytes in
+  the same field, and differ by hundreds of watts. A `source` file in the store
+  directory now carries the same label the mesh publishes as `power_source`, and
+  an absent one reads as unknown rather than as a default.
+
+**Upgrading:** nothing to do. No configuration, no endpoint and no wire field
+changed, existing stores are read as-is, and energy tracking stays off by
+default. Anything importing `viiwork/internal/energy` — which nothing outside
+this repository could — updates its import path.
+
 ## v1.5.3
 
 ### The mesh protocol is now a public package: `meshapi`

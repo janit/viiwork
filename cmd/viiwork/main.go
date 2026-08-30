@@ -13,11 +13,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/janit/viiwork/energy"
 	"github.com/janit/viiwork/internal/activity"
 	"github.com/janit/viiwork/internal/balancer"
 	"github.com/janit/viiwork/internal/config"
 	"github.com/janit/viiwork/internal/cost"
-	"github.com/janit/viiwork/internal/energy"
 	"github.com/janit/viiwork/internal/gpu"
 	"github.com/janit/viiwork/internal/logging"
 	"github.com/janit/viiwork/internal/model"
@@ -273,6 +273,17 @@ func startEnergyRecorder(ctx context.Context, cfg *config.Config, hist *gpu.Hist
 		loc = time.UTC
 	}
 
+	// Stamp the history with which reading it was measured from. The sampler
+	// has already probed by now (NewSampler does it synchronously), so this is
+	// the source actually adopted rather than the one configured. When power
+	// is unavailable the label is left empty: nothing will be recorded anyway,
+	// and writing SourceName()'s "ipmitool" placeholder would claim a
+	// provenance no reading ever had.
+	powerSource := ""
+	if sampler.Available() {
+		powerSource = sampler.SourceName()
+	}
+
 	store, err := energy.Open(energy.Config{
 		Dir:         cfg.Energy.Dir,
 		GPUIDs:      gpuIDs,
@@ -280,6 +291,7 @@ func startEnergyRecorder(ctx context.Context, cfg *config.Config, hist *gpu.Hist
 		HourSlots:   cfg.Energy.HourSlots,
 		DaySlots:    cfg.Energy.DaySlots,
 		Location:    loc,
+		Source:      powerSource,
 	}, nil)
 	if err != nil {
 		log.Printf("[energy] disabled: %v", err)
