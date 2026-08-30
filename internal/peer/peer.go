@@ -2,6 +2,7 @@
 package peer
 
 import (
+	"github.com/janit/viiwork/meshapi"
 	"sync"
 	"sync/atomic"
 )
@@ -18,86 +19,20 @@ func (s PeerStatus) String() string {
 	return "unreachable"
 }
 
-type StatusResponse struct {
-	NodeID          string        `json:"node_id"`
-	Hostname        string        `json:"hostname,omitempty"`
-	ListenAddr      string        `json:"listen_addr,omitempty"`
-	Models          []string      `json:"models"`
-	Backends        []BackendInfo `json:"backends"`
-	TotalInFlight   int64         `json:"total_in_flight"`
-	HealthyBackends int           `json:"healthy_backends"`
-	TotalBackends   int           `json:"total_backends"`
-	PowerWatts      float64       `json:"power_watts"`
-	PowerAvailable  bool          `json:"power_available"`
-	// PowerSource names which IPMI reading this node settled on ("dcmi",
-	// `sdr type "Power Supply"`, "sensor:SYS_POWER"). It exists so a fleet-wide
-	// power outage of the reporting kind is visible without reading logs on
-	// five hosts. Absent from nodes older than the probing sampler.
-	PowerSource string `json:"power_source,omitempty"`
-	CostAvailable  bool               `json:"cost_available"`
-	CostEURPerHour float64            `json:"cost_eur_per_hour,omitempty"`
-	CostTodayEUR   float64            `json:"cost_today_eur,omitempty"`
-	CostBreakdown  *CostBreakdownJSON `json:"cost_breakdown,omitempty"`
-	// GPUs lets any node render GPU load for every host in the mesh, not just
-	// its own. omitempty keeps this compatible with nodes that predate it.
-	GPUs []GPUInfo `json:"gpus,omitempty"`
-
-	// PromptHistory is how many requests this node keeps prompt and output
-	// for. Absent from nodes older than v1.1.1, which is why a consumer must
-	// read zero as "unknown", not as "keeps nothing".
-	PromptHistory int `json:"prompt_history,omitempty"`
-
-	// Host RAM, so the mesh view can show memory pressure for every host and
-	// not only the one it is served from. Used is MemTotal - MemAvailable, so
-	// reclaimable page cache is not counted as pressure. Absent from older
-	// nodes, and a zero total means "unknown", not "no memory".
-	HostMemTotalMB int64 `json:"host_mem_total_mb,omitempty"`
-	HostMemUsedMB  int64 `json:"host_mem_used_mb,omitempty"`
-
-	// EnergyKWh24h is whole-node energy over the rolling last 24 hours, from
-	// the durable store, which runs on exactly one instance per host — so on a
-	// multi-model host the other instances report nothing rather than a second
-	// copy of it.
-	EnergyKWh24h float64 `json:"energy_kwh_24h,omitempty"`
-	// EnergyKWh30d is the same over the rolling last 30 days.
-	EnergyKWh30d float64 `json:"energy_kwh_30d,omitempty"`
-}
-
-type BackendInfo struct {
-	GPUID    int    `json:"gpu_id"`
-	GPUIDs   []int  `json:"gpu_ids,omitempty"` // populated in tensor-split mode
-	Model    string `json:"model"`
-	Status   string `json:"status"`
-	InFlight int64  `json:"in_flight"`
-	// Everything below is additive and omitempty: a node running an older
-	// build simply omits these and the mesh view degrades to blanks for that
-	// host rather than breaking. Without them a peer's backends arrive with
-	// no RSS or context figures, which is most of what the mesh view shows.
-	RSSMB      int64 `json:"rss_mb,omitempty"`
-	SlotCtx    int64 `json:"slot_ctx,omitempty"`
-	SlotCount  int   `json:"slot_count,omitempty"`
-	SlotActive int   `json:"slot_active,omitempty"`
-	TokDecoded int64 `json:"tok_decoded,omitempty"`
-	TokRemain  int64 `json:"tok_remain,omitempty"`
-}
-
-// GPUInfo is a single GPU's live utilisation, propagated across the mesh so any
-// node can render GPU load for every host. Locally this comes from the gpu
-// collector; for peers it arrives on the /v1/status poll.
-type GPUInfo struct {
-	GPUID       int     `json:"gpu_id"`
-	Util        float64 `json:"util"`
-	VRAMUsedMB  float64 `json:"vram_used_mb"`
-	VRAMTotalMB float64 `json:"vram_total_mb"`
-}
-
-type CostBreakdownJSON struct {
-	SpotCentsKWh     float64 `json:"spot_cents_kwh"`
-	TransferCentsKWh float64 `json:"transfer_cents_kwh"`
-	TaxCentsKWh      float64 `json:"tax_cents_kwh"`
-	VATPercent       float64 `json:"vat_percent"`
-	TotalCentsKWh    float64 `json:"total_cents_kwh"`
-}
+// The wire types below live in meshapi, the public definition of the mesh
+// protocol, and are aliased here so this package keeps its familiar names
+// while there is exactly one definition of every field that crosses a host
+// boundary. Aliases rather than wrappers: peer.StatusResponse and
+// meshapi.StatusResponse are the same type, so a second implementation of the
+// protocol can hand values straight to code written against either name.
+//
+// See meshapi's package doc for the compatibility rules these carry.
+type (
+	StatusResponse    = meshapi.StatusResponse
+	BackendInfo       = meshapi.BackendInfo
+	GPUInfo           = meshapi.GPUInfo
+	CostBreakdownJSON = meshapi.CostBreakdownJSON
+)
 
 type PeerState struct {
 	Addr string

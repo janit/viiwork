@@ -1,5 +1,51 @@
 # Changelog
 
+## v1.5.3
+
+### The mesh protocol is now a public package: `meshapi`
+
+Everything a node publishes to other nodes and to the dashboard — the
+`/v1/status` payload, the `/v1/cluster` snapshot, the activity event stream, the
+prompt lookup, the endpoint paths — now lives in `github.com/janit/viiwork/meshapi`
+instead of being spread across `internal/`. No wire format changed; this is the
+same bytes on the network, defined in one importable place.
+
+It moved because the mesh has a second implementation. `viiwork-nvidia` drives
+vLLM on CUDA hardware and joins the same mesh and the same dashboard, and Go
+does not allow importing `internal/` across module boundaries. Rather than let
+a second copy of every struct drift on another repo's schedule, the contract is
+published and both sides depend on it.
+
+`internal/peer` and `internal/activity` keep their familiar names through type
+aliases, so `peer.StatusResponse` and `meshapi.StatusResponse` are the same
+type and no call site changed. What did change is that 215 lines of duplicated
+definitions are gone.
+
+Three things came with it that were previously implicit:
+
+- **The activity message grammar is documented as wire format**, because that
+  is what it is. A request event reads `"<model> → <destination>"` with a
+  terminal suffix once it finishes, and every dashboard in the fleet
+  reconstructs its in-flight rows by splitting that string and matching the
+  terminal word — there is no server-side registry of running jobs anywhere.
+  `meshapi.RequestStarted`/`RequestDone`/`RequestAborted` build the messages and
+  `SplitRequestMessage`/`IsRequestTerminal` take them apart; `handler.go` and
+  `balancer.Label` now go through them rather than spelling the format out.
+
+- **The compatibility rules are stated and tested.** New fields are additive and
+  `omitempty`, and absent is not zero — a consumer must read a missing number as
+  "unknown", never as a measured zero. That is what lets a fleet whose machines
+  are upgraded days apart render at all. `wire_test.go` pins every field name,
+  so a rename fails the build rather than silently stranding a column on a host
+  you did not upgrade.
+
+- **The package is stdlib-only and self-contained**, which keeps the option of
+  extracting it into its own module cheap should that ever be worth doing.
+
+**Upgrading:** nothing to do. No configuration, no endpoint and no field
+changed, and a node on this version is wire-compatible in both directions with
+every node that predates it.
+
 ## v1.5.2
 
 ### The mesh dashboard has a fixed address: port 8086 on every host

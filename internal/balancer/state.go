@@ -1,11 +1,11 @@
 package balancer
 
 import (
-	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/janit/viiwork/meshapi"
 )
 
 type BackendStatus int
@@ -77,14 +77,7 @@ func NewBackendState(gpuID int, addr string) *BackendState {
 // backend, and process.Backend populates its own GPUIDs before State's are
 // set. Keep the output format identical if either changes.
 func (s *BackendState) Label() string {
-	if len(s.GPUIDs) > 0 {
-		parts := make([]string, len(s.GPUIDs))
-		for i, id := range s.GPUIDs {
-			parts[i] = strconv.Itoa(id)
-		}
-		return "ts-" + strings.Join(parts, ",")
-	}
-	return "gpu-" + strconv.Itoa(s.GPUID)
+	return meshapi.BackendLabel(s.GPUID, s.GPUIDs)
 }
 
 func (s *BackendState) Status() BackendStatus          { return BackendStatus(s.status.Load()) }
