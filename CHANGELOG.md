@@ -1,5 +1,32 @@
 # Changelog
 
+## v1.6.2
+
+### Builds stamp the version they actually are
+
+`make build`, `scripts/update.sh` and `scripts/rebuild.sh` each derived the
+version with `git describe --tags`. That is right in the public repository,
+which is tagged at release. It is wrong in the development tree, which carries
+no tags — they are created on the public repo at publish time — so describe
+reported the newest tag it could still see.
+
+The effect was that v1.5.3, v1.6.0 and v1.6.1 all built as `v1.5.2-N-g<sha>`,
+and reported that on `/v1/status` and in the dashboard. The version an operator
+reads off a misbehaving host was two releases stale.
+
+`scripts/version.sh` now answers the question once for all three callers. An
+exact tag still wins, so a release build from the public repository is
+unchanged and prints exactly its tag. Otherwise the version comes from
+`CHANGELOG.md`'s top heading — the one place a tagless tree knows what it is,
+and a file that is updated as part of cutting a release, so it cannot drift the
+way a tag the repo does not carry can. A short sha and a `-dirty` marker are
+appended between releases, and a tree with neither git nor a changelog falls
+back to `dev` rather than failing the build.
+
+**Upgrading:** nothing to do, and no code changed — this is build tooling only.
+Hosts rebuilt from this version onward will start reporting their real version;
+one built earlier keeps whatever it was stamped with until it is rebuilt.
+
 ## v1.6.1
 
 ### `energy`: attribution is now swappable, for nodes that measure each card

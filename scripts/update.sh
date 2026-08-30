@@ -19,7 +19,7 @@ done
 echo "==> Pulling latest changes..."
 git pull --ff-only
 
-VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo dev)
+VERSION=$("$(dirname "$0")/version.sh")
 echo "==> Building Docker image (version: ${VERSION})..."
 docker build --no-cache --build-arg VERSION="${VERSION}" -t viiwork .
 
