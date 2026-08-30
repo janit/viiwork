@@ -1,6 +1,8 @@
 .PHONY: build mcp test clean docker docker-stable docker-gfx906 docker-experimental up down
 
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+# scripts/version.sh, not `git describe` inline: the private repo carries no
+# tags, so describe reports the last one it can still see. See that script.
+VERSION ?= $(shell ./scripts/version.sh)
 
 build:
 	go build -ldflags "-X main.version=$(VERSION)" -o bin/viiwork ./cmd/viiwork

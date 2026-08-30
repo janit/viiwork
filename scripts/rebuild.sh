@@ -26,7 +26,7 @@ docker volume prune -f 2>/dev/null || true
 echo "==> Removing unused networks..."
 docker network prune -f 2>/dev/null || true
 
-VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo dev)
+VERSION=$("$(dirname "$0")/version.sh")
 echo "==> Building viiwork (version: ${VERSION})..."
 docker build --build-arg VERSION="${VERSION}" -t viiwork .
 
