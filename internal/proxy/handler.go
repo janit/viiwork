@@ -17,6 +17,7 @@ import (
 	"github.com/janit/viiwork/internal/gpu"
 	"github.com/janit/viiwork/internal/logging"
 	"github.com/janit/viiwork/internal/peer"
+	"github.com/janit/viiwork/internal/meshauth"
 	"github.com/janit/viiwork/meshapi"
 	"github.com/janit/viiwork/internal/pipeline"
 	"github.com/janit/viiwork/internal/power"
@@ -41,6 +42,50 @@ type Handler struct {
 	evictOnHardFailure bool
 	cors               *CORS
 	powerCtl           *power.Controller
+	signer             *meshauth.Signer
+	requireForwardProof bool
+	forwardNonces       *meshauth.NonceCache
+}
+
+// SetRequireForwardProof makes an unsigned peer forward a refused one. Leave
+// off until every node in the fleet signs its forwards; see GossipConfig.
+func (h *Handler) SetRequireForwardProof(on bool) { h.requireForwardProof = on }
+
+// forwardIsTrusted decides whether an inbound request may take the
+// forwarded-peer path, which pins it to local backends and refuses any model
+// this node does not serve.
+//
+// Today the claim is a node ID in a header that anyone can type. That was
+// tolerable while every peer was operator-configured; with peers now
+// adoptable, the claim should be a proof. It is enforced behind a flag
+// because a mixed fleet has un-upgraded nodes that cannot sign, and losing
+// routing to half the fleet mid-rollout is worse than the forgeable header
+// this replaces.
+func (h *Handler) forwardIsTrusted(r *http.Request, body []byte) bool {
+	forwardedBy := r.Header.Get(HeaderForwarded)
+	if forwardedBy == "" {
+		return false
+	}
+	if h.signer != nil {
+		nonce, caller, err := h.signer.VerifyRequest(r, body)
+		switch {
+		case err == nil:
+			// A valid proof, but replay is the one thing a signature alone
+			// does not close on a call that is not idempotent.
+			if h.forwardNonces != nil && !h.forwardNonces.Use(nonce) {
+				log.Printf("[mesh] rejected a replayed forward from %s", caller)
+				return false
+			}
+			return true
+		case h.requireForwardProof:
+			log.Printf("[mesh] rejected an unproven forward claiming to be %s: %v", forwardedBy, err)
+			return false
+		}
+	} else if h.requireForwardProof {
+		return false
+	}
+	// Rollout path: no proof required, so fall back to the old claim.
+	return h.registry != nil && h.registry.IsKnownPeer(forwardedBy)
 }
 
 // NewHandler creates a standalone handler (no mesh). Preserved for backward compatibility.
@@ -60,7 +105,22 @@ func NewMeshHandler(bal *balancer.Balancer, reg *peer.Registry, latencyWindow ti
 		latencyWindow:  latencyWindow,
 		statusHandler:  NewStatusHandler(reg.NodeID(), reg.LocalModel(), reg.Backends(), reg.Power(), reg.Cost(), StatusLocation{Hostname: reg.Hostname(), ListenAddr: reg.ListenAddr(), PromptHistory: reg.PromptHistory()}),
 		clusterHandler: NewClusterHandler(reg),
+		forwardNonces:  meshauth.NewNonceCache(2 * meshauth.SkewWindow),
 	}
+}
+
+// SetMeshSigner supplies the mesh membership proof. /v1/status and /v1/cluster
+// then answer a proven caller with a signed response; unsigned callers —
+// browsers, the gateway, older nodes — keep getting byte-identical responses.
+// Call before the handler serves traffic; like the other setters it is wiring,
+// not runtime reconfiguration.
+func (h *Handler) SetMeshSigner(s *meshauth.Signer) {
+	if s == nil {
+		return
+	}
+	h.signer = s
+	h.statusHandler = signedJSON(h.statusHandler, s)
+	h.clusterHandler = signedJSON(h.clusterHandler, s)
 }
 
 func (h *Handler) SetMetrics(history *gpu.History, broadcaster *gpu.Broadcaster, available func() bool) {
@@ -477,7 +537,7 @@ func (h *Handler) handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	forwardedBy := r.Header.Get(HeaderForwarded)
-	isForwarded := forwardedBy != "" && h.registry.IsKnownPeer(forwardedBy)
+	isForwarded := forwardedBy != "" && h.forwardIsTrusted(r, bodyBytes)
 
 	if isForwarded {
 		// Forwarded request from a known peer: only use local backends
@@ -562,7 +622,7 @@ func (h *Handler) handleProxy(w http.ResponseWriter, r *http.Request) {
 		if route.Peer != nil {
 			route.Peer.IncLocalInFlight()
 		}
-		proxyToPeer(w, r, route.Addr, h.registry.NodeID(), thinkDisabled)
+		proxyToPeer(w, r, route.Addr, h.registry.NodeID(), thinkDisabled, bodyBytes, h.signer)
 		if route.Peer != nil {
 			route.Peer.DecLocalInFlight()
 		}

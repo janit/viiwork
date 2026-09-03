@@ -542,7 +542,7 @@ func TestPeerProxyThinkFalse(t *testing.T) {
 		strings.NewReader(`{"model":"peer-model","messages":[],"think":false}`))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	proxyToPeer(w, req, peerSrv.Listener.Addr().String(), "viiwork-test", true)
+	proxyToPeer(w, req, peerSrv.Listener.Addr().String(), "viiwork-test", true, nil, nil)
 
 	var resp map[string]any
 	json.NewDecoder(w.Body).Decode(&resp)

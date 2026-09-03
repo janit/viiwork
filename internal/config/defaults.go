@@ -70,6 +70,12 @@ func Defaults() Config {
 		Peers: PeersConfig{
 			PollInterval: Duration{10 * time.Second},
 			Timeout:      Duration{3 * time.Second},
+			Gossip: GossipConfig{
+				Enabled:         false,
+				SecretEnv:       DefaultMeshSecretEnv,
+				DiscoveryEvery:  6,
+				MaxLearnedPeers: 200,
+			},
 		},
 		Cost: CostConfig{
 			Timezone: "Europe/Helsinki",

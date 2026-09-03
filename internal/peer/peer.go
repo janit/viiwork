@@ -34,8 +34,22 @@ type (
 	CostBreakdownJSON = meshapi.CostBreakdownJSON
 )
 
+const (
+	// OriginConfig is a peer from peers.hosts: operator input, exempt from
+	// address validation and never demoted for failing to prove membership.
+	OriginConfig = "config"
+	// OriginLearned is a peer adopted from another node's cluster report.
+	// It is not routable and not advertised until it proves membership on
+	// its own status poll.
+	OriginLearned = "learned"
+)
+
 type PeerState struct {
 	Addr string
+
+	// origin is fixed at construction and never written again, so it needs no
+	// lock: a config peer cannot become a learned one or the reverse.
+	origin string
 
 	// localInFlight tracks requests this node has dispatched to the peer and
 	// not yet received a response for. It's updated write-through on every
@@ -45,6 +59,7 @@ type PeerState struct {
 	localInFlight atomic.Int64
 
 	mu              sync.RWMutex
+	verified        bool
 	nodeID          string
 	hostname        string
 	listenAddr      string
@@ -78,7 +93,45 @@ func (p *PeerState) GPUs() []GPUInfo {
 }
 
 func NewPeerState(addr string) *PeerState {
-	return &PeerState{Addr: addr, status: StatusUnreachable}
+	return &PeerState{Addr: addr, origin: OriginConfig, status: StatusUnreachable}
+}
+
+// NewLearnedPeerState creates a peer adopted through gossip. Hostname is the
+// advertising node's report and is only a placeholder for the dashboard until
+// the peer answers for itself.
+func NewLearnedPeerState(addr, hostname string) *PeerState {
+	return &PeerState{Addr: addr, origin: OriginLearned, hostname: hostname, status: StatusUnreachable}
+}
+
+func (p *PeerState) Origin() string { return p.origin }
+
+// Verified reports whether this peer has ever returned a valid membership
+// proof. Monotonic on purpose: a signing peer that is merely unreachable for
+// a while must not lose its standing and have to earn it back.
+func (p *PeerState) Verified() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.verified
+}
+
+func (p *PeerState) MarkVerified() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.verified = true
+}
+
+// Routable reports whether this peer may be given traffic. A configured peer
+// qualifies on reachability alone — the operator typed it, and an older build
+// that cannot sign is still a first-class peer. A learned peer must also have
+// proved membership: an address another node named is hearsay until the thing
+// at that address answers for itself.
+func (p *PeerState) Routable() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.status != StatusReachable {
+		return false
+	}
+	return p.origin == OriginConfig || p.verified
 }
 
 func (p *PeerState) Update(resp StatusResponse) {

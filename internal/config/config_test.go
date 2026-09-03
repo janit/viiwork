@@ -371,3 +371,48 @@ func TestValidateMeshPort(t *testing.T) {
 		})
 	}
 }
+
+func TestMeshSecretRequiredWhenGossipEnabled(t *testing.T) {
+	cfg := &Config{}
+	cfg.Peers.Gossip = GossipConfig{Enabled: true, SecretEnv: "VIIWORK_MESH_SECRET"}
+
+	empty := func(string) (string, bool) { return "", false }
+	if _, err := cfg.MeshSecret(empty); err == nil {
+		t.Fatal("gossip enabled with no secret must be an error")
+	}
+
+	short := func(string) (string, bool) { return "tooshort", true }
+	if _, err := cfg.MeshSecret(short); err == nil {
+		t.Fatal("a secret under 32 bytes must be an error")
+	}
+
+	good := func(name string) (string, bool) {
+		if name != "VIIWORK_MESH_SECRET" {
+			t.Fatalf("looked up %q, want VIIWORK_MESH_SECRET", name)
+		}
+		return "0123456789abcdef0123456789abcdef", true
+	}
+	secret, err := cfg.MeshSecret(good)
+	if err != nil {
+		t.Fatalf("MeshSecret: %v", err)
+	}
+	if len(secret) != 32 {
+		t.Fatalf("secret is %d bytes, want 32", len(secret))
+	}
+}
+
+func TestMeshSecretOptionalWhenGossipDisabled(t *testing.T) {
+	// A node that does not adopt may still be provable: if the secret is set
+	// it is used, and if it is absent that is not an error. The rollout
+	// depends on this — every node carries the secret before any node adopts.
+	cfg := &Config{}
+	cfg.Peers.Gossip = GossipConfig{Enabled: false, SecretEnv: "VIIWORK_MESH_SECRET"}
+
+	secret, err := cfg.MeshSecret(func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatalf("absent secret with gossip off must not be an error: %v", err)
+	}
+	if secret != nil {
+		t.Fatalf("secret = %v, want nil", secret)
+	}
+}

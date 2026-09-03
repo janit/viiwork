@@ -20,6 +20,7 @@ import (
 	"github.com/janit/viiwork/internal/cost"
 	"github.com/janit/viiwork/internal/gpu"
 	"github.com/janit/viiwork/internal/logging"
+	"github.com/janit/viiwork/internal/meshauth"
 	"github.com/janit/viiwork/internal/model"
 	"github.com/janit/viiwork/internal/peer"
 	"github.com/janit/viiwork/internal/pipeline"
@@ -91,6 +92,21 @@ func main() {
 		peers = append(peers, peer.NewPeerState(host))
 	}
 
+	// Resolved before anything starts: a node configured to gossip without a
+	// usable secret is a misconfiguration to fix, not a state to run in.
+	secret, err := cfg.MeshSecret(os.LookupEnv)
+	if err != nil {
+		log.Fatalf("mesh secret: %v", err)
+	}
+	var signer *meshauth.Signer
+	if secret != nil {
+		signer, err = meshauth.NewSigner(secret, nodeID)
+		if err != nil {
+			log.Fatalf("mesh secret: %v", err)
+		}
+		log.Printf("[mesh] membership proof enabled (gossip adoption: %v)", cfg.Peers.Gossip.Enabled)
+	}
+
 	var tracker *cost.Tracker
 	apiKey := os.Getenv("ENTSOE_API_KEY")
 	if cfg.Cost.BiddingZone != "" && apiKey != "" {
@@ -139,6 +155,15 @@ func main() {
 
 	localModel := model.IDFromPath(cfg.Model.Path)
 	reg := peer.NewRegistry(nodeID, localModel, mgr.States(), peers, cfg.Peers.Timeout.Duration)
+	if signer != nil {
+		reg.SetSigner(signer)
+	}
+	reg.SetGossip(peer.GossipOptions{
+		Enabled:         cfg.Peers.Gossip.Enabled,
+		DiscoveryEvery:  cfg.Peers.Gossip.DiscoveryEvery,
+		MaxLearnedPeers: cfg.Peers.Gossip.MaxLearnedPeers,
+		AllowPrivate:    cfg.Peers.Gossip.AllowPrivate,
+	})
 	reg.SetPowerReader(sampler)
 	if tracker != nil {
 		reg.SetCostReader(tracker)
@@ -147,6 +172,8 @@ func main() {
 	reg.SetLocation(hostname, fmt.Sprintf("%s:%d", hostname, cfg.Server.Port))
 	reg.SetPromptHistory(actLog.PromptHistoryMax())
 	handler := proxy.NewMeshHandler(bal, reg, cfg.Balancer.LatencyWindow.Duration)
+	handler.SetMeshSigner(signer)
+	handler.SetRequireForwardProof(cfg.Peers.Gossip.RequireForwardProof)
 	handler.SetMetrics(hist, bcast, collector.Available)
 	if ctl := newPowerController(cfg, hostname); ctl != nil {
 		handler.SetPowerControl(ctl)
