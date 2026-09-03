@@ -1,5 +1,34 @@
 # Changelog
 
+## v1.7.0
+
+### Mesh gossip: peers.hosts becomes a seed list
+
+With `peers.gossip.enabled: true` and a shared `VIIWORK_MESH_SECRET` (at
+least 32 bytes, environment only, never YAML), a node learns its peers'
+peers transitively: one reachable address is enough to join the mesh, and
+N×N peer configuration goes away. Off by default — with it off, behaviour
+is byte-identical to v1.6.x, on the wire included.
+
+Membership is proved, not assumed. Every mesh-to-mesh call carries an
+HMAC-SHA256 proof (`X-Viiwork-Auth` and friends) over pinned canonical
+strings, with a 120s skew window. Endpoints stay readable without it, so
+browsers, the gateway and viiwork-nvidia are untouched; what a proof buys
+is standing — only a verified peer's cluster report is believed, only a
+validated address (IP literal, allowed ranges, strict port) is ever
+dialled, the learned-peer intake is capped, and an adopted address is not
+routed to or advertised onward until it proves membership on its own
+status poll. Configured peers stay first-class with or without a proof,
+which is what makes a mixed-version rollout safe.
+
+`ClusterPeerInfo` gains `origin` (`config` or `learned`), additive and
+omitempty. `require_forward_proof` (default off) upgrades the forgeable
+`X-Viiwork-Forwarded` claim to a signature over method, path and body with
+a replay-closing nonce cache; flip it on only once the whole fleet signs.
+
+The registry's peer set is now an atomic snapshot rather than a plain
+slice, so it can grow at runtime without racing the request path.
+
 ## v1.6.3
 
 ### The mesh event stream no longer writes to a finished response

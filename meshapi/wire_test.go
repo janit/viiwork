@@ -98,6 +98,7 @@ func TestClusterPeerInfoWireFields(t *testing.T) {
 		"energy_kwh_24h", "energy_kwh_30d",
 		"host_mem_total_mb", "host_mem_used_mb",
 		"cost_available", "cost_eur_per_hour", "cost_today_eur",
+		"origin",
 	})
 }
 
@@ -172,5 +173,15 @@ func TestMinimalStatusOmitsUnmeasured(t *testing.T) {
 		if !strings.Contains(string(b), present) {
 			t.Errorf("required field %q missing: %s", present, b)
 		}
+	}
+}
+
+func TestClusterPeerInfoOriginIsOmitEmpty(t *testing.T) {
+	b, err := json.Marshal(ClusterPeerInfo{Addr: "100.64.0.11:9100", Status: "reachable"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "origin") {
+		t.Fatalf("origin must be omitted when empty, got %s", b)
 	}
 }

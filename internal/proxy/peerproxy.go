@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"log"
@@ -8,17 +9,22 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/janit/viiwork/internal/meshauth"
 )
 
 const HeaderForwarded = "X-Viiwork-Forwarded"
 
 var peerClient = &http.Client{Timeout: 120 * time.Second}
 
-func proxyToPeer(w http.ResponseWriter, r *http.Request, peerAddr string, nodeID string, thinkDisabled bool) {
+// proxyToPeer takes the body explicitly rather than streaming r.Body: the
+// membership proof covers a digest, so the exact bytes have to be known, and
+// the caller already has them buffered.
+func proxyToPeer(w http.ResponseWriter, r *http.Request, peerAddr string, nodeID string, thinkDisabled bool, body []byte, signer *meshauth.Signer) {
 	targetURL := fmt.Sprintf("http://%s%s", peerAddr, r.URL.Path)
 	if r.URL.RawQuery != "" { targetURL += "?" + r.URL.RawQuery }
 
-	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, r.Body)
+	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, bytes.NewReader(body))
 	if err != nil {
 		log.Printf("[debug] peer proxy request creation failed for %s: %v", peerAddr, err)
 		http.Error(w, `{"error":{"message":"proxy error","type":"server_error"}}`, http.StatusBadGateway)
@@ -28,6 +34,14 @@ func proxyToPeer(w http.ResponseWriter, r *http.Request, peerAddr string, nodeID
 		for _, v := range values { proxyReq.Header.Add(key, v) }
 	}
 	proxyReq.Header.Set(HeaderForwarded, nodeID)
+	proxyReq.ContentLength = int64(len(body))
+	// Signed last: SignRequest covers the method, path and body digest, and
+	// must be computed after every other header is in place.
+	if signer != nil {
+		if _, err := signer.SignRequest(proxyReq, body); err != nil {
+			log.Printf("[debug] could not sign forward to %s: %v", peerAddr, err)
+		}
+	}
 
 	resp, err := peerClient.Do(proxyReq)
 	if err != nil {

@@ -93,6 +93,11 @@ type ClusterPeerInfo struct {
 	CostAvailable   bool                 `json:"cost_available,omitempty"`
 	CostEURPerHour  float64              `json:"cost_eur_per_hour,omitempty"`
 	CostTodayEUR    float64              `json:"cost_today_eur,omitempty"`
+	// Origin says how the serving node came to know this peer: "config" for
+	// an address from peers.hosts, "learned" for one adopted by gossip.
+	// Absent means a node too old to distinguish them — read that as
+	// "config", which is what every pre-gossip node's peers were.
+	Origin string `json:"origin,omitempty"`
 }
 
 // ClusterBackendInfo is BackendInfo as it appears inside a cluster snapshot.

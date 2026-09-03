@@ -128,6 +128,39 @@ peers:
 
 Peers that go down are skipped and automatically re-added when they recover. Without the `peers` section, viiwork runs standalone.
 
+### Gossip
+
+With `peers.gossip.enabled: true` and `VIIWORK_MESH_SECRET` set to the same
+value on every node, `peers.hosts` becomes a seed list rather than the whole
+fleet: a node learns its peers' peers, transitively, and one reachable
+address is enough to join the mesh.
+
+Membership is proved, not assumed. Every mesh-to-mesh call carries an
+HMAC-SHA256 proof over the shared secret, and a node adopts an address only
+from a peer that proves membership — and routes to it only once the address
+proves membership itself. Reads stay open: dashboards, the gateway and
+viiwork-nvidia need no secret and no changes.
+
+Generate a secret with `openssl rand -base64 48`. A node with
+`gossip.enabled: true` and no usable secret refuses to start.
+
+Rolling it out, in this order:
+
+1. Deploy the new build everywhere with `gossip.enabled: false`. No change.
+2. Set `VIIWORK_MESH_SECRET` on every node, same value. Still no adoption —
+   but every node is now provable.
+3. Enable gossip on one node. It learns the fleet; nothing is pushed, so no
+   other node is affected. Check its `/mesh`.
+4. Enable it node by node.
+5. Only then, trim `peers.hosts` to one or two seeds per node. Never to
+   zero: learned peers are in memory only, so a node with no seeds cannot
+   rejoin after a restart.
+6. Last, once every node runs the new build, set
+   `require_forward_proof: true` fleet-wide.
+
+To roll back, set `gossip.enabled: false` and restart — learned peers are
+in-memory only and vanish; configured peers are untouched.
+
 ## GPU Power Limits
 
 Optionally limit power draw per Radeon VII card:

@@ -133,6 +133,16 @@ balancer:
 #     - 192.168.1.11:8080
 #   poll_interval: 10s
 #   timeout: 3s
+#   # Gossip: learn peers from peers, so peers.hosts is a seed list rather than
+#   # the whole fleet. Off by default. Requires VIIWORK_MESH_SECRET (>= 32
+#   # bytes, same value on every node) — generate with: openssl rand -base64 48
+#   gossip:
+#     enabled: false
+#     secret_env: VIIWORK_MESH_SECRET
+#     discovery_every: 6          # cluster-poll each peer every N status rounds
+#     max_learned_peers: 200
+#     allow_private: false        # 100.64.0.0/10 is always allowed
+#     require_forward_proof: false # flip true only once the whole fleet signs
 
 # Node power reading over IPMI. Requires ipmitool and /dev/ipmi0 in the
 # container (add "- /dev/ipmi0:/dev/ipmi0" to the compose devices list).

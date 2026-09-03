@@ -2,6 +2,7 @@ package peer
 
 import (
 	"context"
+	"fmt"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/janit/viiwork/internal/balancer"
+	"github.com/janit/viiwork/internal/meshauth"
 	"github.com/janit/viiwork/internal/model"
 )
 
@@ -104,7 +106,7 @@ func TestRegistryGPUModelsCoLocatedPeers(t *testing.T) {
 	otherHost.Update(StatusResponse{NodeID: "viiwork-gb0", Hostname: "gb0", Backends: []BackendInfo{
 		{GPUID: 5, Model: "should-not-appear"},
 	}})
-	reg.peers = []*PeerState{sameHost, otherHost}
+	reg.peers.Store(buildPeerSet([]*PeerState{sameHost, otherHost}))
 
 	got := reg.GPUModels()
 	want := map[int]string{0: "qwen3.8-27b", 1: "qwen3.8-27b", 2: "granite-4.1-8b"}
@@ -127,7 +129,7 @@ func TestRegistryGPUModelsSkipsUnreachableAndUnknownHost(t *testing.T) {
 	// A pre-v1.0 peer omits hostname entirely; it cannot be assumed local.
 	noHostname := NewPeerState("127.0.0.1:9404")
 	noHostname.Update(StatusResponse{NodeID: "viiwork-old", Backends: []BackendInfo{{GPUID: 3, Model: "translategemma"}}})
-	reg.peers = []*PeerState{dead, noHostname}
+	reg.peers.Store(buildPeerSet([]*PeerState{dead, noHostname}))
 
 	if got := reg.GPUModels(); len(got) != 0 { t.Errorf("expected no labels, got %v", got) }
 }
@@ -141,7 +143,7 @@ func TestRegistryGPUModelsLocalWins(t *testing.T) {
 
 	self := NewPeerState("127.0.0.1:9102")
 	self.Update(StatusResponse{NodeID: "viiwork-granite", Hostname: "gb1", Backends: []BackendInfo{{GPUID: 2, Model: "stale-name"}}})
-	reg.peers = []*PeerState{self}
+	reg.peers.Store(buildPeerSet([]*PeerState{self}))
 
 	if got := reg.GPUModels()[2]; got != "granite-4.1-8b" { t.Errorf("expected local model to win, got %q", got) }
 }
@@ -165,7 +167,7 @@ func TestClusterStatePrefersReportedHostname(t *testing.T) {
 	// A peer too old to report a hostname still has to land somewhere.
 	legacy := NewPeerState("192.168.1.63:9101")
 	legacy.Update(StatusResponse{NodeID: "viiwork-old", Models: []string{"granite"}})
-	reg.peers = []*PeerState{coLocated, legacy}
+	reg.peers.Store(buildPeerSet([]*PeerState{coLocated, legacy}))
 
 	state := reg.ClusterState()
 	if got := state.Peers[0].Hostname; got != "gb1" {
@@ -183,7 +185,7 @@ func TestClusterStateCarriesPowerSource(t *testing.T) {
 	reg.SetLocation("gb1", "gb1:9102")
 	p := NewPeerState("192.168.1.63:9101")
 	p.Update(StatusResponse{NodeID: "viiwork-gb0", Hostname: "gb0", PowerWatts: 210, PowerAvailable: true, PowerSource: "dcmi"})
-	reg.peers = []*PeerState{p}
+	reg.peers.Store(buildPeerSet([]*PeerState{p}))
 
 	state := reg.ClusterState()
 	if got := state.Peers[0].PowerSource; got != "dcmi" {
@@ -194,5 +196,86 @@ func TestClusterStateCarriesPowerSource(t *testing.T) {
 	p.MarkUnreachable()
 	if got := reg.ClusterState().Peers[0].PowerSource; got != "" {
 		t.Errorf("expected no power_source when unreachable, got %q", got)
+	}
+}
+
+func TestPeerSetIsSafeUnderConcurrentReadsAndAdds(t *testing.T) {
+	reg := NewRegistry("gb1-a1b2", "test-model", nil, []*PeerState{NewPeerState("100.64.0.11:9100")}, time.Second)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 500; i++ {
+			reg.addPeers(NewLearnedPeerState(fmt.Sprintf("100.64.0.%d:9100", i%200+20), ""))
+		}
+	}()
+
+	for i := 0; i < 500; i++ {
+		reg.FindRoutesForModel("test-model")
+		reg.AllModels()
+		reg.ClusterState()
+		reg.IsKnownPeer("gb2-c3d4")
+	}
+	<-done
+
+	if got := len(reg.Peers()); got < 2 {
+		t.Fatalf("peer count = %d, want the seed plus learned peers", got)
+	}
+}
+
+func TestPollPeerMarksVerifiedOnASignedResponse(t *testing.T) {
+	secret := []byte("0123456789abcdef0123456789abcdef")
+	local, _ := meshauth.NewSigner(secret, "gb1-a1b2")
+	remote, _ := meshauth.NewSigner(secret, "gb2-c3d4")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nonce, _, err := remote.VerifyRequest(r, nil)
+		body, _ := json.Marshal(StatusResponse{NodeID: "gb2-c3d4", Models: []string{"m1"}})
+		if err == nil {
+			remote.SignResponse(w.Header(), r.URL.RequestURI(), nonce, body)
+		}
+		w.Write(body)
+	}))
+	defer srv.Close()
+
+	p := NewPeerState(srv.Listener.Addr().String())
+	reg := NewRegistry("gb1-a1b2", "local-model", nil, []*PeerState{p}, 2*time.Second)
+	reg.SetSigner(local)
+
+	reg.PollOnce(context.Background())
+
+	if p.Status() != StatusReachable {
+		t.Fatal("peer should be reachable")
+	}
+	if !p.Verified() {
+		t.Fatal("peer returned a valid proof and should be verified")
+	}
+}
+
+func TestPollPeerLeavesAnUnsignedPeerReachableButUnverified(t *testing.T) {
+	// An older build in a mixed fleet: it answers, it is routable because it
+	// is configured, and it is simply never a source of gossip.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(StatusResponse{NodeID: "gb9-old1", Models: []string{"m9"}})
+	}))
+	defer srv.Close()
+
+	secret := []byte("0123456789abcdef0123456789abcdef")
+	local, _ := meshauth.NewSigner(secret, "gb1-a1b2")
+
+	p := NewPeerState(srv.Listener.Addr().String())
+	reg := NewRegistry("gb1-a1b2", "local-model", nil, []*PeerState{p}, 2*time.Second)
+	reg.SetSigner(local)
+
+	reg.PollOnce(context.Background())
+
+	if p.Status() != StatusReachable {
+		t.Fatal("an unsigned peer must still be reachable")
+	}
+	if p.Verified() {
+		t.Fatal("an unsigned peer must not be verified")
+	}
+	if !p.Routable() {
+		t.Fatal("a configured peer must be routable without a proof")
 	}
 }

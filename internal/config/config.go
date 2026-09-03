@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/janit/viiwork/internal/meshauth"
 	"github.com/janit/viiwork/internal/pipeline"
 	"github.com/janit/viiwork/internal/power"
 	"gopkg.in/yaml.v3"
@@ -150,9 +151,69 @@ type BalancerConfig struct {
 }
 
 type PeersConfig struct {
-	Hosts        []string `yaml:"hosts"`
-	PollInterval Duration `yaml:"poll_interval"`
-	Timeout      Duration `yaml:"timeout"`
+	Hosts        []string     `yaml:"hosts"`
+	PollInterval Duration     `yaml:"poll_interval"`
+	Timeout      Duration     `yaml:"timeout"`
+	Gossip       GossipConfig `yaml:"gossip"`
+}
+
+// GossipConfig turns peers.hosts from the whole world into seeds: with gossip
+// on, a node adopts the peers its peers report, transitively, and one
+// reachable address is enough to join the mesh.
+//
+// Enabled governs adoption only. Answering another node's proof — and so
+// being adoptable by it — is governed by the secret alone, which is what lets
+// a fleet distribute the secret everywhere and then enable adoption one node
+// at a time.
+type GossipConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// SecretEnv names the environment variable holding the mesh secret. The
+	// secret is never read from YAML, for the reason BMCConfig.PasswordEnv
+	// already gives: viiwork.yaml is deployment-specific but still a file
+	// people paste into issues.
+	SecretEnv string `yaml:"secret_env"`
+	// DiscoveryEvery is how many status rounds pass between cluster polls of
+	// a given peer. A peer verified since the last round is cluster-polled
+	// immediately regardless, which is what makes a chain converge in rounds
+	// rather than in multiples of this.
+	DiscoveryEvery int `yaml:"discovery_every"`
+	// MaxLearnedPeers caps adopted addresses. Configured peers are exempt:
+	// they are operator input, not another node's self-report. Each learned
+	// peer costs a goroutine and a dial every interval, forever, so an
+	// unbounded set is a resource exhaustion primitive handed to whichever
+	// node advertises the most addresses.
+	MaxLearnedPeers int `yaml:"max_learned_peers"`
+	// AllowPrivate opts learned addresses into RFC1918/ULA space. The
+	// tailnet's own 100.64.0.0/10 is always allowed and is where real nodes
+	// live; this is for deployments that peer over a plain LAN.
+	AllowPrivate bool `yaml:"allow_private"`
+	// RequireForwardProof rejects an unsigned peer forward. Leave false until
+	// every node in the fleet runs a build that signs its forwards: with it
+	// on, a mixed fleet loses routing to its un-upgraded half.
+	RequireForwardProof bool `yaml:"require_forward_proof"`
+}
+
+const DefaultMeshSecretEnv = "VIIWORK_MESH_SECRET"
+
+// MeshSecret resolves the mesh secret through the supplied lookup (pass
+// os.LookupEnv; tests pass their own). It returns nil with no error when
+// gossip is off and no secret is set — an ordinary, supported configuration.
+func (c *Config) MeshSecret(lookupEnv func(string) (string, bool)) ([]byte, error) {
+	name := c.Peers.Gossip.SecretEnv
+	if name == "" {
+		name = DefaultMeshSecretEnv
+	}
+	v, ok := lookupEnv(name)
+	if !ok || v == "" {
+		if c.Peers.Gossip.Enabled {
+			return nil, fmt.Errorf("peers.gossip.enabled is true but %s is not set", name)
+		}
+		return nil, nil
+	}
+	if len(v) < meshauth.MinSecretLen {
+		return nil, fmt.Errorf("%s is %d bytes, need at least %d", name, len(v), meshauth.MinSecretLen)
+	}
+	return []byte(v), nil
 }
 
 type WinterTransferConfig struct {
