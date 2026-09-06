@@ -1,5 +1,26 @@
 # Changelog
 
+## v1.8.0
+
+### Open Chat from the mesh view, pinned to a host
+
+`/mesh` gains an **Open Chat** section: one link per model, opening `/chat`
+for that model in a new tab. `/chat` reads `?model=` and `?host=` from its
+URL and reflects every change back into it, so a chat state is linkable; a
+**backend** selector offers `mesh` (routing as before) or any host currently
+serving the model, and each reply says where it ran.
+
+Under it, `/v1/chat/completions`, `/v1/completions` and `/v1/embeddings`
+accept `?host=<hostname>`, which narrows routing to that machine — several
+co-located instances count as one host and are still balanced across.
+Absent or `mesh` routes exactly as before. A host that does not serve the
+model is a `404` naming both, never a quiet fallback to the mesh; a malformed
+value is a `400`. The value is only compared against hostnames the node
+already knows and is never dialled, so it cannot reach anything normal
+routing could not. The query string already travels with a forward, so the
+pin holds across a hop and works from `curl`. `peer.Route` gains a `Host`
+field and `peer.FilterByHost` applies the pin.
+
 ## v1.7.0
 
 ### Mesh gossip: peers.hosts becomes a seed list

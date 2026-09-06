@@ -37,6 +37,12 @@
           cursor: pointer; }
   .pill.muted { border-color: var(--border); color: var(--dimmer); }
   .pill.active { background: var(--accent); color: #08131f; font-weight: 600; }
+  /* link pills: an <a> that opens /chat in a new tab, styled apart from the
+     filter buttons above so two unrelated actions never look the same */
+  .pill.link { border-color: var(--border); color: var(--fg); text-decoration: none;
+               background: rgba(88,166,255,0.06); display: inline-flex; gap: 8px; align-items: baseline; }
+  .pill.link:hover { border-color: var(--accent); }
+  .pill.link .go { color: var(--accent); font-size: 0.7rem; }
 
   /* toggle */
   .toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
@@ -198,6 +204,11 @@
     <section>
       <h2>Mesh Models</h2>
       <div class="pills" id="models"></div>
+    </section>
+
+    <section>
+      <h2>Open Chat</h2>
+      <div class="pills" id="chatlinks"></div>
     </section>
 
     <section>
@@ -455,14 +466,21 @@ function renderBackends() {
   body.innerHTML = html;
 }
 
+// modelCounts is model -> live backend count, from the same flattened rows the
+// backends table renders. Both the filter pills and the Open Chat links read
+// it, so the two sections can never disagree about what is served.
+function modelCounts() {
+  const counts = new Map();
+  for (const r of flattenBackends(cluster)) counts.set(r.model, (counts.get(r.model) || 0) + 1);
+  for (const m of (cluster?.models || [])) if (!counts.has(m)) counts.set(m, 0);
+  return counts;
+}
+
 // ---------------------------------------------------------------------------
 // Render: model pills (click to filter)
 // ---------------------------------------------------------------------------
 function renderModels() {
-  const rows = flattenBackends(cluster);
-  const counts = new Map();
-  for (const r of rows) counts.set(r.model, (counts.get(r.model) || 0) + 1);
-  for (const m of (cluster?.models || [])) if (!counts.has(m)) counts.set(m, 0);
+  const counts = modelCounts();
 
   const el = $("models");
   if (!counts.size) { el.innerHTML = '<span class="empty">no models</span>'; return; }
@@ -477,6 +495,31 @@ function renderModels() {
     modelFilter = (modelFilter === b.dataset.model) ? null : b.dataset.model;
     renderModels(); renderBackends(); renderInflight();
   });
+}
+
+// ---------------------------------------------------------------------------
+// Render: Open Chat links. Same counts as the model pills, but these are real
+// <a href>s that open /chat for the model in a new tab — the affordance the
+// prompt rows already have — not buttons that filter this page. Choosing the
+// host is the chat page's job, so a link carries only the model. Rendered from
+// the cluster path only, never from the filter click: these are not filtered
+// state, and re-rendering them per click would be churn.
+// ---------------------------------------------------------------------------
+function chatHref(model) {
+  return "/chat?" + new URLSearchParams({ model }).toString();
+}
+
+function renderChatLinks() {
+  const counts = modelCounts();
+  const el = $("chatlinks");
+  if (!counts.size) { el.innerHTML = '<span class="empty">no models</span>'; return; }
+
+  el.innerHTML = [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([m, n]) => n
+      ? `<a class="pill link" href="${esc(chatHref(m))}" target="_blank" rel="noopener">` +
+        `${esc(m)} · ${n}<span class="go">open ↗</span></a>`
+      : `<span class="pill muted">${esc(m)}</span>`)
+    .join("");
 }
 
 // ---------------------------------------------------------------------------
@@ -1290,6 +1333,7 @@ function applyCluster(c) {
   $("scope").textContent =
     `${esc(cluster.hostname || "?")} · ${peers.length ? `${up}/${peers.length} peers reachable` : "no peers"} · v${esc(cluster.version || "?")}`;
   renderModels();
+  renderChatLinks();
   renderBackends();
   // Power last: it reads the snapshot the same way the tables do, and a halt
   // gates it here rather than in the stream handler, so a frozen view stops

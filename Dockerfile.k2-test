@@ -1,0 +1,61 @@
+# Dedicated image for K2-Horizon-MoVA-36B-A4B bring-up testing.
+#
+# Why a separate image:
+#   - The K2 Horizon architecture ("k2-horizon", MoVA attention + MoE FFN)
+#     is not in upstream llama.cpp. Support lives in the MBZUAI-IFM fork,
+#     branch model/K2Horizon, with an upstream PR "in progress" as of
+#     2026-09-03. Community GGUFs were cut with that branch at 35999d101.
+#   - The fork adds no ggml kernels (conversion, vocab, arch tables and
+#     src/models/k2-horizon.cpp only), so the HIP backend is stock and
+#     the gfx906 build path is the same as the production Dockerfile.
+#   - Its merge base with upstream is 4e97ac86e (2026-08-28), newer than
+#     the b10437 the fleet runs, so nothing the fleet needs is lost.
+#
+# Build:
+#   docker build -t viiwork:k2-test -f Dockerfile.k2-test .
+#
+# Pinned to a commit rather than the branch tip: the quants on HF were
+# produced at this commit, and the branch may keep moving.
+
+# Stage 1: Build the fork with ROCm/gfx906
+FROM rocm/dev-ubuntu-24.04:6.2.4-complete AS llama-build
+RUN apt-get update && apt-get install -y cmake git
+ARG LLAMA_CPP_REPO=https://github.com/MBZUAI-IFM/llama.cpp
+ARG LLAMA_CPP_SHA=35999d101cf2233fc54f09c3c8d599da7303ce02
+RUN git init /llama.cpp && cd /llama.cpp \
+    && git remote add origin ${LLAMA_CPP_REPO} \
+    && git fetch --depth 1 origin ${LLAMA_CPP_SHA} \
+    && git checkout FETCH_HEAD \
+    && git rev-parse HEAD
+WORKDIR /llama.cpp
+# gfx906 FP8 header workaround (same as prod Dockerfile)
+RUN sed -i 's/#if HIP_VERSION >= 60200000/#if HIP_VERSION >= 99999999/' \
+    ggml/src/ggml-cuda/vendors/hip.h || true
+RUN cmake -B build -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx906 \
+    && cmake --build build --target llama-server llama-cli llama-bench llama-perplexity -j$(nproc)
+RUN ldd /llama.cpp/build/bin/llama-server && /llama.cpp/build/bin/llama-server --help > /dev/null
+RUN ldd /llama.cpp/build/bin/llama-cli    && /llama.cpp/build/bin/llama-cli    --help > /dev/null
+
+# Stage 2: Build viiwork (unchanged)
+FROM golang:1.27.0 AS go-build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ARG VERSION=k2-test
+RUN CGO_ENABLED=0 go build -ldflags "-X main.version=${VERSION}" -o /viiwork ./cmd/viiwork
+
+# Stage 3: Runtime
+FROM rocm/dev-ubuntu-24.04:6.2.4-complete
+RUN apt-get update && apt-get install -y --no-install-recommends ipmitool && rm -rf /var/lib/apt/lists/*
+COPY --from=llama-build /llama.cpp/build/bin/llama-server     /usr/local/bin/
+COPY --from=llama-build /llama.cpp/build/bin/llama-cli        /usr/local/bin/
+COPY --from=llama-build /llama.cpp/build/bin/llama-bench      /usr/local/bin/
+COPY --from=llama-build /llama.cpp/build/bin/llama-perplexity /usr/local/bin/
+COPY --from=llama-build /llama.cpp/build /tmp/llama-build/
+RUN find /tmp/llama-build -name '*.so*' -exec cp {} /usr/local/lib/ \; && rm -rf /tmp/llama-build && ldconfig
+COPY --from=go-build /viiwork /usr/local/bin/
+ENV HSA_OVERRIDE_GFX_VERSION=9.0.6
+EXPOSE 8080
+ENTRYPOINT ["viiwork"]
+CMD ["--config", "/etc/viiwork/viiwork.yaml"]

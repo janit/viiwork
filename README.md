@@ -246,7 +246,11 @@ Available at `http://localhost:8080/`. Shows:
 - Peer mesh connectivity
 - Power consumption and electricity cost
 
-A lightweight chat UI is available at `/chat` for quick model interaction.
+A lightweight chat UI is available at `/chat` for quick model interaction. It is
+addressable — `/chat?model=<id>` preselects a model and `&host=<hostname>` pins
+it to one machine — and `/mesh` links into it with one **Open Chat** entry per
+model. The **backend** selector lists every host currently serving the chosen
+model; `mesh` (the default) routes as always, and each reply says where it ran.
 
 ## Mesh Dashboard
 
@@ -523,12 +527,12 @@ an API that has none.
 | `/` | GET | Status dashboard (this node); the mesh dashboard on `server.mesh_port` |
 | `/mesh` | GET | Cluster-wide dashboard (all hosts, all models) |
 | `/prompt` | GET | Full-page prompt + output for one request (`?rid=N&addr=`) |
-| `/chat` | GET | Lightweight chat UI |
+| `/chat` | GET | Lightweight chat UI (`?model=<id>&host=<hostname>`) |
 | `/health` | GET | System health (JSON) |
 | `/v1/models` | GET | List all models (local + mesh peers) |
-| `/v1/chat/completions` | POST | Chat completion (routes by model) |
-| `/v1/completions` | POST | Text completion (routes by model) |
-| `/v1/embeddings` | POST | Embeddings (routes by model) |
+| `/v1/chat/completions` | POST | Chat completion (routes by model; `?host=<hostname>` pins one host) |
+| `/v1/completions` | POST | Text completion (routes by model; `?host=` as above) |
+| `/v1/embeddings` | POST | Embeddings (routes by model; `?host=` as above) |
 | `/v1/status` | GET | Node state (JSON) |
 | `/v1/cluster` | GET | Cluster state with all peers (JSON) |
 | `/v1/metrics` | GET | GPU metrics history (JSON) |

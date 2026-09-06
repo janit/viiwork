@@ -425,7 +425,7 @@ func (r *Registry) FindRoutesForModel(modelName string) []Route {
 	if modelName == r.localModel {
 		for _, b := range r.backends {
 			if b.Status() == balancer.StatusHealthy {
-				routes = append(routes, Route{Type: RouteLocal, Backend: b, InFlight: b.InFlight()})
+				routes = append(routes, Route{Type: RouteLocal, Backend: b, InFlight: b.InFlight(), Host: r.hostname})
 			}
 		}
 	}
@@ -436,10 +436,22 @@ func (r *Registry) FindRoutesForModel(modelName string) []Route {
 		// HasModel, not range over Models(): the latter copies the peer's model
 		// slice on every call.
 		if p.HasModel(modelName) {
-			routes = append(routes, Route{Type: RoutePeer, Addr: p.Addr, Peer: p, InFlight: p.TotalInFlight()})
+			routes = append(routes, Route{Type: RoutePeer, Addr: p.Addr, Peer: p, InFlight: p.TotalInFlight(), Host: routeHost(p)})
 		}
 	}
 	return routes
+}
+
+// routeHost names the machine a peer route executes on: the hostname the peer
+// reports, else the host part of the address it is dialled on. The cluster
+// snapshot derives ClusterPeerInfo.Hostname the same way, so the chat page's
+// host selector and this router agree on what a host is called — and several
+// co-located instances, which report one hostname, are one host to both.
+func routeHost(p *PeerState) string {
+	if h := p.Hostname(); h != "" {
+		return h
+	}
+	return hostOfAddr(p.Addr)
 }
 
 func (r *Registry) AllModels() []model.ModelEntry {

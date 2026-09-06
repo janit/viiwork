@@ -7,9 +7,11 @@
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace; background: #0d1117; color: #c9d1d9; display: flex; flex-direction: column; height: 100vh; }
-  header { padding: 12px 20px; border-bottom: 1px solid #30363d; display: flex; align-items: center; gap: 16px; flex-shrink: 0; }
+  header { padding: 12px 20px; border-bottom: 1px solid #30363d; display: flex; align-items: center; gap: 16px; flex-shrink: 0; flex-wrap: wrap; }
   header a { color: #58a6ff; text-decoration: none; font-size: 1.1rem; font-weight: 600; }
   header a:hover { text-decoration: underline; }
+  .sel { display: inline-flex; align-items: center; gap: 6px; }
+  .sel label { color: #8b949e; font-size: 0.78rem; }
   select { background: #161b22; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 6px 10px; font-family: inherit; font-size: 0.85rem; }
   #messages { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 16px; }
   .msg { max-width: 85%; padding: 12px 16px; border-radius: 8px; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word; font-size: 0.9rem; }
@@ -34,7 +36,8 @@
   <a href="/">viiwork</a>
   <span style="color:#484f58">/</span>
   <span style="color:#c9d1d9;font-weight:600">chat</span>
-  <select id="model-select"><option>loading...</option></select>
+  <span class="sel"><label for="model-select">model</label><select id="model-select"><option>loading...</option></select></span>
+  <span class="sel"><label for="host-select">backend</label><select id="host-select"><option value="mesh">mesh</option></select></span>
 </header>
 
 <div id="messages"></div>
@@ -51,9 +54,21 @@ const messagesEl = document.getElementById('messages');
 const promptEl = document.getElementById('prompt');
 const sendBtn = document.getElementById('send');
 const modelSelect = document.getElementById('model-select');
+const hostSelect = document.getElementById('host-select');
 
 let conversation = [];
 let streaming = false;
+
+// The URL is this page's only addressable state: ?model= picks the model and
+// ?host= pins where it runs ("mesh", or absent, lets the mesh route it as it
+// always has). Read once on load and reflected back with replaceState on every
+// change, so the address bar always describes what is on screen and a link to
+// "this model, on that host" can be copied straight out of it.
+const MESH = 'mesh';
+const params = new URLSearchParams(location.search);
+const wanted = { model: params.get('model') || '', host: params.get('host') || MESH };
+let cluster = null;
+let modelsLoaded = false;
 
 // Auto-resize textarea
 promptEl.addEventListener('input', () => {
@@ -69,21 +84,117 @@ promptEl.addEventListener('keydown', (e) => {
   }
 });
 
+modelSelect.addEventListener('change', () => { renderHosts(hostSelect.value, false); syncURL(); });
+hostSelect.addEventListener('change', syncURL);
+
 // Load models
 async function loadModels() {
   try {
     const resp = await fetch('/v1/models');
     const data = await resp.json();
     modelSelect.innerHTML = '';
+    let found = false;
     for (const m of data.data) {
       const opt = document.createElement('option');
       opt.value = m.id;
       opt.textContent = m.id;
+      if (m.id === wanted.model) { opt.selected = true; found = true; }
       modelSelect.appendChild(opt);
     }
+    // A stale link, or a host that has since gone: keep the model that was
+    // asked for on screen and say so, rather than quietly answering with a
+    // different one. Which model you asked for is the whole point of the link.
+    if (wanted.model && !found) {
+      const opt = document.createElement('option');
+      opt.value = wanted.model;
+      opt.textContent = wanted.model + ' (not currently served)';
+      opt.selected = true;
+      modelSelect.appendChild(opt);
+    }
+    modelsLoaded = true;
   } catch (e) {
     modelSelect.innerHTML = '<option>error loading models</option>';
   }
+}
+
+async function loadCluster() {
+  try {
+    const resp = await fetch('/v1/cluster');
+    cluster = await resp.json();
+  } catch (e) {
+    cluster = null;
+  }
+}
+
+// Hosts serving a model, built the way /mesh builds its rows: the local node
+// is hostname + local.model, each reachable peer is its reported hostname plus
+// its models (the server falls back to the dial address for a peer too old to
+// report a hostname, so the router and this list agree on the name).
+// Unreachable peers are left out; pinning to one could only produce a 404.
+function hostsForModel(model) {
+  const set = new Set();
+  if (!cluster || !model) return [];
+  if (cluster.hostname && cluster.local?.model === model) set.add(cluster.hostname);
+  for (const p of cluster.peers || []) {
+    if (p.status !== 'reachable') continue;
+    if ((p.models || []).includes(model)) set.add(p.hostname || p.addr);
+  }
+  return [...set].sort();
+}
+
+// hostLabel maps an X-Viiwork-Origin address back to a hostname when the
+// cluster snapshot knows it, so the meta line names machines, not ports.
+function hostLabel(addr) {
+  const p = (cluster?.peers || []).find(p => p.addr === addr);
+  return p ? (p.hostname || p.addr) : addr;
+}
+
+// renderHosts rebuilds the backend selector for the current model: mesh
+// first and default, then every host serving it. `keep` is the host to hold
+// on to if it still qualifies; with `insist`, a host that does not is kept
+// anyway and labelled — the rule the model selector applies to a stale link,
+// so a send fails loudly instead of silently going somewhere else.
+function renderHosts(keep, insist) {
+  const hosts = hostsForModel(modelSelect.value);
+  hostSelect.innerHTML = '';
+  const mesh = document.createElement('option');
+  mesh.value = MESH;
+  mesh.textContent = MESH;
+  hostSelect.appendChild(mesh);
+  for (const h of hosts) {
+    const opt = document.createElement('option');
+    opt.value = h;
+    opt.textContent = h;
+    hostSelect.appendChild(opt);
+  }
+  if (hosts.includes(keep)) {
+    hostSelect.value = keep;
+  } else if (insist && keep && keep !== MESH) {
+    const opt = document.createElement('option');
+    opt.value = keep;
+    opt.textContent = keep + ' (not currently serving)';
+    hostSelect.appendChild(opt);
+    hostSelect.value = keep;
+  } else {
+    hostSelect.value = MESH;
+  }
+}
+
+function pinnedHost() {
+  return hostSelect.value && hostSelect.value !== MESH ? hostSelect.value : '';
+}
+
+function syncURL() {
+  if (!modelsLoaded) return;
+  const p = new URLSearchParams();
+  if (modelSelect.value) p.set('model', modelSelect.value);
+  const host = pinnedHost();
+  if (host) p.set('host', host);
+  const q = p.toString();
+  history.replaceState(null, '', location.pathname + (q ? '?' + q : ''));
+  // A row of tabs all reading "viiwork chat" would defeat a side-by-side
+  // comparison, so the title carries what this tab is talking to.
+  document.title = (modelSelect.value || 'chat') + (host ? ' @ ' + host : '') + ' · viiwork chat';
 }
 
 function addMessage(role, content) {
@@ -93,6 +204,16 @@ function addMessage(role, content) {
   messagesEl.appendChild(div);
   messagesEl.scrollTop = messagesEl.scrollHeight;
   return div;
+}
+
+// errorMessage pulls the message out of an OpenAI-style error body; the 404
+// for a pin that did not hold already names both the host and the model.
+function errorMessage(text) {
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed?.error?.message) return parsed.error.message;
+  } catch (e) { /* not JSON */ }
+  return text;
 }
 
 async function send() {
@@ -111,15 +232,19 @@ async function send() {
   const msgDiv = addMessage('assistant', '');
   let fullText = '';
   let thinkText = '';
-  let inThink = false;
   const t0 = performance.now();
+  const model = modelSelect.value;
+  const pinned = pinnedHost();
 
   try {
-    const resp = await fetch('/v1/chat/completions', {
+    // The pin rides as a query parameter: the node applies it to its route
+    // set and forwards it intact to a peer, so it holds across the hop.
+    const url = '/v1/chat/completions' + (pinned ? '?host=' + encodeURIComponent(pinned) : '');
+    const resp = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: modelSelect.value,
+        model: model,
         messages: conversation,
         stream: true
       })
@@ -128,9 +253,16 @@ async function send() {
     if (!resp.ok) {
       const err = await resp.text();
       msgDiv.className = 'msg error';
-      msgDiv.textContent = resp.status + ': ' + err;
+      msgDiv.textContent = resp.status + ': ' + errorMessage(err);
       return;
     }
+
+    // Where it actually ran, so a two-host comparison can be trusted: the
+    // pinned host if pinned, else X-Viiwork-Origin when the entry node proxied
+    // to a peer; its absence means the entry node served it itself.
+    const origin = resp.headers.get('X-Viiwork-Origin');
+    const ranOn = pinned ? pinned + ' (pinned)' : origin ? hostLabel(origin) : 'entry node';
+    const gpu = resp.headers.get('X-GPU-Backend');
 
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
@@ -157,7 +289,6 @@ async function send() {
           // Handle thinking content (Gemma 4 thinking mode)
           if (delta.reasoning_content) {
             thinkText += delta.reasoning_content;
-            inThink = true;
           }
           if (delta.content) {
             fullText += delta.content;
@@ -181,7 +312,7 @@ async function send() {
     const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
     const meta = document.createElement('div');
     meta.className = 'meta';
-    meta.textContent = modelSelect.value + ' | ' + elapsed + 's';
+    meta.textContent = model + ' @ ' + ranOn + (gpu ? ' ' + gpu : '') + ' | ' + elapsed + 's';
     msgDiv.appendChild(meta);
 
     conversation.push({ role: 'assistant', content: fullText });
@@ -197,7 +328,11 @@ async function send() {
   }
 }
 
-loadModels();
+(async () => {
+  await Promise.all([loadModels(), loadCluster()]);
+  renderHosts(wanted.host, true);
+  syncURL();
+})();
 </script>
 </body>
 </html>
