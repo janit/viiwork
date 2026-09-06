@@ -285,6 +285,43 @@ func sanitizeTaskID(s string) string {
 	return strings.TrimSpace(string(b))
 }
 
+// QueryHost is the query parameter that pins an inference request to one
+// host: /v1/chat/completions?host=gb2. A query parameter rather than a body
+// field or header because proxyToPeer forwards RawQuery verbatim, llama.cpp
+// ignores unknown parameters, and it is testable by hand with curl.
+const QueryHost = "host"
+
+// maxHostLen bounds the pin; a DNS name is at most 253 octets.
+const maxHostLen = 253
+
+// sanitizeHost validates the ?host= pin. It returns ("", true) when there is
+// no pin — absent, blank, or the literal "mesh", so the default is spelled the
+// same way in a URL as in the chat page's selector — and (host, true) for a
+// well-formed hostname or IP literal. Anything else is ("", false), and the
+// caller answers 400 rather than routing as if no pin were given: a pin that
+// quietly does not hold defeats the comparison the feature exists for. The
+// value is only ever compared against known hostnames and never dialled, so
+// this is about a clear answer, not about safety.
+func sanitizeHost(s string) (string, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" || strings.EqualFold(s, "mesh") {
+		return "", true
+	}
+	if len(s) > maxHostLen {
+		return "", false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case c == '.', c == ':', c == '_', c == '-', c == '[', c == ']':
+		default:
+			return "", false
+		}
+	}
+	return s, true
+}
+
 // readBodyPresized buffers a request body, sizing the destination from
 // Content-Length when the client supplied a usable one.
 //
@@ -555,6 +592,35 @@ func (h *Handler) handleProxy(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[debug] no routes for model %q", reqBody.Model)
 		http.Error(w, `{"error":{"message":"model not found","type":"not_found"}}`, http.StatusNotFound)
 		return
+	}
+
+	// A ?host= pin narrows the route set to one machine. It sits after the
+	// empty check, so "no such model anywhere" stays distinguishable from
+	// "that model, not on that host", and before PickRoute, so the pin beats
+	// the balancer instead of competing with it: PickRoute prefers local
+	// among routes tied at the lowest in-flight, and filtering afterwards
+	// would let a busy pinned host lose to an idle one — the exact bug this
+	// exists to prevent. FilterByHost only ever removes routes; the value is
+	// compared, never dialled, so a pin cannot widen what a caller can reach.
+	// Guarded on RawQuery so the common no-query request parses nothing.
+	if r.URL.RawQuery != "" {
+		pin, ok := sanitizeHost(r.URL.Query().Get(QueryHost))
+		if !ok {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]string{
+				"message": "invalid host parameter", "type": "invalid_request",
+			}})
+			return
+		}
+		if pin != "" {
+			routes = peer.FilterByHost(routes, pin)
+			if len(routes) == 0 {
+				writeJSON(w, http.StatusNotFound, map[string]any{"error": map[string]string{
+					"message": fmt.Sprintf("model %q is not served by host %q", reqBody.Model, pin),
+					"type":    "not_found",
+				}})
+				return
+			}
+		}
 	}
 
 	route, err := peer.PickRoute(routes, h.balancer.MaxInFlightPerGPU())

@@ -10,12 +10,17 @@ build:
 mcp:
 	go build -o bin/viiwork-mcp ./cmd/viiwork-mcp
 
+# TEST_CPUS caps the container fallback. An uncapped compile of the whole tree
+# on a host that is also serving live lanes has made a backend miss its health
+# check and respawn (gb1, 4 cores, 2026-09-03). Override for a dedicated box.
+TEST_CPUS ?= 2
+
 test:
 	@if command -v go >/dev/null 2>&1; then \
 		go test ./... -v; \
 	else \
-		echo "go not found on host, running tests in container..."; \
-		docker run --rm -v $(CURDIR):/src -w /src -e GOFLAGS=-buildvcs=false golang:1.27.0 go test ./... -v; \
+		echo "go not found on host, running tests in container (--cpus=$(TEST_CPUS))..."; \
+		docker run --rm --cpus=$(TEST_CPUS) -v $(CURDIR):/src -w /src -e GOFLAGS=-buildvcs=false golang:1.27.0 go test ./... -v; \
 	fi
 
 clean:

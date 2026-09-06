@@ -271,6 +271,19 @@ box. Response headers name the backend that served it: `X-GPU-Backend`
 every backend is at capacity — respect `Retry-After`. `503` means no healthy
 backend at all.
 
+**Pinning a host.** `?host=<hostname>` on any of the three inference endpoints
+narrows routing to one machine — `POST /v1/chat/completions?host=gb2`. Absent
+or `mesh` routes as usual. The name is a hostname (`gb2`), not `host:port`: a
+machine running several viiwork instances is one host, and the request is
+still balanced across its GPUs. A host that is not serving the model answers
+`404` with a message naming both, never a silent fallback to the mesh, and a
+malformed value is `400`. `X-Viiwork-Origin` on the response names the peer
+the request was proxied to; its absence means the answering node ran it. The
+value is only compared against hostnames the node already knows and is never
+dialled, so it cannot reach anything normal routing could not. Through the
+gateway a pinned request may take two hops (gateway → a node serving the
+model → the pinned host); that is expected and invisible to the caller.
+
 ## 5. Prompt and output history
 
 The part of the API with real sharp edges. Read this before designing a request

@@ -3,6 +3,7 @@ package peer
 
 import (
 	"errors"
+	"strings"
 	"sync/atomic"
 
 	"github.com/janit/viiwork/internal/balancer"
@@ -21,6 +22,7 @@ type Route struct {
 	Addr     string                 // peer address for remote
 	Peer     *PeerState             // non-nil for remote; lets the caller record write-through in-flight
 	InFlight int64
+	Host     string // hostname this route executes on; "" if unknown
 }
 
 // peerRRIdx round-robins among peers tied at equal in-flight. Without this,
@@ -100,4 +102,28 @@ func PickRoute(routes []Route, maxInFlightPerGPU int) (*Route, error) {
 	// across concurrent callers without a mutex.
 	idx := peerRRIdx.Add(1) - 1
 	return tiedPeers[int(idx%uint64(len(tiedPeers)))], nil
+}
+
+// FilterByHost narrows routes to those executing on the named host. Matching
+// is case-insensitive on Route.Host. It only ever REMOVES routes: a host that
+// is not in the set produces an empty result, never a new route and never a
+// new address to dial. That property is what makes the ?host= pin safe on an
+// unauthenticated endpoint — the parameter is compared against hostnames the
+// node already knows and is never parsed into an address.
+//
+// An empty host is the caller's mistake, not a wildcard: it matches nothing,
+// so a pin that was sanitised away cannot silently widen back into the mesh.
+//
+// A free function on purpose: it takes no registry and holds no lock.
+func FilterByHost(routes []Route, host string) []Route {
+	if host == "" {
+		return nil
+	}
+	out := make([]Route, 0, len(routes))
+	for _, r := range routes {
+		if strings.EqualFold(r.Host, host) {
+			out = append(out, r)
+		}
+	}
+	return out
 }
