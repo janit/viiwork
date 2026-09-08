@@ -127,3 +127,38 @@ func TestReplayedForwardIsRejected(t *testing.T) {
 		t.Fatal("a replayed forward must be rejected")
 	}
 }
+
+// The forward's overall timeout is long on purpose — a completion streams for
+// as long as generation takes — so it cannot double as the handshake bound. A
+// powered-off peer drops packets rather than refusing, and until the poll loop
+// notices, every request routed to it used to sit in the dial for the whole
+// 120s budget.
+func TestPeerClientBoundsTheDial(t *testing.T) {
+	if peerClient.Timeout != 120*time.Second {
+		t.Fatalf("overall timeout = %s, want 120s: a streaming completion needs it", peerClient.Timeout)
+	}
+	if peerDialTimeout <= 0 || peerDialTimeout > peerClient.Timeout/10 {
+		t.Fatalf("dial timeout %s should be a small fraction of the overall %s", peerDialTimeout, peerClient.Timeout)
+	}
+	tr, ok := peerClient.Transport.(*http.Transport)
+	if !ok || tr.DialContext == nil {
+		t.Fatal("peerClient must carry its own Transport with a bounded DialContext, not http.DefaultTransport")
+	}
+
+	// TEST-NET-1 (RFC 5737) is routed nowhere, so the dial times out the way
+	// a powered-off chassis does. A sandbox with no route at all fails faster
+	// still; either way the bound has to hold.
+	const dial = 200 * time.Millisecond
+	client := newPeerClient(dial)
+	req, _ := http.NewRequest("POST", "http://192.0.2.1:9/v1/chat/completions", strings.NewReader("{}"))
+	start := time.Now()
+	resp, err := client.Do(req)
+	took := time.Since(start)
+	if err == nil {
+		resp.Body.Close()
+		t.Fatal("a blackholed peer must not answer")
+	}
+	if limit := 10 * dial; took > limit {
+		t.Fatalf("dial to a blackholed peer took %s (limit %s): the dial is not bounded", took, limit)
+	}
+}

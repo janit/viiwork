@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/janit/viiwork/internal/balancer"
 	"github.com/janit/viiwork/internal/meshauth"
 	"github.com/janit/viiwork/internal/model"
+	"github.com/janit/viiwork/meshapi"
 )
 
 func TestRegistryFindRoutesLocalOnly(t *testing.T) {
@@ -277,5 +279,90 @@ func TestPollPeerLeavesAnUnsignedPeerReachableButUnverified(t *testing.T) {
 	}
 	if !p.Routable() {
 		t.Fatal("a configured peer must be routable without a proof")
+	}
+}
+
+// darkPeers stands up n servers that accept a connection and never answer.
+// That is what a powered-off host looks like to the poller — the handshake
+// completes (here) or hangs (there), and either way the request runs
+// peers.timeout out in full. A closed port would fail instantly and prove
+// nothing. Handlers return when the poller gives up, and release is closed
+// before the servers so Close never waits on one.
+func darkPeers(t *testing.T, n int, onRequest func(*http.Request)) []*PeerState {
+	t.Helper()
+	release := make(chan struct{})
+	var peers []*PeerState
+	for i := 0; i < n; i++ {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if onRequest != nil {
+				onRequest(r)
+			}
+			select {
+			case <-r.Context().Done():
+			case <-release:
+			}
+		}))
+		t.Cleanup(srv.Close)
+		peers = append(peers, NewPeerState(srv.Listener.Addr().String()))
+	}
+	t.Cleanup(func() { close(release) })
+	return peers
+}
+
+// A round has to cost about one timeout however many peers are dark. Polled
+// in sequence, eight unreachable peers at a 5s timeout made a 40s round
+// against a 10s interval, and for that whole window a node that had died
+// kept its routes and its frozen, attractive in-flight count.
+func TestPollOnceIsConcurrent(t *testing.T) {
+	const timeout = 300 * time.Millisecond
+	peers := darkPeers(t, 8, nil)
+	reg := NewRegistry("gb1-a1b2", "local-model", nil, peers, timeout)
+
+	start := time.Now()
+	reg.PollOnce(context.Background())
+	took := time.Since(start)
+
+	if limit := 3 * timeout; took > limit {
+		t.Fatalf("PollOnce took %s for %d unreachable peers (limit %s): peers appear to be polled sequentially, so one round costs peers x timeout", took, len(peers), limit)
+	}
+	for _, p := range peers {
+		if p.Status() != StatusUnreachable {
+			t.Errorf("peer %s: expected unreachable, got %v", p.Addr, p.Status())
+		}
+	}
+}
+
+// A verified peer keeps its standing when it goes dark (see
+// TestALearnedPeerIsKeptWhenItStopsAnswering), so without this check every
+// full discovery round would cluster-poll it and run the timeout out again,
+// in sequence: the PollOnce stall, back once every DiscoveryEvery rounds.
+func TestDiscoveryRoundSkipsUnreachablePeers(t *testing.T) {
+	var clusterPolls atomic.Int32
+	peers := darkPeers(t, 1, func(r *http.Request) {
+		if r.URL.Path == meshapi.PathCluster {
+			clusterPolls.Add(1)
+		}
+	})
+	p := peers[0]
+	p.MarkVerified() // proved membership once; its host has since gone dark
+
+	reg := NewRegistry("gb1-a1b2", "local-model", nil, peers, 300*time.Millisecond)
+	signer, err := meshauth.NewSigner([]byte("0123456789abcdef0123456789abcdef"), "gb1-a1b2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg.SetSigner(signer)
+	reg.SetGossip(GossipOptions{Enabled: true, DiscoveryEvery: 1})
+
+	reg.PollOnce(context.Background())
+
+	if p.Status() != StatusUnreachable {
+		t.Fatalf("expected unreachable, got %v", p.Status())
+	}
+	if !p.Verified() {
+		t.Fatal("verification is monotonic and must survive the failed poll")
+	}
+	if n := clusterPolls.Load(); n != 0 {
+		t.Fatalf("cluster polled %d time(s) on a peer whose status poll just failed; discovery should skip it", n)
 	}
 }
