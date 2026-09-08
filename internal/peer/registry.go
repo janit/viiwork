@@ -240,16 +240,39 @@ func (r *Registry) Run(ctx context.Context, interval time.Duration) {
 	}
 }
 
+// PollOnce refreshes every peer's state, polling them concurrently so one
+// round costs about one peers.timeout rather than peers x timeout.
+//
+// Sequential polling made the round scale with the number of *dead* peers,
+// which is the expensive case: a powered-off host drops packets rather than
+// refusing the connection, so its poll always runs the timeout out in full.
+// On an 11-instance fleet with 8 hosts down and a 5s timeout that was a ~40s
+// round against a configured 10s interval, and the ticker in Run silently
+// drops the ticks it cannot keep up with. Every peer's reachability, model
+// list and in-flight count then stood still for the whole window — which is
+// what let a node that had already gone away keep attracting routes from
+// FindRoutesForModel: its last-polled in-flight count was frozen low while
+// the live backends filled up, so PickRoute actively preferred it, and each
+// of those requests then waited in proxyToPeer on a host that was never going
+// to answer. That was the bimodal 9–40s latency seen on multi-homed models.
+//
+// Each poll touches only its own PeerState, which carries its own lock; the
+// http.Client, the Signer and the logger are all safe for concurrent use.
+// justVerified is the one shared write, and r.mu covers it.
 func (r *Registry) PollOnce(ctx context.Context) {
+	var wg sync.WaitGroup
 	for _, p := range r.peers.Load().all {
-		before := p.Verified()
-		r.pollPeer(ctx, p)
-		if !before && p.Verified() {
-			r.mu.Lock()
-			r.justVerified = append(r.justVerified, p)
-			r.mu.Unlock()
-		}
+		wg.Go(func() {
+			before := p.Verified()
+			r.pollPeer(ctx, p)
+			if !before && p.Verified() {
+				r.mu.Lock()
+				r.justVerified = append(r.justVerified, p)
+				r.mu.Unlock()
+			}
+		})
 	}
+	wg.Wait()
 	// A node ID learned this round has to reach byNode before the next
 	// forward asks IsKnownPeer about it.
 	r.republish()
@@ -279,6 +302,14 @@ func (r *Registry) discoveryRound(ctx context.Context) {
 	for _, p := range targets {
 		if !p.Verified() {
 			continue // its peer list is hearsay until it proves membership
+		}
+		// Verification is monotonic, reachability is not, and the status
+		// poll that just ran is the freshest reading there is. A verified
+		// peer whose host has gone dark would otherwise cost this loop a
+		// full timeout, in sequence, on every full discovery round — the
+		// stall PollOnce was fixed for, back once every DiscoveryEvery.
+		if p.Status() != StatusReachable {
+			continue
 		}
 		cluster, err := r.pollCluster(ctx, p)
 		if err != nil {

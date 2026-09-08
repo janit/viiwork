@@ -1,5 +1,39 @@
 # Changelog
 
+## v1.8.1
+
+### Peer polling no longer stalls routing behind dead hosts
+
+`Registry.PollOnce` polled peers one at a time, and a peer whose host is
+powered off drops packets rather than refusing the connection, so each such
+peer cost a full `peers.timeout`. A round therefore took *dead peers ×
+timeout* — on an 11-instance fleet with 8 hosts down and a 5s timeout, about
+40s against a configured 10s `poll_interval`, and the ticker simply dropped
+the ticks it could not keep up with. For that whole window every peer's
+reachability, model list and in-flight count stood still. A node that had
+just died kept its routes, and because its last-polled in-flight count was
+frozen low while the live backends filled up, `PickRoute` *preferred* it:
+the mesh converged onto the dead node, and each request sent there waited in
+`proxyToPeer` on a host that was never going to answer. That is the bimodal
+latency seen on multi-homed models — a steady sub-second mode and a second
+mode of 9–40s stalls on 10–20% of requests — and why a host serving only
+single-homed models never showed it: its requests never took a peer hop.
+
+Peers are now polled concurrently, so a round costs about one timeout
+however many peers are dark, and a discovery round skips a verified peer
+whose status poll just failed rather than running the timeout out again on
+its cluster poll. The forwarding client bounds the TCP handshake to a peer
+at 5s while keeping its 120s overall timeout, which a streaming completion
+needs; a dial to a powered-off host previously ran to the kernel's own
+connect timeout. On a three-node reproduction mesh with eight blackholed
+peers, peer discovery went from 50s to 15s and a wedged node's p90 from
+26.9s to 0.15s.
+
+Requests dispatched inside the detection window — between a node going dark
+and the next poll noticing, floored by `poll_interval` — can still stall.
+Marking a peer unreachable write-through on a failed forward and retrying on
+another route would close that, and is the intended follow-up.
+
 ## v1.8.0
 
 ### Open Chat from the mesh view, pinned to a host

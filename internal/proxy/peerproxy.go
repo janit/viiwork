@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -15,7 +16,47 @@ import (
 
 const HeaderForwarded = "X-Viiwork-Forwarded"
 
-var peerClient = &http.Client{Timeout: 120 * time.Second}
+// peerDialTimeout bounds only the TCP handshake to a peer, never the request.
+//
+// A peer whose host has been powered off does not refuse the connection, it
+// drops the packets, so a dial against it runs to the kernel's own connect
+// timeout — over two minutes on Linux. Until the poll loop notices the peer
+// is gone (at worst one poll_interval plus one peers.timeout), routes to it
+// are still handed out, and every request that took one used to sit here for
+// the whole of peerClient's 120s budget. A peer that cannot complete a
+// handshake in this long over a LAN or tailnet is not going to serve an
+// inference either.
+const peerDialTimeout = 5 * time.Second
+
+// peerClient keeps a long overall timeout on purpose: a forwarded completion
+// streams for as long as the generation takes. Only the dial is bounded, so
+// an unreachable peer fails fast while a slow one is left alone. There is no
+// response-header timeout, also on purpose: a non-streaming completion
+// legitimately withholds its headers until the whole generation is done, so
+// a bound short enough to matter would cut off exactly the long requests.
+var peerClient = newPeerClient(peerDialTimeout)
+
+func newPeerClient(dialTimeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout: 120 * time.Second,
+		Transport: &http.Transport{
+			// Otherwise a mirror of http.DefaultTransport, which this client
+			// used until the dial needed bounding, so proxy environment and
+			// connection reuse behave as they did. MaxIdleConnsPerHost is
+			// raised from the default 2: forwards fan out to a handful of
+			// peers, and the default closed every connection past the second
+			// after each use.
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:   dialTimeout,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 100,
+			IdleConnTimeout:     90 * time.Second,
+		},
+	}
+}
 
 // proxyToPeer takes the body explicitly rather than streaming r.Body: the
 // membership proof covers a digest, so the exact bytes have to be known, and
