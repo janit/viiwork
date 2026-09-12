@@ -184,6 +184,12 @@
   body.halted .mono-list, body.halted #backendsCard { outline: 1px solid rgba(210,153,34,0.35); }
   tr.gone td { color: var(--dimmer); }
   .respawns { color: var(--warn); font-size: 0.72rem; }
+  /* The VRAM cell carried a 46px meter as well as its numbers. In a table that
+     has to fit a whole fleet the bar was the widest thing in the column and
+     said what the numbers already say, so only its warning survives, as the
+     colour of the text. */
+  td.num .warn { color: var(--warn); }
+  td.num .bad  { color: var(--bad); }
 </style>
 </head>
 <body>
@@ -361,12 +367,21 @@ function meter(frac) {
   return `<span class="meter"><i class="${cls}" style="width:${pct.toFixed(0)}%"></i></span>`;
 }
 
-// A backend's GPU label: the host GPU indices it runs on, joined for a
-// tensor-split group, or "cpu" for a backend with none.
+// A backend's GPU label: the host GPU indices it runs on, or "cpu" for a
+// backend with none. A tensor-split group shares one "gpu-" prefix —
+// "gpu-4+5", not "gpu-4 + gpu-5" — because this column sits in a table that
+// has to fit a whole fleet, and the prefix repeated per card was the widest
+// thing in it without saying anything new.
+//
+// The ids are coerced to integers: they are peer-supplied and this string is
+// interpolated into innerHTML, so a member sending anything else must not be
+// able to inject markup through it.
 function gpuLabel(b) {
-  const ids = b.gpus || [];
-  if (!ids.length) return "cpu";
-  return ids.map(id => `gpu-${id}`).join('<span class="plus"> + </span>');
+  const raw = b.gpus || [];
+  if (!raw.length) return "cpu";
+  const ids = raw.map(Number).filter(Number.isInteger);
+  if (!ids.length) return "?";     // it claimed GPUs but named none we can read
+  return `gpu-${ids.join('<span class="plus">+</span>')}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -487,7 +502,7 @@ function renderBackends() {
         `<td class="num">${r.busy}/${r.slots}</td>` +
         `<td class="num">${fmtGB(r.rssMB)}</td>` +
         `<td class="num">${utilTxt}</td>` +
-        `<td class="num">${r.vramTotal ? meter(vramFrac) + fmtGB(r.vramUsed) + "/" + fmtGB(r.vramTotal) : "—"}</td>` +
+        `<td class="num">${r.vramTotal ? `<span class="${vramFrac > 0.9 ? "bad" : vramFrac > 0.7 ? "warn" : ""}">${fmtGB(r.vramUsed)}/${fmtGB(r.vramTotal)}</span>` : "—"}</td>` +
         `<td class="num">${done ? meter(tokFrac) + r.tokDecoded + "/" + done + "t" : "—"}</td>` +
         `</tr>`;
     }

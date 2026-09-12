@@ -92,8 +92,12 @@ function gpuColor(id) {
   return GPU_COLORS[((id % GPU_COLORS.length) + GPU_COLORS.length) % GPU_COLORS.length];
 }
 
-function gpuLabelHtml(ids) {
-  if (!ids || !ids.length) return '<span style="color:#8b949e">cpu</span>';
+function gpuLabelHtml(raw) {
+  if (!raw || !raw.length) return '<span style="color:#8b949e">cpu</span>';
+  // Coerced to integers before being interpolated into markup: the ids arrive
+  // over the wire, and gpuColor indexes a table with them.
+  const ids = raw.map(Number).filter(Number.isInteger);
+  if (!ids.length) return '<span style="color:#8b949e">?</span>';
   return ids.map(id => `<span style="color:${gpuColor(id)}">gpu-${id}</span>`).join(' + ');
 }
 
@@ -481,15 +485,19 @@ function appendActivity(ev) {
   const time = new Date(ev.t * 1000).toLocaleTimeString();
   const color = ACT_COLORS[ev.type] || '#8b949e';
   const taskTag = ev.task_id ? `<span style="color:#bc8cff">[${escapeHtml(ev.task_id)}]</span> ` : '';
-  line.innerHTML = `<span style="color:#484f58">${time}</span> <span style="color:${color}">[${ev.type}]</span> ${taskTag}${escapeHtml(ev.message)}`;
+  line.innerHTML = `<span style="color:#484f58">${time}</span> <span style="color:${color}">[${escapeHtml(ev.type)}]</span> ${taskTag}${escapeHtml(ev.message)}`;
   activityLog.insertBefore(line, activityLog.firstChild);
   while (activityLog.children.length > MAX_ACTIVITY_LINES) activityLog.removeChild(activityLog.lastChild);
 }
 
+// Escapes for both text and attribute position. The textContent/innerHTML
+// trick this replaced leaves " and ' untouched, which is fine between tags and
+// unsafe inside an attribute: a value containing a quote closes it and the rest
+// becomes markup. Every value here is data, never markup, so the strict form
+// costs nothing and removes the distinction as something to get right per site.
 function escapeHtml(s) {
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
+  return String(s == null ? '' : s).replace(/[&<>"']/g,
+    c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
 // Streams replay their ring when they open, so the same event can arrive twice

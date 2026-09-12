@@ -25,9 +25,18 @@ type undo struct {
 
 // Merge applies a remote entry to the table by the C6 rule
 // (meshapi.CompareAliasEntries) and persists a change before returning. An
-// invalid name is ignored.
+// invalid name is ignored, and so is a live entry with no target.
+//
+// The target check matters because this is the path entries arrive on from
+// other members, and it validated only the name. ValidateWrite refuses an
+// empty target locally ("target is required"), so without this a member could
+// place in every node's table an entry that no node would accept from its own
+// operator. A tombstone legitimately carries no target; a live entry must not.
 func (s *Store) Merge(name string, remote meshapi.AliasEntry) (changed bool, conflict *Conflict, err error) {
 	if !meshapi.ValidAliasName(name) {
+		return false, nil, nil
+	}
+	if remote.Target == "" && !remote.Deleted {
 		return false, nil, nil
 	}
 	s.mu.Lock()

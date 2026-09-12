@@ -2,6 +2,7 @@ package activity
 
 import (
 	"sync"
+	"unicode/utf8"
 
 	"github.com/janit/viiwork/v2/meshapi"
 )
@@ -90,11 +91,21 @@ func (p *PromptStore) append(e PromptEntry) {
 	}
 }
 
+// truncate caps s at maxPromptChars bytes, backing up to a rune boundary. The
+// cap is in bytes because that is what bounds memory, but cutting there lands
+// mid-character in any non-ASCII script — the normal case on a translation
+// fleet — and the tail then reaches /v1/prompts as invalid UTF-8, which the
+// JSON encoder silently replaces with U+FFFD. Backing up costs at most three
+// bytes and keeps what is stored equal to what was sent.
 func truncate(s string) string {
-	if len(s) > maxPromptChars {
-		return s[:maxPromptChars] + "... [truncated]"
+	if len(s) <= maxPromptChars {
+		return s
 	}
-	return s
+	cut := maxPromptChars
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "... [truncated]"
 }
 
 // Get looks up a prompt by request id. Request ids share activity.NewRequestID's

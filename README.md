@@ -1,6 +1,6 @@
 # viiwork
 
-LLM inference for a fleet of machines, built on AMD Radeon VII GPUs. One viiwork node per machine runs all of that machine's models (llama-server processes pinned to their GPUs) behind one OpenAI-compatible API. Nodes find each other and form a mesh on their own: any node is an entry point, and a request goes to a free slot wherever one exists.
+LLM inference for a fleet of machines, built originally for AMD Radeon VII GPUs. One viiwork node per machine runs all of that machine's models (llama-server processes pinned to their GPUs) behind one OpenAI-compatible API. Nodes find each other and form a mesh on their own: any node is an entry point, and a request goes to a free slot wherever one exists.
 
 ![viiwork mesh dashboard](viiwork-v150.webp)
 

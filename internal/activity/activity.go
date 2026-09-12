@@ -109,23 +109,25 @@ func (l *Log) EmitRequestTask(rid int64, gpuID int, taskID string, format string
 }
 
 func (l *Log) emit(ev Event) {
+	// Marshalled before the lock: it is the expensive part and needs nothing
+	// the lock protects.
+	data, _ := json.Marshal(ev)
 
 	l.mu.Lock()
+	defer l.mu.Unlock()
 	l.events = append(l.events, ev)
 	if len(l.events) > l.maxEvents {
 		kept := make([]Event, l.maxEvents)
 		copy(kept, l.events[len(l.events)-l.maxEvents:])
 		l.events = kept
 	}
-	// Snapshot subscribers
-	subs := make([]chan []byte, 0, len(l.subscribers))
+	// Sent while holding the lock, not to a snapshot taken under it and
+	// released first. Subscribe closes the oldest subscriber's channel when it
+	// is at capacity, and a send racing that close panics — "send on closed
+	// channel", which a select's default case does not prevent. Holding the
+	// lock makes closing and sending mutually exclusive. It cannot stall on a
+	// slow client, because every send here is non-blocking.
 	for ch := range l.subscribers {
-		subs = append(subs, ch)
-	}
-	l.mu.Unlock()
-
-	data, _ := json.Marshal(ev)
-	for _, ch := range subs {
 		select {
 		case ch <- data:
 		default: // skip slow clients
@@ -166,10 +168,15 @@ func (l *Log) Subscribe() chan []byte {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if len(l.subscribers) >= maxSubscribers {
-		// Drop oldest subscriber
-		for old := range l.subscribers {
-			delete(l.subscribers, old)
-			close(old)
+		// Evict one to make room. Which one is arbitrary: subscribers are a
+		// map and Go randomises its iteration order, so this is not "the
+		// oldest" however much that would be nicer. It does not matter for
+		// correctness — the evicted reader sees its channel close and returns,
+		// and a dashboard reconnects — but it is worth not mistaking for an
+		// ordering guarantee.
+		for evict := range l.subscribers {
+			delete(l.subscribers, evict)
+			close(evict)
 			break
 		}
 	}

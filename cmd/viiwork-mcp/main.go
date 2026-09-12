@@ -8,7 +8,8 @@
 //   - status:  Get cluster health and load information
 //
 // Configuration:
-//   --url flag or VIIWORK_URL env var (default http://localhost:8080)
+//
+//	--url flag or VIIWORK_URL env var (default http://localhost:8086)
 package main
 
 import (
@@ -22,6 +23,8 @@ import (
 	"net/http"
 	"os"
 	"time"
+
+	"github.com/janit/viiwork/v2/meshapi"
 )
 
 var viiworkURL string
@@ -36,10 +39,10 @@ type rpcRequest struct {
 }
 
 type rpcResponse struct {
-	JSONRPC string      `json:"jsonrpc"`
+	JSONRPC string          `json:"jsonrpc"`
 	ID      json.RawMessage `json:"id"`
-	Result  any         `json:"result,omitempty"`
-	Error   *rpcError   `json:"error,omitempty"`
+	Result  any             `json:"result,omitempty"`
+	Error   *rpcError       `json:"error,omitempty"`
 }
 
 type rpcError struct {
@@ -128,7 +131,7 @@ type chatResponse struct {
 }
 
 func main() {
-	urlFlag := flag.String("url", "", "viiwork base URL (default http://localhost:8080)")
+	urlFlag := flag.String("url", "", "viiwork base URL (default http://localhost:8086)")
 	flag.Parse()
 
 	viiworkURL = *urlFlag
@@ -136,7 +139,9 @@ func main() {
 		viiworkURL = os.Getenv("VIIWORK_URL")
 	}
 	if viiworkURL == "" {
-		viiworkURL = "http://localhost:8080"
+		// 8086 is where a viiwork 2 node serves its API. The old default was
+		// 8080, which is v1's port and serves nothing on a v2 fleet.
+		viiworkURL = "http://localhost:8086"
 	}
 
 	log.SetOutput(os.Stderr)
@@ -328,7 +333,7 @@ func toolQuery(id json.RawMessage, rawArgs json.RawMessage) *rpcResponse {
 
 	log.Printf("query: model=%s tokens=%d prompt_len=%d", model, maxTokens, len(args.Prompt))
 
-	resp, err := httpPost(viiworkURL+"/v1/chat/completions", body)
+	resp, err := httpPost(viiworkURL+meshapi.PathChatCompletions, body)
 	if err != nil {
 		return success(id, toolResult{
 			Content: []textContent{{Type: "text", Text: "request failed: " + err.Error()}},
@@ -361,7 +366,7 @@ func toolQuery(id json.RawMessage, rawArgs json.RawMessage) *rpcResponse {
 }
 
 func toolModels(id json.RawMessage) *rpcResponse {
-	resp, err := httpGet(viiworkURL + "/v1/models")
+	resp, err := httpGet(viiworkURL + meshapi.PathModels)
 	if err != nil {
 		return success(id, toolResult{
 			Content: []textContent{{Type: "text", Text: "request failed: " + err.Error()}},
@@ -379,7 +384,7 @@ func toolModels(id json.RawMessage) *rpcResponse {
 }
 
 func toolStatus(id json.RawMessage) *rpcResponse {
-	resp, err := httpGet(viiworkURL + "/v1/cluster")
+	resp, err := httpGet(viiworkURL + meshapi.PathCluster)
 	if err != nil {
 		return success(id, toolResult{
 			Content: []textContent{{Type: "text", Text: "request failed: " + err.Error()}},
@@ -432,7 +437,7 @@ func httpPost(url string, data []byte) ([]byte, error) {
 }
 
 func firstModel() (string, error) {
-	resp, err := httpGet(viiworkURL + "/v1/models")
+	resp, err := httpGet(viiworkURL + meshapi.PathModels)
 	if err != nil {
 		return "", err
 	}

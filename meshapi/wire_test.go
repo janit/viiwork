@@ -170,3 +170,39 @@ func TestImportsStdlibOnly(t *testing.T) {
 		}
 	}
 }
+
+// Paths are contract in the same way field names are: a node routes on them and
+// a consumer in another repository dials them or compares against them — the
+// gateway matches PathPower and PathMeshPower rather than literals. Changing one
+// silently breaks something that cannot be updated in the same commit.
+//
+// Only what nodes say to each other is listed. The browser pages (/, /mesh,
+// /chat, /prompt) and /v1/metrics, which only the dashboard fetches, are
+// deliberately absent: freezing a UI route here would make an HTML URL a
+// permanent commitment in a package with no migration path, and this contract
+// is machine-to-machine.
+func TestPathsAreFrozen(t *testing.T) {
+	for _, c := range []struct{ got, want string }{
+		{PathStatus, "/v1/status"},
+		{PathCluster, "/v1/cluster"},
+		{PathCapacity, "/v1/capacity"},
+		{PathModels, "/v1/models"},
+		{PathChatCompletions, "/v1/chat/completions"},
+		{PathCompletions, "/v1/completions"},
+		{PathEmbeddings, "/v1/embeddings"},
+		{PathHealth, "/health"},
+		{PathActivity, "/v1/activity"},
+		{PathActivityStream, "/v1/activity/stream"},
+		{PathMeshStream, "/v1/mesh/stream"},
+		{PathPrompts, "/v1/prompts"},
+		{PathMeshPrompt, "/v1/mesh/prompt"},
+		{PathPower, "/v1/power"},
+		{PathMeshPower, "/v1/mesh/power"},
+		{PathAliases, "/v1/aliases"},
+		{AliasRevertSuffix, "/revert"},
+	} {
+		if c.got != c.want {
+			t.Errorf("path changed: %q, want %q", c.got, c.want)
+		}
+	}
+}

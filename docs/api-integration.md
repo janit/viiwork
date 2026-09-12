@@ -613,8 +613,8 @@ Verifiable against a fleet under load.
 
 - [ ] The whole mesh renders — every node, its models, healthy backend counts,
       per-GPU utilisation and VRAM — from a single call to one node.
-- [ ] Unreachable peers appear as unreachable rather than being omitted or shown
-      as healthy.
+- [ ] A member that is `dead` or `left` still appears, in that state, rather than
+      being omitted or shown as healthy.
 - [ ] A cold-loading backend reads as `starting`, not as up.
 - [ ] In-flight requests appear and clear live, with model, destination and
       elapsed time.
