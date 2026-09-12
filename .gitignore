@@ -13,3 +13,5 @@ bench-harness/results/
 *.swp
 configs/docker-compose.qwen36-pair-gpu56.yaml
 configs/viiwork.qwen36-pair-gpu56.yaml
+.gocache/
+.gomodcache/

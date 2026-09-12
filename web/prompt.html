@@ -141,11 +141,15 @@ async function capacity() {
     const resp = await fetch("/v1/cluster");
     if (!resp.ok) return 0;
     const c = await resp.json();
+    // The owning node is the member whose API address the row carried; a row
+    // with no address was served by the node this page talks to.
+    const members = c.members || [];
     if (addr) {
-      const peer = (c.peers || []).find(p => p.addr === addr);
-      if (peer && peer.prompt_history) return peer.prompt_history;
+      const owner = members.find(m => m.status && (m.addr + ":" + m.status.api_port) === addr);
+      if (owner && owner.status.prompt_history) return owner.status.prompt_history;
     }
-    return (c.local && c.local.prompt_history) || 0;
+    const view = members.find(m => m.node === c.view);
+    return (view && view.status && view.status.prompt_history) || 0;
   } catch { return 0; }
 }
 

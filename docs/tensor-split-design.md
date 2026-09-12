@@ -1,5 +1,23 @@
 # Tensor-Split Mode for viiwork — Design Note
 
+> **Historical.** This note records how tensor-split was designed and argued
+> for in April 2026, against viiwork 1.x. The feature shipped and is now
+> ordinary configuration, but the **configuration vocabulary below is v1 and no
+> longer valid**. In viiwork 2 a model entry says:
+>
+> ```yaml
+> gpus: [4, 5, 6, 7, 8, 9]
+> gpus_per_backend: 2        # was gpus.tensor_split.group_size
+> llamacpp:
+>   split_mode: layer        # was gpus.tensor_split.mode
+>   split_weights: [1.16, 1.0]
+> ```
+>
+> Consecutive entries of `gpus` are paired, so the example is three backends of
+> two cards. `base_port` is gone — backends take loopback ports. The reasoning
+> about layer-split, interconnect and VRAM is unchanged and is why this note is
+> kept. See `README.md` for current configuration.
+
 **Status:** draft proposal
 **Author:** tensor-split investigation (gfx906-fork-cutover sibling worktree)
 **Date:** 2026-04-09

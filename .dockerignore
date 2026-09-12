@@ -9,3 +9,5 @@ viiwork-*.yaml
 configs/
 .env
 .git
+.gocache/
+.gomodcache/

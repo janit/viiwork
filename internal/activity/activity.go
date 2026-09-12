@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/janit/viiwork/meshapi"
+	"github.com/janit/viiwork/v2/meshapi"
 )
 
 var nextRequestID atomic.Int64
@@ -24,11 +24,15 @@ func NewRequestID() int64 {
 // Message field — is wire contract, not a local logging concern.
 type Event = meshapi.Event
 
-const maxEvents = 200
+// DefaultEventHistory is how many events the ring keeps when nothing is
+// configured.
+const DefaultEventHistory = 200
+
 const maxSubscribers = 16
 
 type Log struct {
 	mu          sync.Mutex
+	maxEvents   int
 	events      []Event
 	subscribers map[chan []byte]struct{}
 	prompts     *PromptStore
@@ -41,8 +45,19 @@ func NewLog() *Log { return NewLogWithPromptHistory(DefaultPromptHistory) }
 // requests. Kept separate from NewLog so the many call sites that do not care
 // stay unchanged.
 func NewLogWithPromptHistory(promptHistory int) *Log {
+	return NewLogWithHistory(promptHistory, DefaultEventHistory)
+}
+
+// NewLogWithHistory also sizes the event ring (C1 activity.event_history);
+// eventHistory <= 0 means DefaultEventHistory. The ring is also how far back a
+// reconnecting dashboard can replay, see Backlog.
+func NewLogWithHistory(promptHistory, eventHistory int) *Log {
+	if eventHistory <= 0 {
+		eventHistory = DefaultEventHistory
+	}
 	return &Log{
-		events:      make([]Event, 0, maxEvents),
+		maxEvents:   eventHistory,
+		events:      make([]Event, 0, min(eventHistory, DefaultEventHistory)),
 		subscribers: make(map[chan []byte]struct{}),
 		prompts:     NewPromptStore(promptHistory),
 	}
@@ -97,9 +112,9 @@ func (l *Log) emit(ev Event) {
 
 	l.mu.Lock()
 	l.events = append(l.events, ev)
-	if len(l.events) > maxEvents {
-		kept := make([]Event, maxEvents)
-		copy(kept, l.events[len(l.events)-maxEvents:])
+	if len(l.events) > l.maxEvents {
+		kept := make([]Event, l.maxEvents)
+		copy(kept, l.events[len(l.events)-l.maxEvents:])
 		l.events = kept
 	}
 	// Snapshot subscribers
@@ -127,7 +142,7 @@ func (l *Log) emit(ev Event) {
 // in the background, a node restarting — and a start with no matching done
 // strands a row that never leaves. Replaying the ring hands back both halves.
 //
-// The ring bounds how far back that works. A gap longer than maxEvents on a
+// The ring bounds how far back that works. A gap longer than the ring on a
 // given node cannot be repaired from here, which is why a consumer should also
 // treat a reconnect as a reason to rebuild rather than to carry state across.
 func (l *Log) Backlog() []Event {

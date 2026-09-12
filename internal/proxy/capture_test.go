@@ -1,171 +1,11 @@
 package proxy
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/janit/viiwork/internal/activity"
-	"github.com/janit/viiwork/internal/balancer"
-	"github.com/janit/viiwork/internal/peer"
 )
-
-// meshHandlerFor wires the same single-backend mesh handler the prompt tests
-// use, since output capture sits on the same routing path as prompt capture.
-func meshHandlerFor(t *testing.T, backendAddr string) (*Handler, *activity.Log) {
-	t.Helper()
-	state := balancer.NewBackendState(0, backendAddr)
-	state.SetStatus(balancer.StatusHealthy)
-	backends := []*balancer.BackendState{state}
-	reg := peer.NewRegistry("viiwork-local", "test", backends, nil, 3*time.Second)
-	h := NewMeshHandler(balancer.New(backends, 7, 4), reg, 30*time.Second)
-	log := activity.NewLog()
-	h.SetActivity(log)
-	return h, log
-}
-
-func fetchEntry(t *testing.T, h *Handler, rid int64) activity.PromptEntry {
-	t.Helper()
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest("GET", "/v1/prompts?rid="+strconv.FormatInt(rid, 10), nil))
-	if w.Code != 200 {
-		t.Fatalf("/v1/prompts: got %d", w.Code)
-	}
-	var entry activity.PromptEntry
-	if err := json.Unmarshal(w.Body.Bytes(), &entry); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	return entry
-}
-
-func postChat(t *testing.T, h *Handler, body string) {
-	t.Helper()
-	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, req)
-	if w.Code != 200 {
-		t.Fatalf("proxy: got %d (%s)", w.Code, w.Body.String())
-	}
-}
-
-func TestOutputCapturedNonStreaming(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"2+2 is 4."}}]}`))
-	}))
-	defer backend.Close()
-
-	h, log := meshHandlerFor(t, backend.Listener.Addr().String())
-	postChat(t, h, `{"model":"test","messages":[{"role":"user","content":"what is 2+2?"}]}`)
-
-	entry := fetchEntry(t, h, findRequestRID(t, log))
-	if entry.Prompt != "what is 2+2?" {
-		t.Errorf("prompt = %q", entry.Prompt)
-	}
-	if entry.Output != "2+2 is 4." {
-		t.Errorf("output = %q, want %q", entry.Output, "2+2 is 4.")
-	}
-}
-
-func TestOutputCapturedStreaming(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		f := w.(http.Flusher)
-		for _, tok := range []string{"Hello", ", ", "world"} {
-			w.Write([]byte(`data: {"choices":[{"delta":{"content":"` + tok + `"}}]}` + "\n\n"))
-			f.Flush()
-		}
-		w.Write([]byte("data: [DONE]\n\n"))
-		f.Flush()
-	}))
-	defer backend.Close()
-
-	h, log := meshHandlerFor(t, backend.Listener.Addr().String())
-	postChat(t, h, `{"model":"test","stream":true,"messages":[{"role":"user","content":"greet"}]}`)
-
-	entry := fetchEntry(t, h, findRequestRID(t, log))
-	if entry.Output != "Hello, world" {
-		t.Errorf("output = %q, want %q", entry.Output, "Hello, world")
-	}
-	// Elapsed is recorded with the output; it is what the dashboard shows for
-	// a finished request, so a zero here would silently blank that field.
-	if entry.ElapsedMS < 0 {
-		t.Errorf("elapsed_ms = %d, want >= 0", entry.ElapsedMS)
-	}
-}
-
-// A failing backend is exactly when the output panel is worth opening, so the
-// error body is kept rather than discarded for having no completion text.
-func TestOutputCapturesErrorBody(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, `{"error":{"message":"context length exceeded"}}`, http.StatusBadRequest)
-	}))
-	defer backend.Close()
-
-	h, log := meshHandlerFor(t, backend.Listener.Addr().String())
-	req := httptest.NewRequest("POST", "/v1/chat/completions",
-		strings.NewReader(`{"model":"test","messages":[{"role":"user","content":"war and peace"}]}`))
-	req.Header.Set("Content-Type", "application/json")
-	h.ServeHTTP(httptest.NewRecorder(), req)
-
-	entry := fetchEntry(t, h, findRequestRID(t, log))
-	if !strings.Contains(entry.Output, "context length exceeded") {
-		t.Errorf("output = %q, want the error body", entry.Output)
-	}
-}
-
-func TestExtractOutputText(t *testing.T) {
-	cases := []struct {
-		name string
-		raw  string
-		want string
-	}{
-		{
-			name: "sse chat deltas",
-			raw:  "data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"b\"}}]}\n\ndata: [DONE]\n\n",
-			want: "ab",
-		},
-		{
-			name: "sse legacy completions use text, not delta",
-			raw:  "data: {\"choices\":[{\"text\":\"one \"}]}\n\ndata: {\"choices\":[{\"text\":\"two\"}]}\n\n",
-			want: "one two",
-		},
-		{
-			name: "whole chat response",
-			raw:  `{"choices":[{"message":{"content":"done"}}]}`,
-			want: "done",
-		},
-		{
-			name: "reasoning is labelled, not merged into the answer",
-			raw:  `{"choices":[{"message":{"reasoning_content":"thinking","content":"answer"}}]}`,
-			want: "[reasoning]\nthinking\n\n[answer]\nanswer",
-		},
-		{
-			// A thinking model with think enabled leaves content empty; dropping
-			// reasoning would show a blank output for those requests.
-			name: "reasoning only",
-			raw:  `{"choices":[{"delta":{"reasoning_content":"just thinking"}}]}`,
-			want: "[reasoning]\njust thinking",
-		},
-		{
-			name: "malformed chunks are skipped, not fatal",
-			raw:  "data: not json\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n",
-			want: "ok",
-		},
-		{name: "empty", raw: "", want: ""},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := extractOutputText([]byte(tc.raw)); got != tc.want {
-				t.Errorf("got %q, want %q", got, tc.want)
-			}
-		})
-	}
-}
 
 // The Flusher assertion drives whether responses stream at all: proxyRequest
 // and streamThinkDisabled both branch on it, and the latter falls back to a
@@ -216,81 +56,47 @@ func TestCaptureWriterBounded(t *testing.T) {
 	}
 }
 
-func TestPromptPageServed(t *testing.T) {
-	h := NewHandler(balancer.New(nil, 7, 4), "/models/test.gguf", 30*time.Second)
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest("GET", "/prompt?rid=1&addr=", nil))
-	if w.Code != 200 {
-		t.Fatalf("/prompt: got %d", w.Code)
+func TestExtractCompletionTokens(t *testing.T) {
+	cases := []struct {
+		name  string
+		body  string
+		want  int64
+		found bool
+	}{
+		{"non-streaming", `{"id":"x","usage":{"prompt_tokens":10,"completion_tokens":42}}`, 42, true},
+		{"no usage", `{"id":"x"}`, 0, false},
+		{"null usage", `{"usage":null}`, 0, false},
+		{"sse with usage", buildSSEStream(20) + "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":20}}\n\ndata: [DONE]\n\n", 20, true},
+		{"sse without usage", buildSSEStream(20), 0, false},
+		{"last usage wins", "data: {\"usage\":{\"completion_tokens\":7}}\n\ndata: {\"usage\":{\"completion_tokens\":9}}\n\ndata: [DONE]\n\n", 9, true},
 	}
-	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
-		t.Errorf("content-type = %q", ct)
-	}
-	if !strings.Contains(w.Body.String(), "/v1/mesh/prompt") {
-		t.Error("prompt page does not fetch the prompt endpoint")
-	}
-}
-
-// The configured capacity must actually govern the store. Exercised directly
-// rather than through the proxy: request ids come from a process-wide counter
-// shared with every other test in this binary, so driving it over HTTP makes
-// the assertion depend on ordering it does not control.
-func TestPromptHistoryCapacityConfigurable(t *testing.T) {
-	l := activity.NewLogWithPromptHistory(3)
-	if got := l.PromptHistoryMax(); got != 3 {
-		t.Fatalf("PromptHistoryMax() = %d, want 3", got)
-	}
-	for i := int64(1); i <= 5; i++ {
-		l.StorePrompt(i, "m", "q"+strconv.FormatInt(i, 10))
-	}
-	for _, rid := range []int64{1, 2} {
-		if _, ok := l.GetPrompt(rid); ok {
-			t.Errorf("rid %d should have been evicted at a cap of 3", rid)
-		}
-	}
-	for _, rid := range []int64{3, 4, 5} {
-		if _, ok := l.GetPrompt(rid); !ok {
-			t.Errorf("rid %d should still be present at a cap of 3", rid)
+	for _, tc := range cases {
+		if got, found := extractCompletionTokens([]byte(tc.body)); got != tc.want || found != tc.found {
+			t.Errorf("%s: = (%d, %v), want (%d, %v)", tc.name, got, found, tc.want, tc.found)
 		}
 	}
 }
 
-// A cap below 1 must fall back to the default rather than yielding a store that
-// silently drops everything written to it.
-func TestPromptHistoryZeroFallsBackToDefault(t *testing.T) {
-	for _, n := range []int{0, -5} {
-		l := activity.NewLogWithPromptHistory(n)
-		if got := l.PromptHistoryMax(); got != activity.DefaultPromptHistory {
-			t.Errorf("NewLogWithPromptHistory(%d) max = %d, want default %d", n, got, activity.DefaultPromptHistory)
-		}
+func TestCaptureWriterTailKeepsUsagePastTheCap(t *testing.T) {
+	rec := httptest.NewRecorder()
+	wrapped, capw := newCaptureWriter(rec)
+	chunk := []byte("data: " + sseChunk("token ") + "\n\n")
+	written := 0
+	for written < 3<<20 {
+		n, _ := wrapped.Write(chunk)
+		written += n
 	}
-}
-
-func TestStatusPublishesPromptHistory(t *testing.T) {
-	state := balancer.NewBackendState(0, "localhost:9001")
-	state.SetStatus(balancer.StatusHealthy)
-	backends := []*balancer.BackendState{state}
-	reg := peer.NewRegistry("viiwork-local", "test", backends, nil, 3*time.Second)
-	reg.SetPromptHistory(2500)
-	h := NewMeshHandler(balancer.New(backends, 7, 4), reg, 30*time.Second)
-
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest("GET", "/v1/status", nil))
-	var status peer.StatusResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &status); err != nil {
-		t.Fatalf("decode: %v", err)
+	for _, tail := range []string{"data: {\"choices\":[],\"usage\":{\"completion_tokens\":20}}\n\n", "data: [DONE]\n\n"} {
+		n, _ := wrapped.Write([]byte(tail))
+		written += n
 	}
-	if status.PromptHistory != 2500 {
-		t.Errorf("/v1/status prompt_history = %d, want 2500", status.PromptHistory)
+	if got, found := capw.CompletionTokens(); got != 20 || !found {
+		t.Errorf("CompletionTokens = (%d, %v), want (20, true) from the tail", got, found)
 	}
-
-	w = httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest("GET", "/v1/cluster", nil))
-	var cluster peer.ClusterResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &cluster); err != nil {
-		t.Fatalf("decode cluster: %v", err)
+	if len(capw.buf) > maxCaptureBytes || len(capw.Output()) > maxCaptureBytes {
+		t.Errorf("capture no longer bounded: buf %d, output %d", len(capw.buf), len(capw.Output()))
 	}
-	if cluster.Local.PromptHistory != 2500 {
-		t.Errorf("/v1/cluster local.prompt_history = %d, want 2500", cluster.Local.PromptHistory)
+	if rec.Body.Len() != written {
+		t.Errorf("client received %d bytes, wrote %d", rec.Body.Len(), written)
 	}
 }

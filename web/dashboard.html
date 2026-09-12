@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>viiwork mesh</title>
+<title>viiwork node</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace; background: #0d1117; color: #c9d1d9; padding: 24px; }
@@ -38,7 +38,7 @@
 <div id="topology" style="color:#8b949e;font-size:0.85rem;margin:-8px 0 16px"></div>
 <div id="error"></div>
 <div id="summary" class="summary"></div>
-<div id="peers-section"></div>
+<div id="fleet-section"></div>
 <div class="two-col">
   <div class="left-col" id="activity-section">
     <div id="cluster-models"></div>
@@ -69,327 +69,213 @@
 <div id="footer"></div>
 
 <script>
-// --- Cluster status (existing) ---
-let clusterVersion = '';
+// --- This node (/v1/status) and the fleet line (/v1/cluster) ---
+//
+// The node's own section reads /v1/status; /v1/cluster is used only for the
+// fleet line. Both are polled on v1's one-second schedule.
 
 async function refresh() {
   try {
-    const resp = await fetch('/v1/cluster');
-    if (!resp.ok) throw new Error('fetch failed');
-    const data = await resp.json();
+    const [statusResp, clusterResp] = await Promise.all([fetch('/v1/status'), fetch('/v1/cluster')]);
+    if (!statusResp.ok) throw new Error('HTTP ' + statusResp.status);
+    const status = await statusResp.json();
+    const cluster = clusterResp.ok ? await clusterResp.json() : null;
     document.getElementById('error').style.display = 'none';
-    if (data.version) clusterVersion = data.version;
-    render(data);
+    render(status, cluster);
   } catch (e) {
-    document.getElementById('error').textContent = 'Failed to fetch cluster state: ' + e.message;
+    document.getElementById('error').textContent = 'Failed to fetch node status: ' + e.message;
     document.getElementById('error').style.display = 'block';
   }
 }
 
-function hostOf(addr) { return (addr || '').split(':')[0]; }
-function portOf(addr) { const p = (addr || '').split(':')[1]; return p || ''; }
-function gpuCountOf(b) { return (b && b.gpu_ids && b.gpu_ids.length) ? b.gpu_ids.length : 1; }
-function gpuLabelOf(b) {
-  if (!b) return '';
-  if (b.gpu_ids && b.gpu_ids.length > 0) return b.gpu_ids.map(id => 'gpu-' + id).join(' + ');
-  return 'gpu-' + b.gpu_id;
+function gpuColor(id) {
+  return GPU_COLORS[((id % GPU_COLORS.length) + GPU_COLORS.length) % GPU_COLORS.length];
 }
 
-function render(data) {
-  const peers = data.peers || [];
-  const localBackends = data.local.backends || [];
-  const localHostFromBrowser = window.location.hostname;
-  const localPort = portOf(data.local.listen_addr) ||
-    window.location.port || (window.location.protocol === 'https:' ? '443' : '80');
-  const hostname = data.hostname || localHostFromBrowser;
-  const singleHost = !!data.single_host;
+function gpuLabelHtml(ids) {
+  if (!ids || !ids.length) return '<span style="color:#8b949e">cpu</span>';
+  return ids.map(id => `<span style="color:${gpuColor(id)}">gpu-${id}</span>`).join(' + ');
+}
 
-  // GPU totals include tensor-split aggregates: one BackendInfo with 2 gpu_ids
-  // counts as 2 GPUs, not 1.
-  const localGPUCount = localBackends.reduce((s, b) => s + gpuCountOf(b), 0);
-  const localHealthyGPUs = localBackends.filter(b => b.status === 'healthy').reduce((s, b) => s + gpuCountOf(b), 0);
-  let peerGPUCount = 0;
-  let peerHealthyGPUs = 0;
-  for (const p of peers) {
-    if (p.status !== 'reachable') continue;
-    if (p.backends && p.backends.length > 0) {
-      for (const b of p.backends) {
-        peerGPUCount += gpuCountOf(b);
-        if (b.status === 'healthy') peerHealthyGPUs += gpuCountOf(b);
-      }
-    } else {
-      // fallback for older peers without BackendInfos
-      peerGPUCount += (p.healthy_backends || 0);
-      peerHealthyGPUs += (p.healthy_backends || 0);
+function fmtMB(mb) { return mb >= 1024 ? (mb / 1024).toFixed(1) + 'G' : mb + 'M'; }
+
+// rssCell renders RSS with a trend arrow from the last few minutes of samples.
+function rssCell(key, rssMB) {
+  if (!rssMB) return '<td></td>';
+  if (!backendRSSHistory[key]) backendRSSHistory[key] = [];
+  backendRSSHistory[key].push({t: Math.floor(Date.now()/1000), rss: rssMB});
+  if (backendRSSHistory[key].length > RSS_HISTORY_MAX)
+    backendRSSHistory[key] = backendRSSHistory[key].slice(-RSS_HISTORY_MAX);
+  const history = backendRSSHistory[key];
+  let trend = '→', trendColor = '#8b949e';
+  if (history.length >= 10) {
+    const half = Math.floor(history.length / 2);
+    const earlyAvg = history.slice(0, half).reduce((s, h) => s + h.rss, 0) / half;
+    const lateAvg = history.slice(-half).reduce((s, h) => s + h.rss, 0) / half;
+    const pct = ((lateAvg - earlyAvg) / earlyAvg) * 100;
+    if (pct > 2) { trend = '↑'; trendColor = pct > 10 ? '#f85149' : '#d29922'; }
+    else if (pct < -2) { trend = '↓'; trendColor = '#3fb950'; }
+  }
+  return `<td><span style="color:${trendColor};font-weight:bold">${trend}</span> ${fmtMB(rssMB)}</td>`;
+}
+
+// utilCell and vramCell read the live GPU metrics, aggregated across a
+// tensor-split backend's cards: utilisation per card, VRAM summed.
+function utilCell(ids) {
+  const parts = [];
+  let maxUtil = null;
+  for (const id of (ids || [])) {
+    const samples = metricsData[String(id)];
+    if (samples && samples.length > 0) {
+      const u = Math.round(samples[samples.length - 1].util);
+      parts.push(u);
+      if (maxUtil === null || u > maxUtil) maxUtil = u;
     }
   }
-  const totalGPUs = localGPUCount + peerGPUCount;
-  const healthyGPUs = localHealthyGPUs + peerHealthyGPUs;
+  if (maxUtil === null) return '<td></td>';
+  let color = '#8b949e';
+  if (maxUtil > 80) color = '#f85149';
+  else if (maxUtil > 40) color = '#d29922';
+  else if (maxUtil > 0) color = '#3fb950';
+  return `<td style="color:${color}">${parts.length > 1 ? parts.join('/') : maxUtil}%</td>`;
+}
 
-  // Node wattage is a whole-host measurement and a multi-model host runs one
-  // viiwork instance per model, each reporting the same BMC reading. Summing
-  // the payload as it arrives counts such a host once per instance -- three
-  // times over on a three-tenant host. Key by hostname, local first.
-  const wattsByHost = new Map();
-  const takeWatts = (host, watts, avail) => {
-    if (!host || !avail || !(watts > 0) || wattsByHost.has(host)) return;
-    wattsByHost.set(host, watts);
-  };
-  takeWatts(data.hostname, data.local.power_watts, data.local.power_available);
-  for (const p of peers) {
-    if (p.status !== 'reachable') continue;
-    takeWatts(p.hostname || p.addr, p.power_watts, p.power_available);
+function vramCell(ids) {
+  let used = 0, total = 0, have = false;
+  for (const id of (ids || [])) {
+    const samples = metricsData[String(id)];
+    if (samples && samples.length > 0) {
+      used += samples[samples.length - 1].vram_used_mb;
+      total += (vramTotalMB[String(id)] || 0);
+      have = true;
+    }
   }
-  const totalPower = [...wattsByHost.values()].reduce((s, w) => s + w, 0);
-  const clusterCost = data.cluster_cost_eur_per_hour || 0;
-  const clusterCostToday = data.cluster_cost_today_eur || 0;
+  if (!have) return '<td></td>';
+  return `<td>${(used / 1024).toFixed(1)}/${total ? (total / 1024).toFixed(0) : '?'}G</td>`;
+}
 
-  const instanceCount = 1 + peers.length;
-  const reachableInstances = 1 + peers.filter(p => p.status === 'reachable').length;
+// tokensCell shows decode progress of the backend's running requests.
+function tokensCell(b) {
+  const decoded = b.tok_decoded || 0, remain = b.tok_remain || 0;
+  if (!(b.busy > 0) || !(decoded + remain > 0)) return '<td style="color:#484f58">idle</td>';
+  const total = decoded + remain;
+  const pct = Math.round((decoded / total) * 100);
+  const barColor = pct > 80 ? '#3fb950' : '#58a6ff';
+  return `<td><div style="display:flex;align-items:center;gap:4px;min-width:100px">` +
+    `<span style="flex:1;height:8px;background:#21262d;border-radius:2px;overflow:hidden">` +
+    `<span style="display:block;width:${pct}%;height:100%;background:${barColor};border-radius:2px"></span></span>` +
+    `<span style="color:${barColor};font-size:0.8rem">${decoded}/${total}t</span></div></td>`;
+}
 
-  const titleEl = document.getElementById('title');
-  const topoEl = document.getElementById('topology');
-  if (singleHost) {
-    titleEl.textContent = `viiwork \u2014 ${hostname}`;
-    topoEl.textContent = `single host \u00B7 ${instanceCount} instances sharing ${totalGPUs} GPU${totalGPUs === 1 ? '' : 's'} on one machine`;
-  } else if (peers.length > 0) {
-    titleEl.textContent = 'viiwork mesh';
-    const uniqueHosts = new Set(peers.map(p => hostOf(p.addr))).size + 1;
-    topoEl.textContent = `distributed \u00B7 ${instanceCount} instances across ${uniqueHosts} hosts`;
-  } else {
-    titleEl.textContent = 'viiwork';
-    topoEl.textContent = `standalone \u00B7 ${hostname}:${localPort}`;
+function render(status, cluster) {
+  const models = status.models || [];
+  let backends = 0, healthy = 0;
+  for (const m of models) {
+    for (const b of (m.backends || [])) {
+      backends++;
+      if (b.status === 'healthy') healthy++;
+    }
   }
+  const power = status.power || {};
+  const cost = status.cost || {};
 
-  const instLabel = singleHost ? 'Instances' : 'Peers';
-  const instValue = singleHost
-    ? `<strong>${reachableInstances}/${instanceCount} on ${escapeHtml(hostname)}</strong>`
-    : `<strong>${reachableInstances - 1}/${peers.length} reachable</strong>`;
+  document.getElementById('title').textContent = 'viiwork — ' + status.node;
+  document.getElementById('topology').textContent =
+    (status.addr ? status.addr + ':' + status.api_port : ':' + status.api_port) +
+    (cluster ? ` · ${cluster.mesh} mesh` : '');
 
+  const kwh = status.energy_kwh_24h || 0;
   document.getElementById('summary').innerHTML = `
-    <div><span>Node:</span> <strong>${escapeHtml(data.node_id)}</strong> <span style="color:#484f58">:${localPort}</span></div>
-    <div><span>Models:</span> <strong>${(data.models || []).length}</strong></div>
-    <div><span>GPUs:</span> <strong>${healthyGPUs}/${totalGPUs} healthy</strong></div>
-    <div><span>${instLabel}:</span> ${instValue}</div>
-    <div><span>Power:</span> <strong>${totalPower > 0 ? Math.round(totalPower) + 'W' : 'N/A'}</strong></div>
-    <div><span>Cost:</span> <strong>${clusterCost > 0 ? clusterCost.toFixed(2) + ' EUR/h' : 'N/A'}</strong></div>
-    <div><span>Today:</span> <strong>${clusterCostToday > 0 ? clusterCostToday.toFixed(2) + ' EUR' : 'N/A'}</strong></div>
+    <div><span>Node:</span> <strong>${escapeHtml(status.node_id)}</strong></div>
+    <div><span>Models:</span> <strong>${models.length}</strong></div>
+    <div><span>Backends:</span> <strong>${healthy}/${backends} healthy</strong></div>
+    <div><span>GPUs:</span> <strong>${(status.gpus || []).length}</strong></div>
+    <div><span>Power:</span> <strong>${power.available ? Math.round(power.watts) + 'W' : 'N/A'}</strong>${power.available && power.source ? ` <span>(${escapeHtml(power.source)})</span>` : ''}</div>
+    <div><span>Energy:</span> <strong>${kwh > 0 ? kwh.toFixed(1) + ' kWh (24h)' : 'N/A'}</strong></div>
+    <div><span>Cost:</span> <strong>${cost.available ? cost.eur_per_hour.toFixed(2) + ' EUR/h' : 'N/A'}</strong></div>
+    <div><span>Today:</span> <strong>${cost.available ? (cost.today_eur || 0).toFixed(2) + ' EUR' : 'N/A'}</strong></div>
   `;
 
-  // Local Backends → right column (merged with backend stats)
-  const localHeading = singleHost ? `This instance :${localPort} (${data.local.model})` : `Local Backends (${data.local.model})`;
-  let backendsHtml = `<h2>${escapeHtml(localHeading)}`;
-  if (data.local.power_available) backendsHtml += ' \u2014 ' + data.local.power_watts + 'W';
-  if (data.local.cost_available) backendsHtml += ' \u2014 ' + data.local.cost_eur_per_hour.toFixed(2) + ' EUR/h';
-  backendsHtml += '</h2><div class="card"><table>';
-  backendsHtml += '<tr><th></th><th>GPU</th><th>In-Flight</th><th>RSS</th><th>GPU%</th><th>VRAM</th><th>Context Use</th></tr>';
-  for (const b of data.local.backends) {
-    // For tensor-split backends, gpu_id is -1 and gpu_ids lists the devices.
-    // Display and per-GPU metrics should fan out across all devices in the set.
-    const gpuIds = (b.gpu_ids && b.gpu_ids.length > 0) ? b.gpu_ids : [b.gpu_id];
-    const rssKey = (b.gpu_ids && b.gpu_ids.length > 0) ? ('ts-' + b.gpu_ids.join(',')) : String(b.gpu_id);
-    const gpuLabelParts = gpuIds.map(id => {
-      const c = GPU_COLORS[((id % GPU_COLORS.length) + GPU_COLORS.length) % GPU_COLORS.length];
-      return `<span style="color:${c}">gpu-${id}</span>`;
-    });
-    backendsHtml += `<tr>`;
-    backendsHtml += `<td><span class="status ${b.status}"></span></td>`;
-    backendsHtml += `<td>${gpuLabelParts.join(' + ')}</td>`;
-    backendsHtml += `<td>${b.in_flight || 0}</td>`;
-
-    if (b.rss_mb) {
-      if (!backendRSSHistory[rssKey]) backendRSSHistory[rssKey] = [];
-      backendRSSHistory[rssKey].push({t: Math.floor(Date.now()/1000), rss: b.rss_mb});
-      if (backendRSSHistory[rssKey].length > RSS_HISTORY_MAX)
-        backendRSSHistory[rssKey] = backendRSSHistory[rssKey].slice(-RSS_HISTORY_MAX);
-      const rssLabel = b.rss_mb >= 1024 ? (b.rss_mb / 1024).toFixed(1) + 'G' : b.rss_mb + 'M';
-      const history = backendRSSHistory[rssKey];
-      let trend = '\u2192', trendColor = '#8b949e';
-      if (history.length >= 10) {
-        const half = Math.floor(history.length / 2);
-        const earlyAvg = history.slice(0, half).reduce((s, h) => s + h.rss, 0) / half;
-        const lateAvg = history.slice(-half).reduce((s, h) => s + h.rss, 0) / half;
-        const pct = ((lateAvg - earlyAvg) / earlyAvg) * 100;
-        if (pct > 2) { trend = '\u2191'; trendColor = pct > 10 ? '#f85149' : '#d29922'; }
-        else if (pct < -2) { trend = '\u2193'; trendColor = '#3fb950'; }
-      }
-      backendsHtml += `<td><span style="color:${trendColor};font-weight:bold">${trend}</span> ${rssLabel}</td>`;
-    } else {
-      backendsHtml += `<td></td>`;
+  // The fleet line: every member of the mesh, from /v1/cluster.
+  let fleetHtml = '';
+  if (cluster) {
+    const members = cluster.members || [];
+    const alive = members.filter(m => m.state === 'alive');
+    let fleetWatts = 0;
+    for (const m of alive) {
+      const p = m.status && m.status.power;
+      if (p && p.available) fleetWatts += p.watts;
     }
-
-    // GPU utilization: aggregate across the backend's GPU set (max when
-    // tensor-split, since they move in lockstep anyway).
-    const utilParts = [];
-    let maxUtil = null;
-    for (const id of gpuIds) {
-      const samples = metricsData[String(id)];
-      if (samples && samples.length > 0) {
-        const u = Math.round(samples[samples.length - 1].util);
-        utilParts.push(u);
-        if (maxUtil === null || u > maxUtil) maxUtil = u;
-      }
-    }
-    if (maxUtil !== null) {
-      let utilColor = '#8b949e';
-      if (maxUtil > 80) utilColor = '#f85149';
-      else if (maxUtil > 40) utilColor = '#d29922';
-      else if (maxUtil > 0) utilColor = '#3fb950';
-      const utilText = utilParts.length > 1 ? utilParts.join('/') : String(maxUtil);
-      backendsHtml += `<td style="color:${utilColor}">${utilText}%</td>`;
-    } else {
-      backendsHtml += `<td></td>`;
-    }
-
-    // VRAM: sum across the backend's GPU set (useful for tensor-split).
-    let vramUsed = 0, vramTotal = 0, haveVRAM = false;
-    for (const id of gpuIds) {
-      const samples = metricsData[String(id)];
-      if (samples && samples.length > 0) {
-        const latest = samples[samples.length - 1];
-        vramUsed += latest.vram_used_mb;
-        vramTotal += (vramTotalMB[String(id)] || 16368);
-        haveVRAM = true;
-      }
-    }
-    if (haveVRAM) {
-      const vramGB = (vramUsed / 1024).toFixed(1);
-      const totalGB = (vramTotal / 1024).toFixed(0);
-      backendsHtml += `<td>${vramGB}/${totalGB}G</td>`;
-    } else {
-      backendsHtml += `<td></td>`;
-    }
-
-    // Context use (decoded tokens / configured context size)
-    if (b.slot_count > 0) {
-      const decoded = b.tok_decoded || 0;
-      const total = b.slot_ctx || 0;
-      if ((b.slot_active || 0) > 0 && total > 0) {
-        const pct = Math.round((decoded / total) * 100);
-        let barColor = '#58a6ff';
-        if (pct > 80) barColor = '#3fb950';
-        backendsHtml += `<td><div style="display:flex;align-items:center;gap:4px;min-width:100px">`;
-        backendsHtml += `<span style="flex:1;height:8px;background:#21262d;border-radius:2px;overflow:hidden">`;
-        backendsHtml += `<span style="display:block;width:${pct}%;height:100%;background:${barColor};border-radius:2px"></span>`;
-        backendsHtml += `</span>`;
-        backendsHtml += `<span style="color:${barColor};font-size:0.8rem">${decoded}/${total}t</span>`;
-        backendsHtml += `</div></td>`;
-      } else {
-        backendsHtml += `<td style="color:#484f58">idle</td>`;
-      }
-    } else {
-      backendsHtml += `<td></td>`;
-    }
-
-    backendsHtml += `</tr>`;
+    const names = members.map(m => {
+      const cls = m.state === 'alive' ? 'healthy' : 'dead';
+      return `<span style="margin-right:10px"><span class="status ${cls}"></span>${escapeHtml(m.node)}${m.state === 'alive' ? '' : ' <span style="color:#8b949e">(' + escapeHtml(m.state) + ')</span>'}</span>`;
+    }).join('');
+    fleetHtml = `<div class="summary">
+      <div><span>Fleet:</span> <strong>${alive.length}/${members.length} members alive</strong></div>
+      <div><span>Mesh models:</span> <strong>${(cluster.models || []).length}</strong></div>
+      <div><span>Fleet power:</span> <strong>${fleetWatts > 0 ? Math.round(fleetWatts) + 'W' : 'N/A'}</strong></div>
+      <div><span>Fleet cost:</span> <strong>${cluster.cluster_cost_eur_per_hour ? cluster.cluster_cost_eur_per_hour.toFixed(2) + ' EUR/h' : 'N/A'}</strong></div>
+      <div><span>Today:</span> <strong>${cluster.cluster_cost_today_eur ? cluster.cluster_cost_today_eur.toFixed(2) + ' EUR' : 'N/A'}</strong></div>
+    </div><div style="margin:-6px 0 16px;font-size:0.85rem">${names}</div>`;
   }
-  backendsHtml += '</table></div>';
+  document.getElementById('fleet-section').innerHTML = fleetHtml;
+
+  // One table per model: engine, busy/slots and queue on the heading, a row
+  // per backend beneath.
+  let backendsHtml = '';
+  if (!models.length) {
+    backendsHtml = '<h2>Models</h2><div class="card" style="color:#8b949e">no models configured on this node (it routes to the mesh)</div>';
+  }
+  for (const m of models) {
+    backendsHtml += `<h2>${escapeHtml(m.name)} <span style="font-size:0.85rem;color:#484f58">` +
+      `${escapeHtml(m.engine)} · ${m.busy}/${m.slots} busy · ${m.queued || 0} queued` +
+      `${m.ctx ? ' · ' + m.ctx + ' ctx/slot' : ''}</span></h2>`;
+    backendsHtml += '<div class="card"><table>';
+    backendsHtml += '<tr><th></th><th>Backend</th><th>GPUs</th><th>Status</th><th>Busy</th><th>RSS</th><th>GPU%</th><th>VRAM</th><th>Tokens</th><th>Respawns</th></tr>';
+    for (const b of (m.backends || [])) {
+      backendsHtml += '<tr>';
+      backendsHtml += `<td><span class="status ${escapeHtml(b.status)}"></span></td>`;
+      backendsHtml += `<td>${escapeHtml(b.id)}</td>`;
+      backendsHtml += `<td>${gpuLabelHtml(b.gpus)}</td>`;
+      backendsHtml += `<td>${escapeHtml(b.status)}${b.phase ? ' <span style="color:#8b949e">(' + escapeHtml(b.phase) + ')</span>' : ''}</td>`;
+      backendsHtml += `<td>${b.busy || 0}/${b.slots || 0}</td>`;
+      backendsHtml += rssCell(b.id, b.rss_mb);
+      backendsHtml += utilCell(b.gpus);
+      backendsHtml += vramCell(b.gpus);
+      backendsHtml += tokensCell(b);
+      backendsHtml += `<td${b.respawns ? ' style="color:#d29922"' : ''}>${b.respawns || 0}</td>`;
+      backendsHtml += '</tr>';
+    }
+    backendsHtml += '</table></div>';
+  }
   document.getElementById('backends-section').innerHTML = backendsHtml;
 
-  // Peers / unified instance view
-  let peersHtml = '';
-  if (singleHost) {
-    // One table listing every instance on this host (local first, then siblings).
-    // Rows are minimal: port, GPU set, status, in-flight, model.
-    peersHtml += `<h2>Instances on ${escapeHtml(hostname)} (${instanceCount} instances \u00B7 ${totalGPUs} GPUs)</h2>`;
-    peersHtml += '<div class="card"><table>';
-    peersHtml += '<tr><th></th><th>Port</th><th>GPUs</th><th>Model</th><th>In-Flight</th><th>Node ID</th></tr>';
-    // Local row — highlight with a marker so the viewer knows "this is me".
-    for (const b of localBackends) {
-      peersHtml += `<tr style="background:#1f6feb11">`;
-      peersHtml += `<td><span class="status ${b.status}"></span></td>`;
-      peersHtml += `<td><strong>:${localPort}</strong> <span style="color:#58a6ff;font-size:0.75rem">\u2190 you</span></td>`;
-      peersHtml += `<td>${gpuLabelOf(b)}</td>`;
-      peersHtml += `<td style="color:#8b949e">${escapeHtml(data.local.model)}</td>`;
-      peersHtml += `<td>${b.in_flight || 0}</td>`;
-      peersHtml += `<td style="color:#484f58;font-size:0.8rem">${escapeHtml(data.node_id)}</td>`;
-      peersHtml += '</tr>';
-    }
-    for (const p of peers) {
-      const port = portOf(p.addr);
-      const backends = p.backends || [];
-      if (p.status !== 'reachable') {
-        peersHtml += `<tr>`;
-        peersHtml += `<td><span class="status ${escapeHtml(p.status)}"></span></td>`;
-        peersHtml += `<td><strong>:${escapeHtml(port)}</strong></td>`;
-        peersHtml += `<td style="color:#8b949e">\u2014</td>`;
-        peersHtml += `<td style="color:#8b949e">\u2014</td>`;
-        peersHtml += `<td style="color:#8b949e">\u2014</td>`;
-        peersHtml += `<td style="color:#f85149;font-size:0.8rem">${escapeHtml(p.status)}</td>`;
-        peersHtml += '</tr>';
-        continue;
-      }
-      if (backends.length === 0) {
-        peersHtml += `<tr>`;
-        peersHtml += `<td><span class="status reachable"></span></td>`;
-        peersHtml += `<td><strong>:${escapeHtml(port)}</strong></td>`;
-        peersHtml += `<td style="color:#8b949e">${p.healthy_backends || 0} GPU${p.healthy_backends === 1 ? '' : 's'}</td>`;
-        peersHtml += `<td style="color:#8b949e">${(p.models || []).map(escapeHtml).join(', ')}</td>`;
-        peersHtml += `<td>${p.total_in_flight || 0}</td>`;
-        peersHtml += `<td style="color:#484f58;font-size:0.8rem">${escapeHtml(p.node_id || '')}</td>`;
-        peersHtml += '</tr>';
-        continue;
-      }
-      for (let i = 0; i < backends.length; i++) {
-        const b = backends[i];
-        peersHtml += `<tr>`;
-        peersHtml += `<td><span class="status ${escapeHtml(b.status)}"></span></td>`;
-        peersHtml += i === 0 ? `<td><strong>:${escapeHtml(port)}</strong></td>` : '<td></td>';
-        peersHtml += `<td>${gpuLabelOf(b)}</td>`;
-        peersHtml += i === 0 ? `<td style="color:#8b949e">${(p.models || []).map(escapeHtml).join(', ')}</td>` : '<td></td>';
-        peersHtml += `<td>${b.in_flight || 0}</td>`;
-        peersHtml += i === 0 ? `<td style="color:#484f58;font-size:0.8rem">${escapeHtml(p.node_id || '')}</td>` : '<td></td>';
-        peersHtml += '</tr>';
-      }
-    }
-    peersHtml += '</table></div>';
-  } else if (peers.length > 0) {
-    peersHtml += '<h2>Peers</h2>';
-    for (const p of peers) {
-      peersHtml += '<div class="card"><table>';
-      peersHtml += `<tr><td><span class="status ${escapeHtml(p.status)}"></span><strong>${escapeHtml(p.addr)}</strong></td><td>${escapeHtml(p.status)}</td>`;
-      if (p.status === 'reachable') {
-        peersHtml += `<td>${escapeHtml(p.node_id)}</td><td>${p.healthy_backends} GPUs</td><td>${p.total_in_flight} in-flight</td>`;
-        peersHtml += p.power_available ? `<td>${p.power_watts}W</td>` : '<td style="color:#8b949e">N/A</td>';
-        peersHtml += p.cost_available ? `<td>${p.cost_eur_per_hour.toFixed(2)} EUR/h</td>` : '<td style="color:#8b949e">N/A</td>';
-      }
-      peersHtml += '</tr></table>';
-      if (p.models && p.models.length > 0) {
-        peersHtml += '<div class="models">';
-        for (const m of p.models) peersHtml += `<span class="model-tag">${escapeHtml(m)}</span>`;
-        peersHtml += '</div>';
-      }
-      peersHtml += '</div>';
-    }
+  // Mesh models → left column top
+  let modelsHtml = '<h2>Mesh Models</h2><div class="models" style="margin-bottom:12px">';
+  for (const name of ((cluster && cluster.models) || models.map(m => m.name))) {
+    modelsHtml += `<span class="model-tag">${escapeHtml(name)}</span>`;
   }
-  document.getElementById('peers-section').innerHTML = peersHtml;
-
-  // Cluster Models → left column top
-  let modelsHtml = '<h2>Cluster Models</h2><div class="models" style="margin-bottom:12px">';
-  for (const m of (data.models || [])) modelsHtml += `<span class="model-tag">${escapeHtml(m)}</span>`;
   modelsHtml += '</div>';
   document.getElementById('cluster-models').innerHTML = modelsHtml;
 
-  // Accumulate power history from cluster data
-  if (data.local && data.local.power_available) {
-    powerHistory.push({t: Math.floor(Date.now()/1000), watts: data.local.power_watts});
+  // Accumulate this machine's power history
+  if (power.available) {
+    powerHistory.push({t: Math.floor(Date.now()/1000), watts: power.watts});
     if (powerHistory.length > 720) powerHistory = powerHistory.slice(-720);
     drawPowerGraph();
   }
 
   // Accumulate host memory history
-  if (data.local && data.local.host_mem_total_mb > 0) {
-    hostMemTotal = data.local.host_mem_total_mb;
-    hostMemHistory.push({t: Math.floor(Date.now()/1000), used: data.local.host_mem_used_mb});
+  if (status.host_mem_total_mb > 0) {
+    hostMemTotal = status.host_mem_total_mb;
+    hostMemHistory.push({t: Math.floor(Date.now()/1000), used: status.host_mem_used_mb});
     if (hostMemHistory.length > 720) hostMemHistory = hostMemHistory.slice(-720);
     document.getElementById('hostmem-section').style.display = '';
-    const usedGB = (data.local.host_mem_used_mb / 1024).toFixed(1);
-    document.getElementById('hostmem-live').textContent = usedGB + ' GB';
+    document.getElementById('hostmem-live').textContent = (status.host_mem_used_mb / 1024).toFixed(1) + ' GB';
     drawHostMemGraph();
   }
 
-  // Update footer
-  document.getElementById('footer').textContent = 'viiwork' + (clusterVersion ? ' ' + clusterVersion : '');
+  document.getElementById('footer').textContent = 'viiwork' + (status.ver ? ' ' + status.ver : '');
 }
 
 refresh();
@@ -594,9 +480,8 @@ function appendActivity(ev) {
   line.style.borderBottom = '1px solid #21262d';
   const time = new Date(ev.t * 1000).toLocaleTimeString();
   const color = ACT_COLORS[ev.type] || '#8b949e';
-  const gpuTag = ev.gpu_id >= 0 ? `<span style="color:${GPU_COLORS[ev.gpu_id % GPU_COLORS.length]}">gpu-${ev.gpu_id}</span> ` : '';
   const taskTag = ev.task_id ? `<span style="color:#bc8cff">[${escapeHtml(ev.task_id)}]</span> ` : '';
-  line.innerHTML = `<span style="color:#484f58">${time}</span> <span style="color:${color}">[${ev.type}]</span> ${gpuTag}${taskTag}${escapeHtml(ev.message)}`;
+  line.innerHTML = `<span style="color:#484f58">${time}</span> <span style="color:${color}">[${ev.type}]</span> ${taskTag}${escapeHtml(ev.message)}`;
   activityLog.insertBefore(line, activityLog.firstChild);
   while (activityLog.children.length > MAX_ACTIVITY_LINES) activityLog.removeChild(activityLog.lastChild);
 }

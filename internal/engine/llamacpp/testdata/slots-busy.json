@@ -1,0 +1,4 @@
+[{"id":0,"id_task":57,"n_ctx":49152,"speculative":false,"is_processing":true,
+  "n_prompt_tokens":812,"params":{"n_predict":500,"temperature":0.7},
+  "next_token":[{"has_next_token":true,"has_new_line":false,"n_remain":380,"n_decoded":120}]},
+ {"id":1,"n_ctx":49152,"speculative":false,"is_processing":false}]

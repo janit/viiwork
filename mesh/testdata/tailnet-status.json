@@ -1,0 +1,10 @@
+{"Version":"1.86.2","BackendState":"Running",
+ "TailscaleIPs":["100.64.0.105","fd7a:115c:a1e0::1"],
+ "Self":{"ID":"n1","HostName":"gb1","DNSName":"gb1.example.ts.net.","OS":"linux",
+         "TailscaleIPs":["100.64.0.105","fd7a:115c:a1e0::1"],"Online":true},
+ "Peer":{
+   "nodekey:aa":{"HostName":"node-a","TailscaleIPs":["100.64.0.2","fd7a:115c:a1e0::2"],"Online":true},
+   "nodekey:bb":{"HostName":"gb2","TailscaleIPs":["100.64.0.3","fd7a:115c:a1e0::3"],"Online":false},
+   "nodekey:cc":{"HostName":"phone","TailscaleIPs":["fd7a:115c:a1e0::4"],"Online":true},
+   "nodekey:dd":{"HostName":"odd","TailscaleIPs":["192.168.1.5"],"Online":true},
+   "nodekey:ee":{"HostName":"broken","TailscaleIPs":["not-an-ip","100.64.0.6"],"Online":true}}}

@@ -46,6 +46,6 @@ COPY --from=go-build /viiwork /usr/local/bin/
 # Required: ROCm may not natively recognize gfx906 in all versions;
 # this override forces gfx900-series compatibility
 ENV HSA_OVERRIDE_GFX_VERSION=9.0.6
-EXPOSE 8080
+EXPOSE 8086/tcp 7946/tcp 7946/udp
 ENTRYPOINT ["viiwork"]
 CMD ["--config", "/etc/viiwork/viiwork.yaml"]

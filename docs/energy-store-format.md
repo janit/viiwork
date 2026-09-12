@@ -217,6 +217,11 @@ It uses **the same vocabulary as the mesh wire field `power_source`**:
 | `sdr` | whole-chassis draw via the `Power Supply` SDR sensor class |
 | `sensor:<NAME>` | whole-chassis draw via a named IPMI sensor |
 | `nvidia-smi` | **sum of GPU board power** — excludes CPU, fans, drives, PSU losses |
+| `rocm-smi` | **sum of GPU package power reported by rocm-smi** — excludes CPU, fans, drives, PSU losses |
+
+Adding a value to this vocabulary is not a format change: the ring files, their
+headers and the one-line shape of this file are unchanged, so the magic stays
+`VIIWENG1`.
 
 This exists because the bytes are identical whichever was measured, and the two
 readings differ by hundreds of watts on the same hardware. A store copied off a

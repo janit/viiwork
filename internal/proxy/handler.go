@@ -1,966 +1,451 @@
 package proxy
 
 import (
-	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
-	"runtime"
+	"sort"
 	"strconv"
-	"strings"
 	"time"
 
-	"github.com/janit/viiwork/internal/activity"
-	"github.com/janit/viiwork/internal/balancer"
-	"github.com/janit/viiwork/internal/gpu"
-	"github.com/janit/viiwork/internal/logging"
-	"github.com/janit/viiwork/internal/peer"
-	"github.com/janit/viiwork/internal/meshauth"
-	"github.com/janit/viiwork/meshapi"
-	"github.com/janit/viiwork/internal/pipeline"
-	"github.com/janit/viiwork/internal/power"
-	"github.com/janit/viiwork/web"
+	"github.com/janit/viiwork/v2/internal/activity"
+	"github.com/janit/viiwork/v2/internal/logging"
+	"github.com/janit/viiwork/v2/internal/pipeline"
+	"github.com/janit/viiwork/v2/internal/route"
+	"github.com/janit/viiwork/v2/meshapi"
 )
 
-var startTime = time.Now()
+// Error types the handler writes besides meshapi's.
+const (
+	errTypeInvalidRequest = "invalid_request"
+	errTypeNotFound       = "not_found"
+	errTypeServer         = "server_error"
+)
 
+// queueRetryAfter is the Retry-After, in seconds, on a 429 from the queue.
+const queueRetryAfter = "2"
+
+// ResolveError is written as-is by the handler: status, error type, message, and
+// Retry-After seconds when non-zero. P5's alias resolver returns it.
+type ResolveError struct {
+	Status     int
+	Type       string
+	Message    string
+	RetryAfter int
+}
+
+func (e *ResolveError) Error() string { return e.Message }
+
+// Resolver maps the requested model name to the real model and the alias it
+// was reached through ("" for a real name).
+type Resolver func(requested string) (model, alias string, err error)
+
+// ModelLister adds entries to /v1/models.
+type ModelLister func() []meshapi.ModelEntry
+
+// LocalCapacity is this node's per-model occupancy; *supervisor.Supervisor
+// satisfies it.
+type LocalCapacity interface {
+	Capacity() []meshapi.ModelCapacity
+}
+
+type Deps struct {
+	Self         string
+	Version      string
+	Router       *route.Router
+	Reports      route.Reports // *capacity.Poller
+	Local        LocalCapacity // *supervisor.Supervisor
+	Auth         *ForwardAuth
+	Counters     *Counters
+	ForwardRetry int
+	Activity     *activity.Log // nil = no events, no prompt history
+	Pipelines    *PipelineResolver
+	PipelineExec *pipeline.Executor
+	Resolve      Resolver    // nil = identity
+	ExtraModels  ModelLister // nil = none
+}
+
+// Handler serves inference, /v1/models and /v1/capacity. The node server
+// wraps it with panic recovery, CORS, /health and the dashboards.
 type Handler struct {
-	balancer           *balancer.Balancer
-	registry           *peer.Registry
-	modelsHandler      http.Handler
-	latencyWindow      time.Duration
-	statusHandler      http.Handler
-	clusterHandler     http.Handler
-	metricsHistory     *gpu.History
-	metricsBroadcaster *gpu.Broadcaster
-	metricsAvailable   func() bool
-	activity           *activity.Log
-	pipelineResolver   *PipelineResolver
-	pipelineExecutor   *pipeline.Executor
-	evictOnHardFailure bool
-	cors               *CORS
-	powerCtl           *power.Controller
-	signer             *meshauth.Signer
-	requireForwardProof bool
-	forwardNonces       *meshauth.NonceCache
+	d Deps
 }
 
-// SetRequireForwardProof makes an unsigned peer forward a refused one. Leave
-// off until every node in the fleet signs its forwards; see GossipConfig.
-func (h *Handler) SetRequireForwardProof(on bool) { h.requireForwardProof = on }
-
-// forwardIsTrusted decides whether an inbound request may take the
-// forwarded-peer path, which pins it to local backends and refuses any model
-// this node does not serve.
-//
-// Today the claim is a node ID in a header that anyone can type. That was
-// tolerable while every peer was operator-configured; with peers now
-// adoptable, the claim should be a proof. It is enforced behind a flag
-// because a mixed fleet has un-upgraded nodes that cannot sign, and losing
-// routing to half the fleet mid-rollout is worse than the forgeable header
-// this replaces.
-func (h *Handler) forwardIsTrusted(r *http.Request, body []byte) bool {
-	forwardedBy := r.Header.Get(HeaderForwarded)
-	if forwardedBy == "" {
-		return false
-	}
-	if h.signer != nil {
-		nonce, caller, err := h.signer.VerifyRequest(r, body)
-		switch {
-		case err == nil:
-			// A valid proof, but replay is the one thing a signature alone
-			// does not close on a call that is not idempotent.
-			if h.forwardNonces != nil && !h.forwardNonces.Use(nonce) {
-				log.Printf("[mesh] rejected a replayed forward from %s", caller)
-				return false
-			}
-			return true
-		case h.requireForwardProof:
-			log.Printf("[mesh] rejected an unproven forward claiming to be %s: %v", forwardedBy, err)
-			return false
-		}
-	} else if h.requireForwardProof {
-		return false
-	}
-	// Rollout path: no proof required, so fall back to the old claim.
-	return h.registry != nil && h.registry.IsKnownPeer(forwardedBy)
-}
-
-// NewHandler creates a standalone handler (no mesh). Preserved for backward compatibility.
-func NewHandler(bal *balancer.Balancer, modelPath string, latencyWindow time.Duration) *Handler {
-	return &Handler{
-		balancer:      bal,
-		modelsHandler: NewModelsHandler(modelPath),
-		latencyWindow: latencyWindow,
-	}
-}
-
-// NewMeshHandler creates a handler with mesh routing support.
-func NewMeshHandler(bal *balancer.Balancer, reg *peer.Registry, latencyWindow time.Duration) *Handler {
-	return &Handler{
-		balancer:       bal,
-		registry:       reg,
-		latencyWindow:  latencyWindow,
-		statusHandler:  NewStatusHandler(reg.NodeID(), reg.LocalModel(), reg.Backends(), reg.Power(), reg.Cost(), StatusLocation{Hostname: reg.Hostname(), ListenAddr: reg.ListenAddr(), PromptHistory: reg.PromptHistory()}),
-		clusterHandler: NewClusterHandler(reg),
-		forwardNonces:  meshauth.NewNonceCache(2 * meshauth.SkewWindow),
-	}
-}
-
-// SetMeshSigner supplies the mesh membership proof. /v1/status and /v1/cluster
-// then answer a proven caller with a signed response; unsigned callers —
-// browsers, the gateway, older nodes — keep getting byte-identical responses.
-// Call before the handler serves traffic; like the other setters it is wiring,
-// not runtime reconfiguration.
-func (h *Handler) SetMeshSigner(s *meshauth.Signer) {
-	if s == nil {
-		return
-	}
-	h.signer = s
-	h.statusHandler = signedJSON(h.statusHandler, s)
-	h.clusterHandler = signedJSON(h.clusterHandler, s)
-}
-
-func (h *Handler) SetMetrics(history *gpu.History, broadcaster *gpu.Broadcaster, available func() bool) {
-	h.metricsHistory = history
-	h.metricsBroadcaster = broadcaster
-	h.metricsAvailable = available
-}
-
-// SetPowerControl attaches the chassis power controller. Left unset, both
-// power endpoints answer 503 rather than 404: the routes exist on every build,
-// so a consumer can tell "this node will not do that" from "this node is too
-// old to know what you mean".
-func (h *Handler) SetPowerControl(c *power.Controller) { h.powerCtl = c }
-
-func (h *Handler) SetActivity(actLog *activity.Log) {
-	h.activity = actLog
-}
-
-// SetEvictOnHardFailure enables proxy-path eviction: when set, a hard socket
-// failure (EOF, connection refused) on a backend request flips that backend
-// to unhealthy immediately rather than waiting for the health-check ladder.
-func (h *Handler) SetEvictOnHardFailure(enabled bool) {
-	h.evictOnHardFailure = enabled
-}
-
-// SetCORS enables cross-origin access for the listed origins. Leave it unset
-// and no CORS header is ever sent, which is the pre-existing behaviour: the
-// API is then reachable only from a server-side caller or a page served by the
-// node itself.
-func (h *Handler) SetCORS(c *CORS) {
-	h.cors = c
-}
+func NewHandler(d Deps) *Handler { return &Handler{d: d} }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	defer func() {
-		if rv := recover(); rv != nil {
-			buf := make([]byte, 4096)
-			n := runtime.Stack(buf, false)
-			log.Printf("[PANIC] %s %s: %v\n%s", r.Method, r.URL.Path, rv, buf[:n])
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-		}
-	}()
-
-	// CORS runs before routing for two reasons: the allow header has to land on
-	// every response including the SSE streams and the error paths, and a
-	// preflight has to be answered here or not at all — the switch below
-	// matches only GET and POST, so an OPTIONS would fall through to 404.
-	if h.cors != nil && h.cors.apply(w, r) {
-		return
-	}
-
-	switch {
-	case r.URL.Path == "/health" && r.Method == "GET":
-		h.handleHealth(w, r)
-	case r.URL.Path == "/v1/models" && r.Method == "GET":
-		h.handleModels(w, r)
-	case r.URL.Path == "/v1/status" && r.Method == "GET":
-		if h.statusHandler != nil {
-			h.statusHandler.ServeHTTP(w, r)
-		} else {
-			http.NotFound(w, r)
-		}
-	case r.URL.Path == "/v1/cluster" && r.Method == "GET":
-		if h.clusterHandler != nil {
-			h.clusterHandler.ServeHTTP(w, r)
-		} else {
-			http.NotFound(w, r)
-		}
-	case r.URL.Path == "/" && r.Method == "GET":
-		w.Header().Set("Content-Type", "text/html")
-		w.Write(web.DashboardHTML)
-	case r.URL.Path == "/mesh" && r.Method == "GET":
-		w.Header().Set("Content-Type", "text/html")
-		w.Write(web.MeshHTML)
-	case r.URL.Path == "/v1/mesh/stream" && r.Method == "GET":
-		h.handleMeshStream(w, r)
-	case r.URL.Path == "/prompt" && r.Method == "GET":
-		// A full page rather than the dashboard's old in-place modal: the point
-		// is that each row is a real link, so a middle- or cmd-click opens one
-		// in a background tab and a batch can be triaged side by side.
-		w.Header().Set("Content-Type", "text/html")
-		w.Write(web.PromptHTML)
-	case r.URL.Path == "/chat" && r.Method == "GET":
-		w.Header().Set("Content-Type", "text/html")
-		w.Write(web.ChatHTML)
-	case r.URL.Path == "/v1/chat/completions" || r.URL.Path == "/v1/completions":
-		if r.Method != "POST" {
-			http.Error(w, `{"error":{"message":"method not allowed","type":"invalid_request"}}`, http.StatusMethodNotAllowed)
+	switch r.URL.Path {
+	case "/v1/chat/completions", "/v1/completions", "/v1/embeddings":
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, errTypeInvalidRequest, "method not allowed")
 			return
 		}
-		h.handleProxy(w, r)
-	case r.URL.Path == "/v1/metrics" && r.Method == "GET":
-		h.handleMetrics(w, r)
-	case r.URL.Path == "/v1/metrics/stream" && r.Method == "GET":
-		h.handleMetricsStream(w, r)
-	case r.URL.Path == "/v1/activity" && r.Method == "GET":
-		h.handleActivity(w, r)
-	case r.URL.Path == "/v1/activity/stream" && r.Method == "GET":
-		h.handleActivityStream(w, r)
-	case r.URL.Path == "/v1/prompts" && r.Method == "GET":
-		h.handlePromptLookup(w, r)
-	case r.URL.Path == "/v1/mesh/prompt" && r.Method == "GET":
-		h.handleMeshPrompt(w, r)
-	case r.URL.Path == "/v1/power" && r.Method == "POST":
-		h.handlePower(w, r)
-	case r.URL.Path == "/v1/mesh/power" && r.Method == "POST":
-		h.handleMeshPower(w, r)
-	case r.URL.Path == "/v1/embeddings" && r.Method == "POST":
-		h.handleProxy(w, r)
+		h.handleInference(w, r)
+	case meshapi.PathModels:
+		if r.Method != http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		h.handleModels(w)
+	case meshapi.PathCapacity:
+		if r.Method != http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		h.handleCapacity(w)
 	default:
 		http.NotFound(w, r)
 	}
 }
 
-func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request) {
-	if h.registry != nil {
-		resp := ModelsResponse{Object: "list", Data: h.registry.AllModels()}
-		if h.pipelineResolver != nil {
-			resp.Data = append(resp.Data, h.pipelineResolver.VirtualModels()...)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
-		return
-	}
-	// Standalone mode: delegate to static models handler
-	if h.modelsHandler != nil {
-		h.modelsHandler.ServeHTTP(w, r)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(ModelsResponse{Object: "list"})
-}
+// handleInference runs the inference flow of P4 Task 8: parse, verify a
+// forward, resolve, then dispatch with retries over the router.
+func (h *Handler) handleInference(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
 
-// maxRequestBodySize limits inference request bodies to 32 MB.
-const maxRequestBodySize = 32 << 20
-
-// presizeCap bounds how much readBodyPresized will trust Content-Length for.
-// 2 MB comfortably covers a 100K-token prompt; anything larger grows normally.
-const presizeCap = 2 << 20
-
-// HeaderTask is a fallback for clients whose SDKs forbid non-standard JSON fields.
-const HeaderTask = "X-Viiwork-Task"
-
-// maxTaskIDLen caps the task tag length — the dashboard badge needs to stay readable.
-const maxTaskIDLen = 32
-
-// sanitizeTaskID trims whitespace, strips non-printable runes, and truncates to maxTaskIDLen.
-func sanitizeTaskID(s string) string {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return ""
-	}
-	b := make([]rune, 0, len(s))
-	for _, r := range s {
-		if r >= 0x20 && r != 0x7f {
-			b = append(b, r)
-		}
-	}
-	if len(b) > maxTaskIDLen {
-		b = b[:maxTaskIDLen]
-	}
-	return strings.TrimSpace(string(b))
-}
-
-// QueryHost is the query parameter that pins an inference request to one
-// host: /v1/chat/completions?host=gb2. A query parameter rather than a body
-// field or header because proxyToPeer forwards RawQuery verbatim, llama.cpp
-// ignores unknown parameters, and it is testable by hand with curl.
-const QueryHost = "host"
-
-// maxHostLen bounds the pin; a DNS name is at most 253 octets.
-const maxHostLen = 253
-
-// sanitizeHost validates the ?host= pin. It returns ("", true) when there is
-// no pin — absent, blank, or the literal "mesh", so the default is spelled the
-// same way in a URL as in the chat page's selector — and (host, true) for a
-// well-formed hostname or IP literal. Anything else is ("", false), and the
-// caller answers 400 rather than routing as if no pin were given: a pin that
-// quietly does not hold defeats the comparison the feature exists for. The
-// value is only ever compared against known hostnames and never dialled, so
-// this is about a clear answer, not about safety.
-func sanitizeHost(s string) (string, bool) {
-	s = strings.TrimSpace(s)
-	if s == "" || strings.EqualFold(s, "mesh") {
-		return "", true
-	}
-	if len(s) > maxHostLen {
-		return "", false
-	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
-		case c == '.', c == ':', c == '_', c == '-', c == '[', c == ']':
-		default:
-			return "", false
-		}
-	}
-	return s, true
-}
-
-// readBodyPresized buffers a request body, sizing the destination from
-// Content-Length when the client supplied a usable one.
-//
-// io.ReadAll starts at 512 bytes and grows by repeated append, so a large chat
-// completion body is reallocated and copied ~a dozen times on the way in. Chat
-// clients always send Content-Length (the body is a fully-built JSON document,
-// not a stream), so the size is known up front in practice.
-//
-// The length is treated as a HINT, never as truth: it is ignored when absent
-// (-1), when implausible, and it does not bound how much is read. The caller
-// has already wrapped the body in http.MaxBytesReader, which remains the only
-// thing enforcing the size limit. A lying Content-Length therefore costs at
-// most one wasted allocation, never a truncated or over-large read.
-func readBodyPresized(r io.Reader, contentLength int64) ([]byte, error) {
-	if contentLength <= 0 || contentLength > maxRequestBodySize {
-		return io.ReadAll(r)
-	}
-	// Content-Length is CLIENT-CONTROLLED, so it must not size an allocation
-	// without a bound. Sending "Content-Length: 32MB" with a one-byte body
-	// would otherwise force a 32 MB allocation per request — cheap for the
-	// attacker, and multiplied by concurrency an easy way to push a 62 GB host
-	// into swap. io.ReadAll never had this exposure because it only ever
-	// allocated what it actually read.
-	//
-	// Capping costs almost nothing: real chat bodies sit far below this, and a
-	// genuinely larger one just grows from the cap in a few doublings instead
-	// of from 512 bytes in a dozen.
-	if contentLength > presizeCap {
-		contentLength = presizeCap
-	}
-	// The headroom is bytes.MinRead, not +1: Buffer.ReadFrom asks grow() for
-	// MinRead free bytes before EVERY read, including the final one that just
-	// returns io.EOF. Sizing to exactly Content-Length therefore triggers one
-	// last doubling and allocates more than io.ReadAll did — measured, not
-	// theorised (251 KB/op vs 202 KB before this line was corrected).
-	buf := bytes.NewBuffer(make([]byte, 0, contentLength+bytes.MinRead))
-	if _, err := buf.ReadFrom(r); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
-}
-
-// Byte-level keys used to gate the fast field extraction below.
-var (
-	keyModelJSON = []byte(`"model"`)
-	keyThinkJSON = []byte(`"think"`)
-	keyTaskJSON  = []byte(`"task"`)
-	escapePrefix = []byte(`\u`)
-)
-
-// promptExtract pulls just enough of a chat/completions body to recover the
-// user-facing prompt text for the dashboard's prompt history. It mirrors the
-// same last-user-message convention handlePipeline already uses for
-// sourceText, plus the legacy /v1/completions "prompt" string field.
-type promptExtract struct {
-	Messages []struct {
-		Role    string `json:"role"`
-		Content string `json:"content"`
-	} `json:"messages"`
-	Prompt string `json:"prompt"`
-}
-
-// extractPromptText is best-effort: a body with multimodal content parts (an
-// array instead of a plain string) fails to decode into Content for that one
-// message, same as elsewhere in this file, and simply yields no text there
-// rather than an error the caller has to handle.
-func extractPromptText(body []byte) string {
-	var p promptExtract
-	json.Unmarshal(body, &p)
-	for i := len(p.Messages) - 1; i >= 0; i-- {
-		if p.Messages[i].Role == "user" && p.Messages[i].Content != "" {
-			return p.Messages[i].Content
-		}
-	}
-	return p.Prompt
-}
-
-// extractModelFast returns the value of a top-level "model" key without parsing
-// the rest of the body, reporting false when it cannot do so safely.
-//
-// The motivation: handleProxy needs three small scalars, but json.Unmarshal must
-// lex the entire document to produce them — including a prompt that can run to
-// megabytes. Routing a 16K-token request cost ~762us of pure lexing before this.
-//
-// Three guards keep it honest, and any of them failing means the caller falls
-// back to the full unmarshal:
-//
-//  1. "think" and "task" must be absent from the raw bytes. They are viiwork
-//     extensions and almost never present; if either string appears anywhere,
-//     even inside prompt text, we take the slow path rather than guess.
-//  2. "model" must appear exactly once. json.Unmarshal resolves duplicate keys
-//     to the LAST occurrence while an early-stopping scan would take the first,
-//     so a body with two "model" keys must not use this path.
-//  3. Scanning stops at the first non-scalar value. Skipping over a nested
-//     array with the decoder would cost what we are trying to avoid, so if
-//     "model" does not appear before "messages" there is nothing to win.
-//
-// Correctness rests on encoding/json's own lexer — this does not hand-roll JSON
-// parsing, it just stops reading early.
-func extractModelFast(body []byte) (string, bool) {
-	if bytes.Contains(body, keyThinkJSON) || bytes.Contains(body, keyTaskJSON) {
-		return "", false
-	}
-	// JSON permits unicode escapes in KEYS, so {"\u0074hink":true} is a valid
-	// spelling of "think" that the byte scan above cannot see. Early-stopping
-	// cannot rule out a later key either — by the time the decoder reaches an
-	// escaped "think" we have already returned on "model". The byte scan is
-	// therefore the only thing proving absence, and it must not be defeatable,
-	// so any escape sequence anywhere disqualifies the fast path.
-	//
-	// Cost of being this strict: Python's json.dumps defaults to
-	// ensure_ascii=True and escapes every non-ASCII character, so clients
-	// sending non-English prompts fall back to the full unmarshal. That is the
-	// pre-existing behaviour and always correct — just not faster.
-	if bytes.Contains(body, escapePrefix) {
-		return "", false
-	}
-	if bytes.Count(body, keyModelJSON) != 1 {
-		return "", false
-	}
-	dec := json.NewDecoder(bytes.NewReader(body))
-	tok, err := dec.Token()
-	if err != nil {
-		return "", false
-	}
-	if d, ok := tok.(json.Delim); !ok || d != '{' {
-		return "", false
-	}
-	for dec.More() {
-		keyTok, err := dec.Token()
-		if err != nil {
-			return "", false
-		}
-		key, _ := keyTok.(string)
-		// The byte-level guards above cannot see keys written with JSON unicode
-		// escapes — {"\u0074hink":true} is a valid spelling of "think" that
-		// bytes.Contains will miss, and taking the fast path there would drop a
-		// think/task the client really sent. dec.Token() has already decoded the
-		// escape, so re-checking the decoded key closes the hole for free.
-		if key == "think" || key == "task" {
-			return "", false
-		}
-		valTok, err := dec.Token()
-		if err != nil {
-			return "", false
-		}
-		if d, isDelim := valTok.(json.Delim); isDelim {
-			// Nested object or array: skipping it is the expense we are avoiding.
-			_ = d
-			return "", false
-		}
-		if key == "model" {
-			s, ok := valTok.(string)
-			return s, ok
-		}
-	}
-	return "", false
-}
-
-func (h *Handler) handleProxy(w http.ResponseWriter, r *http.Request) {
-	// Read and buffer body to extract model and think parameters
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
-	bodyBytes, err := readBodyPresized(r.Body, r.ContentLength)
+	body, err := readBodyPresized(r.Body, r.ContentLength)
 	if err != nil {
-		if err.Error() == "http: request body too large" {
-			http.Error(w, `{"error":{"message":"request body too large","type":"invalid_request"}}`, http.StatusRequestEntityTooLarge)
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, errTypeInvalidRequest, "request body too large")
 			return
 		}
-		http.Error(w, `{"error":{"message":"failed to read request","type":"invalid_request"}}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, errTypeInvalidRequest, "failed to read request")
 		return
 	}
 
-	var reqBody struct {
+	var fields struct {
 		Model string `json:"model"`
 		Think *bool  `json:"think"`
 		Task  string `json:"task"`
 	}
-	if model, ok := extractModelFast(bodyBytes); ok {
-		// Fast path proved think/task absent, so the zero values are correct.
-		reqBody.Model = model
+	if model, ok := extractModelFast(body); ok {
+		// The fast path proved think and task absent, so the zero values are right.
+		fields.Model = model
 	} else {
-		json.Unmarshal(bodyBytes, &reqBody)
+		json.Unmarshal(body, &fields)
 	}
-	thinkDisabled := reqBody.Think == nil || !*reqBody.Think
+	if fields.Model == "" {
+		writeError(w, http.StatusBadRequest, errTypeInvalidRequest, "model is required")
+		return
+	}
+	thinkDisabled := fields.Think == nil || !*fields.Think
 
-	// Resolve task ID: body "task" wins, else X-Viiwork-Task header.
-	taskID := sanitizeTaskID(reqBody.Task)
+	// The body's task wins over the header. Engines never see the field, and
+	// peers get the task as the header.
+	taskID := sanitizeTaskID(fields.Task)
 	if taskID == "" {
 		taskID = sanitizeTaskID(r.Header.Get(HeaderTask))
 	}
-
-	// Strip "task" from the body before forwarding so backends never see it.
-	if reqBody.Task != "" {
+	if fields.Task != "" {
 		var generic map[string]json.RawMessage
-		if err := json.Unmarshal(bodyBytes, &generic); err == nil {
+		if err := json.Unmarshal(body, &generic); err == nil {
 			if _, present := generic["task"]; present {
 				delete(generic, "task")
 				if rewritten, err := json.Marshal(generic); err == nil {
-					bodyBytes = rewritten
+					body = rewritten
 				}
 			}
 		}
 	}
-	// Propagate task to peers via header (body has been stripped).
 	if taskID != "" {
 		r.Header.Set(HeaderTask, taskID)
 	}
-	r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-	r.ContentLength = int64(len(bodyBytes))
 
-	// Pipeline interception
-	if h.pipelineResolver != nil {
-		if p, locale, localeKey, ok := h.pipelineResolver.Resolve(reqBody.Model); ok {
-			var fullReq struct {
-				Messages []struct {
-					Role    string `json:"role"`
-					Content string `json:"content"`
-				} `json:"messages"`
-			}
-			json.Unmarshal(bodyBytes, &fullReq)
-			sourceText := ""
-			for i := len(fullReq.Messages) - 1; i >= 0; i-- {
-				if fullReq.Messages[i].Role == "user" {
-					sourceText = fullReq.Messages[i].Content
-					break
-				}
-			}
+	_, forwarded := h.d.Auth.Verify(r, body)
+	stripMeshHeaders(r.Header)
+
+	if !forwarded && h.d.Pipelines != nil {
+		if p, locale, localeKey, ok := h.d.Pipelines.Resolve(fields.Model); ok {
+			sourceText := pipelineSourceText(body)
 			if sourceText == "" {
-				http.Error(w, `{"error":{"message":"no user message found","type":"invalid_request"}}`, http.StatusBadRequest)
+				writeError(w, http.StatusBadRequest, errTypeInvalidRequest, "no user message found")
 				return
 			}
-			h.handlePipeline(w, r, p, locale, localeKey, sourceText, reqBody.Model, taskID)
+			h.handlePipeline(w, r, p, locale, localeKey, sourceText, fields.Model, taskID)
 			return
 		}
-		// Unknown locale in a pipeline model name
-		if pName, matched := h.pipelineResolver.MatchesPipelinePrefix(reqBody.Model); matched {
-			avail := h.pipelineResolver.AvailableLocales(pName)
-			msg := fmt.Sprintf("unknown locale in model '%s', available: %v", reqBody.Model, avail)
-			writeJSON(w, http.StatusBadRequest, map[string]any{
-				"error": map[string]string{"message": msg, "type": "invalid_request"},
-			})
+		if name, matched := h.d.Pipelines.MatchesPipelinePrefix(fields.Model); matched {
+			msg := fmt.Sprintf("unknown locale in model '%s', available: %v", fields.Model, h.d.Pipelines.AvailableLocales(name))
+			writeError(w, http.StatusBadRequest, errTypeInvalidRequest, msg)
 			return
 		}
 	}
 
-	// No registry = standalone mode, use local balancer directly
-	if h.registry == nil {
-		h.handleLocalProxy(w, r, thinkDisabled)
-		return
-	}
-
-	forwardedBy := r.Header.Get(HeaderForwarded)
-	isForwarded := forwardedBy != "" && h.forwardIsTrusted(r, bodyBytes)
-
-	if isForwarded {
-		// Forwarded request from a known peer: only use local backends
-		if reqBody.Model != h.registry.LocalModel() {
-			http.Error(w, `{"error":{"message":"model not found","type":"not_found"}}`, http.StatusNotFound)
+	// A forward carries the real name, resolved once on the origin.
+	model, alias := fields.Model, ""
+	if !forwarded && h.d.Resolve != nil {
+		m, a, err := h.d.Resolve(fields.Model)
+		if err != nil {
+			var re *ResolveError
+			if errors.As(err, &re) {
+				if re.RetryAfter > 0 {
+					w.Header().Set("Retry-After", strconv.Itoa(re.RetryAfter))
+				}
+				writeError(w, re.Status, re.Type, re.Message)
+				return
+			}
+			log.Printf("proxy: resolving model %q: %v", fields.Model, err)
+			writeError(w, http.StatusInternalServerError, errTypeServer, "model resolution failed")
 			return
 		}
-		h.handleLocalProxy(w, r, thinkDisabled)
-		return
+		model, alias = m, a
+		if alias != "" {
+			// Engines and peers see the name they serve; a receiver never
+			// resolves. Only aliased requests pay for the rewrite.
+			body = rewriteModel(body, model)
+		}
 	}
 
-	// Find routes for the requested model
-	routes := h.registry.FindRoutesForModel(reqBody.Model)
-	if len(routes) == 0 {
-		log.Printf("[debug] no routes for model %q", reqBody.Model)
-		http.Error(w, `{"error":{"message":"model not found","type":"not_found"}}`, http.StatusNotFound)
-		return
-	}
-
-	// A ?host= pin narrows the route set to one machine. It sits after the
-	// empty check, so "no such model anywhere" stays distinguishable from
-	// "that model, not on that host", and before PickRoute, so the pin beats
-	// the balancer instead of competing with it: PickRoute prefers local
-	// among routes tied at the lowest in-flight, and filtering afterwards
-	// would let a busy pinned host lose to an idle one — the exact bug this
-	// exists to prevent. FilterByHost only ever removes routes; the value is
-	// compared, never dialled, so a pin cannot widen what a caller can reach.
-	// Guarded on RawQuery so the common no-query request parses nothing.
-	if r.URL.RawQuery != "" {
-		pin, ok := sanitizeHost(r.URL.Query().Get(QueryHost))
+	// The pin is compared against member names by the router and never
+	// dialled. A forward ignores it: it already reached the pinned node.
+	// Guarded on RawQuery so the common request parses nothing.
+	var host string
+	if !forwarded && r.URL.RawQuery != "" {
+		pin, ok := sanitizeHost(r.URL.Query().Get(meshapi.QueryHost))
 		if !ok {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]string{
-				"message": "invalid host parameter", "type": "invalid_request",
-			}})
+			writeError(w, http.StatusBadRequest, errTypeInvalidRequest, "invalid host parameter")
 			return
 		}
-		if pin != "" {
-			routes = peer.FilterByHost(routes, pin)
-			if len(routes) == 0 {
-				writeJSON(w, http.StatusNotFound, map[string]any{"error": map[string]string{
-					"message": fmt.Sprintf("model %q is not served by host %q", reqBody.Model, pin),
-					"type":    "not_found",
-				}})
-				return
-			}
-		}
+		host = pin
 	}
 
-	route, err := peer.PickRoute(routes, h.balancer.MaxInFlightPerGPU())
-	if err != nil {
-		// Log in-flight state for all backends when routing fails
-		for _, bs := range h.balancer.Backends() {
-			log.Printf("[debug] backpressure: gpu-%d status=%s in_flight=%d", bs.GPUID, bs.Status(), bs.InFlight())
+	w, capture := newCaptureWriter(w)
+	// Forwards leave no prompt history: the origin already has it (Decision 12).
+	record := !forwarded && h.d.Activity != nil
+	var rid int64
+	if record {
+		// The prompt history names both the model and the alias it was asked
+		// for (P5 Decision 17); events and counters keep the real model.
+		historyModel := model
+		if alias != "" {
+			historyModel = model + " (alias " + alias + ")"
 		}
-		switch err {
-		case balancer.ErrBackpressure:
-			log.Printf("[debug] 429 backpressure for model %q — all backends at capacity", reqBody.Model)
-			w.Header().Set("Retry-After", "2")
-			http.Error(w, `{"error":{"message":"all backends at capacity","type":"rate_limit"}}`, http.StatusTooManyRequests)
-		default:
-			log.Printf("[debug] 503 no route for model %q: %v", reqBody.Model, err)
-			http.Error(w, `{"error":{"message":"no route available","type":"server_error"}}`, http.StatusServiceUnavailable)
-		}
-		return
-	}
-
-	model := reqBody.Model
-	start := time.Now()
-	rid := activity.NewRequestID()
-	if h.activity != nil {
-		h.activity.StorePrompt(rid, model, extractPromptText(bodyBytes))
-		// Capture the response on its way back to the client so the dashboard
-		// can show what came out, not only what went in. Wrapping here covers
-		// both branches below at once, local and peer-routed alike, and the
-		// deferred store runs after whichever one ran has finished writing.
-		var capw *captureWriter
-		w, capw = newCaptureWriter(w)
+		rid = activity.NewRequestID()
+		h.d.Activity.StorePrompt(rid, historyModel, extractPromptText(body))
 		defer func() {
-			h.activity.StoreOutput(rid, model, capw.Output(), time.Since(start).Milliseconds())
+			h.d.Activity.StoreOutput(rid, historyModel, capture.Output(), time.Since(start).Milliseconds())
 		}()
 	}
-	if route.Type == peer.RouteLocal {
-		if logging.DebugEnabled() {
-			log.Printf("[debug] %s → gpu-%d (in_flight=%d)", model, route.Backend.GPUID, route.Backend.InFlight())
-		}
-		if h.activity != nil {
-			h.activity.EmitRequestTask(rid, route.Backend.GPUID, taskID, "%s", meshapi.RequestStarted(model, route.Backend.Label()))
-		}
-		aborted := proxyRequest(w, r, route.Backend, h.latencyWindow, thinkDisabled, h.evictOnHardFailure)
-		elapsed := time.Since(start).Round(time.Millisecond)
-		if logging.DebugEnabled() {
-			log.Printf("[debug] %s → gpu-%d finished (elapsed=%s aborted=%v in_flight=%d)", model, route.Backend.GPUID, elapsed, aborted, route.Backend.InFlight())
-		}
-		if h.activity != nil {
-			if aborted {
-				h.activity.EmitRequestTask(rid, route.Backend.GPUID, taskID, "%s", meshapi.RequestAborted(model, route.Backend.Label(), elapsed))
-			} else {
-				h.activity.EmitRequestTask(rid, route.Backend.GPUID, taskID, "%s", meshapi.RequestDone(model, route.Backend.Label(), elapsed))
-			}
-		}
-	} else {
-		if logging.DebugEnabled() {
-			log.Printf("[debug] %s → peer %s", model, route.Addr)
-		}
-		if h.activity != nil {
-			h.activity.EmitRequestTask(rid, -1, taskID, "%s", meshapi.RequestStarted(model, meshapi.PeerLabel(route.Addr)))
-		}
-		// Write-through in-flight: subsequent picks on this node see the
-		// dispatch immediately, before the next poll of /v1/status updates
-		// the peer's reported total.
-		if route.Peer != nil {
-			route.Peer.IncLocalInFlight()
-		}
-		proxyToPeer(w, r, route.Addr, h.registry.NodeID(), thinkDisabled, bodyBytes, h.signer)
-		if route.Peer != nil {
-			route.Peer.DecLocalInFlight()
-		}
-		elapsed := time.Since(start).Round(time.Millisecond)
-		if logging.DebugEnabled() {
-			log.Printf("[debug] %s → peer %s finished (elapsed=%s)", model, route.Addr, elapsed)
-		}
-		if h.activity != nil {
-			h.activity.EmitRequestTask(rid, -1, taskID, "%s", meshapi.RequestDone(model, meshapi.PeerLabel(route.Addr), elapsed))
-		}
-	}
-}
 
-func (h *Handler) handleMetrics(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	if h.metricsHistory == nil || h.metricsAvailable == nil || !h.metricsAvailable() {
-		json.NewEncoder(w).Encode(map[string]any{"available": false})
+	lease, queued, err := h.d.Router.Acquire(r.Context(), route.Request{Model: model, Host: host, Forwarded: forwarded})
+	if err != nil {
+		h.writeAcquireError(w, err, model, host)
 		return
 	}
-	all := h.metricsHistory.AllGPUSamples()
-	gpus := make(map[string][]gpu.GPUSample, len(all))
-	for id, samples := range all {
-		gpus[strconv.Itoa(id)] = samples
-	}
-	json.NewEncoder(w).Encode(map[string]any{
-		"available":        true,
-		"interval_seconds": 5,
-		"max_samples":      720,
-		"gpus":             gpus,
-	})
-}
-
-func (h *Handler) handleMetricsStream(w http.ResponseWriter, r *http.Request) {
-	f, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "streaming not supported", http.StatusInternalServerError)
-		return
-	}
-	if h.metricsBroadcaster == nil {
-		http.Error(w, "metrics not available", http.StatusServiceUnavailable)
-		return
-	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-
-	ch := h.metricsBroadcaster.Subscribe()
-	defer h.metricsBroadcaster.Unsubscribe(ch)
-
+	var (
+		tried   map[string]bool
+		retries int
+		final   bool // the last dispatch: the one after the final acquisition
+	)
 	for {
-		select {
-		case <-r.Context().Done():
-			return
-		case data, ok := <-ch:
-			if !ok {
-				return
+		t := lease.Target()
+		if queued > 0 {
+			w.Header().Set(meshapi.HeaderQueuedMs, strconv.FormatInt(queued.Milliseconds(), 10))
+		}
+		if alias != "" {
+			w.Header().Set(meshapi.HeaderAlias, alias)
+		}
+		label := t.BackendID
+		if !t.Local {
+			label = meshapi.PeerLabel(t.Node)
+		}
+		if record {
+			h.d.Activity.EmitRequestTask(rid, -1, taskID, "%s", meshapi.RequestStarted(model, label))
+		}
+
+		var res execResult
+		if t.Local {
+			res = serveLocal(w, r, body, lease.Backend(), model, h.d.Self, thinkDisabled)
+		} else {
+			res = forwardToPeer(w, r, body, t, h.d.Auth, h.d.Self)
+			if res.Outcome == outcomeRetryable {
+				lease.Refused() // before Release: its wake must not hand the peer back (Decision 18)
 			}
-			fmt.Fprintf(w, "data: %s\n\n", data)
-			f.Flush()
 		}
-	}
-}
+		lease.Release()
 
-func (h *Handler) handleLocalProxy(w http.ResponseWriter, r *http.Request, thinkDisabled bool) {
-	backend, err := h.balancer.Pick()
-	if err != nil {
-		for _, bs := range h.balancer.Backends() {
-			log.Printf("[debug] local pick failed: gpu-%d status=%s in_flight=%d", bs.GPUID, bs.Status(), bs.InFlight())
+		if res.Outcome == outcomeServed {
+			if record {
+				elapsed := time.Since(start).Round(time.Millisecond)
+				msg := meshapi.RequestDone(model, label, elapsed)
+				if res.Aborted {
+					msg = meshapi.RequestAborted(model, label, elapsed)
+				}
+				h.d.Activity.EmitRequestTask(rid, -1, taskID, "%s", msg)
+			}
+			// Counted where the request ran, so a forward is counted by its
+			// receiver and not twice (spec).
+			if t.Local {
+				tokens, _ := capture.CompletionTokens()
+				h.d.Counters.Add(model, tokens)
+			}
+			return
 		}
-		switch err {
-		case balancer.ErrNoHealthyBackend:
-			log.Printf("[debug] 503 no healthy backend")
-			w.Header().Set("Retry-After", "10")
-			http.Error(w, `{"error":{"message":"no healthy backend","type":"server_error"}}`, http.StatusServiceUnavailable)
-		case balancer.ErrBackpressure:
-			log.Printf("[debug] 429 local backpressure — all backends at capacity")
-			w.Header().Set("Retry-After", "2")
-			http.Error(w, `{"error":{"message":"all backends at capacity","type":"rate_limit"}}`, http.StatusTooManyRequests)
-		default:
-			log.Printf("[debug] 500 balancer error: %v", err)
-			http.Error(w, `{"error":{"message":"internal error","type":"server_error"}}`, http.StatusInternalServerError)
+
+		if logging.DebugEnabled() {
+			log.Printf("[debug] %s: dispatch not served: %s", model, res.Reason)
 		}
-		return
-	}
-	proxyRequest(w, r, backend, h.latencyWindow, thinkDisabled, h.evictOnHardFailure)
-}
-
-func (h *Handler) handleActivity(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	if h.activity == nil {
-		json.NewEncoder(w).Encode(map[string]any{"events": []struct{}{}})
-		return
-	}
-	json.NewEncoder(w).Encode(map[string]any{"events": h.activity.Recent()})
-}
-
-// handlePromptLookup serves this node's own stored prompt for a request id.
-// It is also what handleMeshPrompt proxies to on the peer that actually owns
-// a given rid — request ids are a per-process counter, not cluster-wide, so
-// a lookup only ever makes sense against the node that minted it.
-func (h *Handler) handlePromptLookup(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	rid, err := strconv.ParseInt(r.URL.Query().Get("rid"), 10, 64)
-	if err != nil || h.activity == nil {
-		http.NotFound(w, r)
-		return
-	}
-	entry, ok := h.activity.GetPrompt(rid)
-	if !ok {
-		http.NotFound(w, r)
-		return
-	}
-	json.NewEncoder(w).Encode(entry)
-}
-
-// handleMeshPrompt is the fan-out entry point the mesh dashboard's prompt
-// modal calls. An empty addr means the request originated on whichever node
-// the browser's /v1/mesh/stream connection landed on (mirroring how
-// handleMeshStream leaves MeshEvent.Addr unset for its own local events), so
-// it is served from this node's own store. A non-empty addr names a peer, and
-// the browser may not be able to reach it directly — LAN-addressed peers,
-// possibly tunnelled to only one node — so this proxies server-side instead,
-// the same reasoning as the rest of the mesh fan-out.
-func (h *Handler) handleMeshPrompt(w http.ResponseWriter, r *http.Request) {
-	addr := r.URL.Query().Get("addr")
-	if addr == "" {
-		h.handlePromptLookup(w, r)
-		return
-	}
-	// addr is attacker-controllable: it arrives as a query parameter, and this
-	// handler fetches it and echoes the response back. Forwarding it verbatim
-	// would turn any node into an SSRF probe for its own network — the mesh is
-	// on a LAN alongside IPMI and management interfaces. Only addresses this
-	// node already peers with are allowed; the dashboard never needs any other.
-	if !h.isPeerAddr(addr) {
-		http.Error(w, `{"error":{"message":"unknown peer","type":"invalid_request"}}`, http.StatusBadRequest)
-		return
-	}
-	// Re-serialise rid from the parsed integer rather than passing the raw
-	// string through, so nothing can smuggle extra query parameters or path
-	// segments into the peer request.
-	rid, err := strconv.ParseInt(r.URL.Query().Get("rid"), 10, 64)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	url := "http://" + addr + "/v1/prompts?rid=" + strconv.FormatInt(rid, 10)
-	req, err := http.NewRequestWithContext(r.Context(), "GET", url, nil)
-	if err != nil {
-		http.Error(w, `{"error":{"message":"bad peer address","type":"invalid_request"}}`, http.StatusBadRequest)
-		return
-	}
-	// peerClient carries a timeout; http.DefaultClient does not, and a peer
-	// that accepts the connection but never answers would otherwise pin this
-	// goroutine and its response writer indefinitely.
-	resp, err := peerClient.Do(req)
-	if err != nil {
-		http.Error(w, `{"error":{"message":"peer unreachable","type":"server_error"}}`, http.StatusBadGateway)
-		return
-	}
-	defer resp.Body.Close()
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(resp.StatusCode)
-	// Bound the copy: the body is a prompt entry from a peer, and a peer that
-	// is compromised or simply wrong should not be able to stream unbounded
-	// data through this node into the browser.
-	io.Copy(w, io.LimitReader(resp.Body, maxPromptResponseBytes))
-}
-
-// maxPromptResponseBytes caps a proxied peer prompt response. The store
-// truncates prompts well below this, so the slack only covers JSON overhead.
-const maxPromptResponseBytes = 1 << 20
-
-// isPeerAddr reports whether addr is one of this node's configured peers.
-// Matching is exact against the configured host:port — the peer list comes
-// from config, so no normalisation or DNS resolution is involved, and none
-// should be: resolving here would reintroduce the SSRF this guards against.
-func (h *Handler) isPeerAddr(addr string) bool {
-	if h.registry == nil {
-		return false
-	}
-	for _, p := range h.registry.Peers() {
-		if p.Addr == addr {
-			return true
+		if forwarded {
+			// One dispatch only: the origin picks again (Decision 16).
+			writeError(w, http.StatusServiceUnavailable, meshapi.ErrTypeUnavailable, "backend failed before responding")
+			return
 		}
-	}
-	return false
-}
+		if final {
+			log.Printf("proxy: %s: no route could serve the request; last: %s", model, res.Reason)
+			h.endUnserved(rid, taskID, model, label, start, record)
+			writeError(w, http.StatusBadGateway, errTypeServer, "no route could serve the request")
+			return
+		}
 
-func (h *Handler) handleActivityStream(w http.ResponseWriter, r *http.Request) {
-	f, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "streaming not supported", http.StatusInternalServerError)
-		return
-	}
-	if h.activity == nil {
-		http.Error(w, "activity log not available", http.StatusServiceUnavailable)
-		return
-	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
+		if tried == nil {
+			tried = map[string]bool{}
+		}
+		tried[t.Key()] = true
+		if retries < h.d.ForwardRetry {
+			retries++
+			if next, err := h.d.Router.Pick(route.Request{Model: model, Host: host, Exclude: tried}); err == nil {
+				lease = next
+				continue
+			}
+		}
 
-	// Subscribe before reading the backlog, never after: an event landing
-	// between the two would otherwise fall in the gap and be delivered by
-	// neither. The overlap this creates instead — an event in both the backlog
-	// and the live feed — is the safe direction, and consumers deduplicate.
-	ch := h.activity.Subscribe()
-	defer h.activity.Unsubscribe(ch)
-
-	for _, ev := range h.activity.Backlog() {
-		b, err := json.Marshal(ev)
+		// The final acquisition may queue, but only for what is left of the
+		// request's queue budget (Decision 17).
+		budget := h.d.Router.QueueTimeout() - queued
+		if budget <= 0 {
+			budget = -1
+		}
+		var waited time.Duration
+		lease, waited, err = h.d.Router.Acquire(r.Context(), route.Request{Model: model, Host: host, QueueBudget: budget})
+		queued += waited
 		if err != nil {
-			continue
-		}
-		fmt.Fprintf(w, "data: %s\n\n", b)
-	}
-	f.Flush()
-
-	for {
-		select {
-		case <-r.Context().Done():
+			h.endUnserved(rid, taskID, model, label, start, record)
+			h.writeAcquireError(w, err, model, host)
 			return
-		case data, ok := <-ch:
-			if !ok {
-				return
-			}
-			fmt.Fprintf(w, "data: %s\n\n", data)
-			f.Flush()
 		}
+		final = true
 	}
 }
 
-func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
-	backends := h.balancer.Backends()
-	healthy, total, totalInFlight := 0, len(backends), int64(0)
-	for _, b := range backends {
-		if b.Status() == balancer.StatusHealthy {
-			healthy++
+// rewriteModel sets the body's model field, keeping every other field as it
+// was. A body that does not decode as an object is left alone.
+func rewriteModel(body []byte, model string) []byte {
+	var generic map[string]json.RawMessage
+	if err := json.Unmarshal(body, &generic); err != nil {
+		return body
+	}
+	name, err := json.Marshal(model)
+	if err != nil {
+		return body
+	}
+	generic["model"] = name
+	rewritten, err := json.Marshal(generic)
+	if err != nil {
+		return body
+	}
+	return rewritten
+}
+
+// endUnserved clears the dashboard row a started event opened for a request
+// that ends without being served. The grammar has no failed form, so it is
+// logged as done, which is what v1 logged for a failed peer forward.
+func (h *Handler) endUnserved(rid int64, taskID, model, label string, start time.Time, record bool) {
+	if !record {
+		return
+	}
+	h.d.Activity.EmitRequestTask(rid, -1, taskID, "%s", meshapi.RequestDone(model, label, time.Since(start).Round(time.Millisecond)))
+}
+
+func (h *Handler) writeAcquireError(w http.ResponseWriter, err error, model, host string) {
+	switch {
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		// The client is gone; there is no one to answer.
+	case errors.Is(err, route.ErrModelNotFound):
+		writeError(w, http.StatusNotFound, errTypeNotFound, fmt.Sprintf("model %q not found", model))
+	case errors.Is(err, route.ErrHostNotServing):
+		writeError(w, http.StatusNotFound, errTypeNotFound, fmt.Sprintf("model %q is not served by host %q", model, host))
+	case errors.Is(err, route.ErrNoFreeSlot):
+		writeError(w, http.StatusTooManyRequests, meshapi.ErrTypeRateLimit, "no free slot")
+	case errors.Is(err, route.ErrQueueFull):
+		w.Header().Set("Retry-After", queueRetryAfter)
+		writeError(w, http.StatusTooManyRequests, meshapi.ErrTypeRateLimit, fmt.Sprintf("queue for %q is full", model))
+	case errors.Is(err, route.ErrQueueTimeout):
+		w.Header().Set("Retry-After", queueRetryAfter)
+		writeError(w, http.StatusTooManyRequests, meshapi.ErrTypeRateLimit, fmt.Sprintf("no free slot for %q within %s", model, h.d.Router.QueueTimeout()))
+	default:
+		log.Printf("proxy: routing %q: %v", model, err)
+		writeError(w, http.StatusInternalServerError, errTypeServer, "routing failed")
+	}
+}
+
+// handleModels lists local models, then peers', pipelines' and the extra
+// entries; a duplicate id keeps its first entry in that order.
+func (h *Handler) handleModels(w http.ResponseWriter) {
+	seen := map[string]bool{}
+	data := []meshapi.ModelEntry{}
+	add := func(e meshapi.ModelEntry) {
+		if e.ID == "" || seen[e.ID] {
+			return
 		}
-		totalInFlight += b.InFlight()
+		seen[e.ID] = true
+		e.Object = "model"
+		data = append(data, e)
 	}
-
-	resp := map[string]any{
-		"status":           "ok",
-		"version":          Version,
-		"uptime_seconds":   int(time.Since(startTime).Seconds()),
-		"backends_healthy": healthy,
-		"backends_total":   total,
+	if h.d.Local != nil {
+		for _, mc := range h.d.Local.Capacity() {
+			add(meshapi.ModelEntry{ID: mc.Name, OwnedBy: meshapi.OwnedByLocal})
+		}
 	}
-
-	if h.registry != nil {
-		resp["node_id"] = h.registry.NodeID()
-		resp["model"] = h.registry.LocalModel()
-		peers := h.registry.Peers()
-		reachable := 0
-		for _, p := range peers {
-			if p.Status() == peer.StatusReachable {
-				reachable++
+	if h.d.Reports != nil {
+		// Whatever the report's age: a model listed once stays listed while its
+		// member is known (Decision 4).
+		for _, rep := range h.d.Reports.Reports() {
+			if rep.Node == h.d.Self {
+				continue
+			}
+			for _, mc := range rep.Models {
+				add(meshapi.ModelEntry{ID: mc.Name, OwnedBy: meshapi.OwnedByPeer})
 			}
 		}
-		resp["peers_reachable"] = reachable
-		resp["peers_total"] = len(peers)
 	}
+	if h.d.Pipelines != nil {
+		for _, e := range h.d.Pipelines.VirtualModels() {
+			add(e)
+		}
+	}
+	if h.d.ExtraModels != nil {
+		for _, e := range h.d.ExtraModels() {
+			add(e)
+		}
+	}
+	sort.Slice(data, func(i, j int) bool { return data[i].ID < data[j].ID })
+	writeJSON(w, http.StatusOK, meshapi.ModelsResponse{Object: "list", Data: data})
+}
 
-	if healthy == 0 {
-		resp["status"] = "unhealthy"
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusServiceUnavailable)
-	} else {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
+func (h *Handler) handleCapacity(w http.ResponseWriter) {
+	var local []meshapi.ModelCapacity
+	if h.d.Local != nil {
+		local = h.d.Local.Capacity()
 	}
-	json.NewEncoder(w).Encode(resp)
+	models := make([]meshapi.ModelCapacity, len(local))
+	for i, m := range local {
+		m.Queued = h.d.Router.QueueLen(m.Name)
+		models[i] = m
+	}
+	writeJSON(w, http.StatusOK, meshapi.CapacityResponse{Node: h.d.Self, Ver: h.d.Version, Models: models})
+}
+
+func writeError(w http.ResponseWriter, status int, typ, message string) {
+	writeJSON(w, status, meshapi.ErrorResponse{Error: meshapi.ErrorBody{Message: message, Type: typ}})
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v)
 }
