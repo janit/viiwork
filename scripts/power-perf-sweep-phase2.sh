@@ -24,8 +24,8 @@
 #      above 1100 MHz (default 1000). These are conservative vs the rocm
 #      OD_RANGE.
 #
-# Phase 2 of the GPU power workstream from
-# docs/superpowers/specs/2026-04-09-gfx906-fork-phase-3-reassessment-addendum.md
+# Phase 2 of the GPU power workstream (design notes are internal and not part
+# of this repository)
 #
 # Usage:
 #   GPU=3 ./scripts/power-perf-sweep-phase2.sh

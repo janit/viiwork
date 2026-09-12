@@ -1,5 +1,158 @@
 # Changelog
 
+## v2.0.0-beta1
+
+**First public release of viiwork 2.** Everything below under `v2.0.0-rc.2`,
+`v2.0.0-rc.1` and `v2.0.0-alpha.1` was developed privately and is released
+together here; those entries are kept because they say why each part is the way
+it is.
+
+Beta rather than a release candidate because this is the first build outside
+the fleet it was written on: one machine has been converted and is serving
+production traffic, and `llamacpp` is the only engine. See the rc.2 notes for
+what shipped most recently, and `docs/migrating-to-v2.md` to convert a 1.x host.
+
+## v2.0.0-rc.2
+
+### Acceptance tooling, a conversion guide, and three fixes from the first real node
+
+**`viiwork-accept`** is a new command that checks a node and a mesh without
+changing either: `config` validates a v2 file and summarises what it will run,
+`ports serve`/`probe` prove gossip reaches a machine on tcp and udp, `join`,
+`ready` and `gone` time a node in and out of the cluster, `models` exercises
+content and tool calls per model, `saturate` overflows a model's local slots to
+confirm the mesh takes the overflow, and `alias` checks a name resolves through
+every entry point. It is read-only by design — it reads state and sends
+inference requests, and never starts or stops anything.
+
+**`docs/migrating-to-v2.md`** converts a host: the v1-to-v2 key mapping, a
+worked example, mesh modes, and a step-by-step procedure that validates the new
+file while v1 is still serving, so an invalid file is never discovered after the
+old instances have stopped. `update.sh` and `rebuild.sh` now wait on
+`:8086/health`.
+
+**Fixes**
+
+- **`/health` no longer reports a joining node as healthy.** The API listener
+  starts before the mesh and the supervisor, so a node still joining — or one
+  that cannot reach tailscaled, and so never will — answered 200 `"ok"` with no
+  backends, indefinitely. The model count now comes from the running
+  configuration rather than from the supervisor, so a machine with models
+  configured and nothing serving answers 503. A node with no models configured
+  is still healthy: a pure router is a valid node.
+- **A pipeline can no longer be an alias target.** The alias table is
+  replicated to every member; a pipeline runs only on the node that configures
+  it, so such an alias could never resolve anywhere else. It is now refused in
+  targets and fallbacks, and `--force` no longer creates one — previously the
+  refusal message invited `--force`, which produced an alias that resolved
+  `unavailable` forever.
+- **A `[debug]` line escaped `VIIWORK_DEBUG`.** The think-disabled stream
+  logged its scanner error unconditionally, and a client that stops reading
+  ends a stream in error, so ordinary aborted generations wrote to the log on a
+  per-request path in every deployment.
+
+### Not in this release
+
+- `llamacpp` is the only engine. The vLLM and FreeToken engines land in v2.1.0.
+- `scripts/setup-node.sh` and `deploy.sh` still write and drive v1 layouts.
+
+## v2.0.0-rc.1
+
+### One binary, one node per machine, a mesh that forms itself
+
+viiwork 2 runs **one process per machine**. That node supervises every model
+configured on the machine — a `models:` list replaces the v1 instance files —
+and serves the API and every dashboard on **port 8086**, with membership gossip
+on **7946** (tcp and udp). Per-model instance ports, `server.mesh_port` and the
+port contention behind it are gone: every machine is `http://<machine>:8086`.
+
+**The mesh forms itself.** Nodes find each other through tailscaled
+(`mesh.network: tailnet`, the default), mDNS on a LAN (`mesh.network: lan`) or
+`mesh.seeds`, so adding a machine means writing that machine's config and
+nothing anywhere else, and a machine that stops leaves routing within seconds.
+A mesh is either **secured** — `VIIWORK_MESH_SECRET`, base64 of 32 bytes, the
+same everywhere: encrypted gossip and signed forwards — or declared **open**
+with `mesh.open: true`. A node refuses to start with neither or both, and a
+node in the other mode logs `mesh mode mismatch` instead of joining. Of two
+processes started with the same node name, the newer one exits.
+
+**Routing follows free slots.** Every node polls each member's `/v1/capacity`
+once a second. A request runs on a local backend with a free slot, else goes to
+the member with the most free slots, else waits in a FIFO queue on the node that
+received it, for up to `routing.queue_timeout` (20 s). A member that refuses a
+forward before its first byte is retried elsewhere and not picked again until it
+reports fresh capacity. A receiving node admits a forward only into a free slot
+and never forwards it again. Responses carry `X-Viiwork-Node` (where it ran),
+`X-Viiwork-Origin` (where it arrived) and `X-Viiwork-Queued-Ms` when it waited.
+
+**Aliases.** `viiwork alias set stable-coder Qwen3.8-27B --fallback granite-4.1-8b`
+points a stable name at a real model across the whole mesh; `ls`, `rm`,
+`revert`, `history`, `export` and `import` complete the command, which reports
+when every member has the change. An alias resolves on the node that receives
+the request, to its target if any member serves it, else to its first served
+fallback, else 503. Aliases gossip between nodes and persist in
+`node.state_dir`. Writes need a signature in a secured mesh and must come from
+the node's own machine in an open one. `/v1/models` lists aliases with
+`owned_by: alias`, and aliased responses carry `X-Viiwork-Alias` and
+`X-Viiwork-Model`.
+
+**Reload on SIGHUP.** `docker kill -s HUP viiwork` or `systemctl reload viiwork`
+re-reads the config: added models start, removed ones drain, and a changed entry
+restarts that model alone. An invalid file keeps the running configuration, and
+changes outside `models` are logged as needing a restart.
+
+**GPUs.** Backends are pinned with `ROCR_VISIBLE_DEVICES` or
+`CUDA_VISIBLE_DEVICES`, inherited device variables removed first. Within a minute
+of a backend turning healthy, the node checks with `rocm-smi` or `nvidia-smi`
+that its processes hold the cards they were given, and takes a backend found on
+another card out of service. Docker nodes need `pid: host` for that check;
+without it the verdict is "unknown" and nothing is stopped. An `nvidia-smi`
+telemetry collector joins the ROCm one, so dashboards and the energy store read
+both vendors.
+
+**Dashboards** keep their look on the new payloads. `/mesh` gains an aliases
+section and backends per member, and `/chat` lists aliases beside models and
+shows which node answered.
+
+**Upgrading.** A v1 `viiwork.yaml` is refused at startup with
+`v1 config: see docs/migrating-to-v2.md`. That guide maps every key — note that
+`models[].context` is now **per slot** — and covers mesh modes, Docker and
+systemd, large models (`startup_timeout`) and rollback.
+`configs/docker-compose.v2.example.yaml` is a complete node. A clean stop drains
+in-flight requests for up to `health.respawn_grace`, so give the container
+`stop_grace_period: 90s`. v1 and v2 nodes do not form one mesh.
+
+**Removed:** `server.mesh_port` and per-instance ports; `--section.key`
+overrides on the command line (the config file is the only input); `balancer`
+(routing is by free slots); `peers` (discovery is automatic);
+`model.n_gpu_layers` and `health.evict_on_hard_failure`; the v1 packages kept
+alongside alpha.1.
+
+**Dependencies:** `hashicorp/memberlist` and `hashicorp/mdns` join
+`gopkg.in/yaml.v3`. The binary links 16 modules; `go list -m all` lists 104,
+most of them only in the new modules' own dependency graphs.
+
+### Not in this release
+
+- The vLLM and FreeToken engines follow later; `llamacpp` is the only engine.
+- `scripts/setup-node.sh`, `deploy.sh`, `update.sh` and `rebuild.sh` still write
+  and drive v1 layouts.
+
+## v2.0.0-alpha.1
+
+### Contracts for viiwork 2, no runtime change yet
+
+The module path is now `github.com/janit/viiwork/v2`. This pre-release ships
+the frozen contracts of the viiwork 2.0 design as compiled,
+tested code so the engine, gateway and RouteMap work can build against them:
+config v2 (`internal/config`), the engine interface (`internal/engine`), node
+metadata (`mesh`), the wire types and headers (`meshapi`), and the alias table
+with its merge rule.
+
+The binary still runs v1. `cmd/viiwork` uses the v1 config and mesh packages,
+moved unchanged to `internal/v1/config` and `internal/v1/meshapi`, until
+2.0.0-rc.1 switches it over. Contracts change only by bumping the alpha.
+
 ## v1.8.1
 
 ### Peer polling no longer stalls routing behind dead hosts

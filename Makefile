@@ -1,4 +1,4 @@
-.PHONY: build mcp test clean docker docker-stable docker-gfx906 docker-experimental up down
+.PHONY: build mcp accept test clean docker docker-stable docker-gfx906 docker-experimental up down
 
 # scripts/version.sh, not `git describe` inline: the private repo carries no
 # tags, so describe reports the last one it can still see. See that script.
@@ -9,6 +9,11 @@ build:
 
 mcp:
 	go build -o bin/viiwork-mcp ./cmd/viiwork-mcp
+
+# The acceptance checker. Version-stamped like the node because `viiwork-accept
+# --version` is what a conversion report records.
+accept:
+	go build -ldflags "-X main.version=$(VERSION)" -o bin/viiwork-accept ./cmd/viiwork-accept
 
 # TEST_CPUS caps the container fallback. An uncapped compile of the whole tree
 # on a host that is also serving live lanes has made a backend miss its health

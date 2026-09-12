@@ -28,6 +28,12 @@
   section { margin-bottom: 20px; }
 
   .card { background: var(--card); border: 1px solid var(--border); border-radius: 6px; }
+  /* The columns are minmax(0, 1fr), so a table wider than its column does not
+     widen the column — it bleeds across the next one. These two hold
+     peer-supplied names of no fixed length, so they scroll instead. Not on
+     .card itself: the power card holds the chart's absolutely positioned .tip,
+     which a scroll container would clip. */
+  .card.scrollx { overflow-x: auto; }
   .pad { padding: 10px 12px; }
 
   /* model pills */
@@ -126,6 +132,7 @@
   table.legend td.sw { width: 1%; padding-right: 0; }
   table.legend td.name { width: 1%; padding-right: 10px; }
   table.legend .src { color: var(--dimmer); font-size: 0.74rem; }
+  table.legend td.ver { color: var(--dim); font-size: 0.74rem; white-space: nowrap; }
   table.legend .u { color: var(--dimmer); font-weight: 400; }
   /* power control: recessive until hovered — this is the one control on the
      page that can switch a machine off. */
@@ -175,6 +182,8 @@
   .halt:hover { color: var(--fg); border-color: var(--dim); }
   .halt.on { border-color: var(--warn); color: var(--warn); font-weight: 600; }
   body.halted .mono-list, body.halted #backendsCard { outline: 1px solid rgba(210,153,34,0.35); }
+  tr.gone td { color: var(--dimmer); }
+  .respawns { color: var(--warn); font-size: 0.72rem; }
 </style>
 </head>
 <body>
@@ -225,6 +234,18 @@
       <h2>Activity</h2>
       <div class="card mono-list" id="activity"><div class="empty">waiting for events…</div></div>
     </section>
+
+    <section>
+      <h2>Aliases <span class="sub" id="aliasCount"></span></h2>
+      <div class="card scrollx">
+        <table>
+          <thead>
+            <tr><th style="width:1%"></th><th>Name</th><th>Target</th><th>Backends</th></tr>
+          </thead>
+          <tbody id="aliasesBody"><tr><td colspan="4" class="empty">no aliases</td></tr></tbody>
+        </table>
+      </div>
+    </section>
   </div>
 
   <!-- RIGHT -->
@@ -243,7 +264,7 @@
         </div>
         <table class="legend">
           <thead id="powerLegendHead" hidden><tr>
-            <th></th><th></th><th></th><th>now</th><th>24h</th><th>30d</th><th></th>
+            <th></th><th></th><th></th><th></th><th>now</th><th>24h</th><th>30d</th><th></th>
           </tr></thead>
           <tbody id="powerLegend"></tbody>
         </table>
@@ -256,13 +277,13 @@
 
     <section>
       <h2>Backends <span class="sub" id="backendSummary"></span></h2>
-      <div class="card" id="backendsCard">
+      <div class="card scrollx" id="backendsCard">
         <table id="backends">
           <thead>
             <tr>
               <th style="width:1%"></th>
-              <th>GPU</th><th>Host</th><th>In-Flight</th><th>RSS</th>
-              <th>GPU%</th><th>VRAM</th><th>Context Use</th>
+              <th>Backend</th><th>GPU</th><th>Host</th><th>Busy</th><th>RSS</th>
+              <th>GPU%</th><th>VRAM</th><th>Tokens</th>
             </tr>
           </thead>
           <tbody id="backendsBody"></tbody>
@@ -280,7 +301,8 @@
 // ---------------------------------------------------------------------------
 let groupMode = "model";          // "model" | "host"
 let modelFilter = null;           // null = all
-let cluster = null;               // last /v1/cluster payload
+let cluster = null;               // last cluster snapshot (meshapi ClusterResponse)
+let aliases = [];                 // last aliases event (meshapi AliasInfo list)
 const inflight = new Map();       // rid -> {startMs, model, dest, task, host}
 const activityRows = [];          // newest-first, capped
 const MAX_ACTIVITY = 60;
@@ -314,6 +336,7 @@ let maxPrompts = 1000;
 let halted = false;
 let pendingEvents = [];           // raw activity events received while halted
 let pendingCluster = null;        // newest cluster snapshot received while halted
+let pendingAliases = null;        // newest aliases event received while halted
 const MAX_PENDING = 1000;
 
 // ---------------------------------------------------------------------------
@@ -338,66 +361,76 @@ function meter(frac) {
   return `<span class="meter"><i class="${cls}" style="width:${pct.toFixed(0)}%"></i></span>`;
 }
 
-// A backend's GPU label. Tensor-split groups carry gpu_ids and no meaningful
-// gpu_id (it is -1), which is exactly the case the plain gpu_id rendering used
-// to get wrong.
+// A backend's GPU label: the host GPU indices it runs on, joined for a
+// tensor-split group, or "cpu" for a backend with none.
 function gpuLabel(b) {
-  if (b.gpu_ids && b.gpu_ids.length) {
-    return b.gpu_ids.map(id => `gpu-${id}`).join('<span class="plus"> + </span>');
-  }
-  return `gpu-${b.gpu_id}`;
+  const ids = b.gpus || [];
+  if (!ids.length) return "cpu";
+  return ids.map(id => `gpu-${id}`).join('<span class="plus"> + </span>');
+}
+
+// ---------------------------------------------------------------------------
+// hostsOf adapts the meshapi v2 cluster view to one record per machine: every
+// member with the last status it published (null while it is not alive or not
+// yet polled). The readers below all go through it, so the renderers kept their
+// shape and changed only where they read the payload.
+// ---------------------------------------------------------------------------
+function hostsOf(c) {
+  if (!c) return [];
+  return (c.members || []).map(m => ({
+    host: m.node,
+    state: m.state,
+    role: m.role,
+    isView: m.node === c.view,
+    addr: m.status ? m.addr + ":" + m.status.api_port : "",
+    status: m.status || null
+  }));
+}
+
+// liveHosts is the alive members that have a status: the hosts with numbers.
+function liveHosts(c) {
+  return hostsOf(c).filter(h => h.state === "alive" && h.status);
 }
 
 // ---------------------------------------------------------------------------
 // Flatten the cluster payload into one list of backends across all hosts.
-// This is the whole point of the page: local and peer backends are structurally
-// different in the API but identical on screen.
+// This is the whole point of the page: backends on this node and on every
+// other member look identical on screen.
 // ---------------------------------------------------------------------------
 function flattenBackends(c) {
   const rows = [];
-  if (!c) return rows;
-
-  // The listen port is what someone needs to actually call a model, and the
-  // fleet's port scheme encodes which family an instance belongs to — so it is
-  // the one piece of addressing worth surfacing next to a model name.
-  const portOf = addr => {
-    const i = String(addr || "").lastIndexOf(":");
-    return i > 0 ? String(addr).slice(i + 1) : "";
-  };
-
-  const push = (b, host, model, gpus, reachable, port) => {
-    // GPU util/VRAM are reported per physical GPU; a tensor-split backend spans
-    // several, so aggregate: utilisation is the max (the group is only as idle
-    // as its busiest card) and VRAM is summed.
-    const ids = (b.gpu_ids && b.gpu_ids.length) ? b.gpu_ids : (b.gpu_id >= 0 ? [b.gpu_id] : []);
-    let util = null, used = 0, total = 0;
-    for (const id of ids) {
-      const g = gpus && gpus.find(x => x.gpu_id === id);
-      if (!g) continue;
-      util = util === null ? g.util : Math.max(util, g.util);
-      used += g.vram_used_mb || 0;
-      total += g.vram_total_mb || 0;
+  for (const h of liveHosts(c)) {
+    const gpus = h.status.gpus || [];
+    for (const m of (h.status.models || [])) {
+      for (const b of (m.backends || [])) {
+        // GPU util/VRAM are reported per physical GPU; a tensor-split backend
+        // spans several, so aggregate: utilisation is the max (the group is
+        // only as idle as its busiest card) and VRAM is summed.
+        let util = null, used = 0, total = 0;
+        for (const id of (b.gpus || [])) {
+          const g = gpus.find(x => x.index === id);
+          if (!g) continue;
+          util = util === null ? g.util : Math.max(util, g.util);
+          used += g.vram_used_mb || 0;
+          total += g.vram_total_mb || 0;
+        }
+        rows.push({
+          host: h.host, model: m.name, id: b.id, status: b.status, phase: b.phase || "",
+          gpuHTML: gpuLabel(b), busy: b.busy || 0, slots: b.slots || 0,
+          rssMB: b.rss_mb || 0, util, vramUsed: used, vramTotal: total,
+          tokDecoded: b.tok_decoded || 0, tokRemain: b.tok_remain || 0,
+          respawns: b.respawns || 0
+        });
+      }
     }
-    rows.push({
-      host, model: model || b.model || "—", status: b.status,
-      gpuHTML: gpuLabel(b), inFlight: b.in_flight || 0,
-      rssMB: b.rss_mb || 0, util, vramUsed: used, vramTotal: total,
-      slotCtx: b.slot_ctx || 0, tokDecoded: b.tok_decoded || 0,
-      reachable, port
-    });
-  };
-
-  const localHost = c.hostname || "local";
-  const localPort = portOf(c.local?.listen_addr);
-  (c.local?.backends || []).forEach(b => push(b, localHost, c.local?.model, c.local?.gpus, true, localPort));
-
-  (c.peers || []).forEach(p => {
-    const host = p.hostname || p.addr;
-    const reachable = p.status === "reachable";
-    const port = portOf(p.addr);
-    (p.backends || []).forEach(b => push(b, host, (p.models || [])[0], p.gpus, reachable, port));
-  });
+  }
   return rows;
+}
+
+// goneHosts is the members that are not alive. They have no status to show,
+// but a powered-off or dead machine should stay visible rather than vanish.
+function goneHosts(c) {
+  return hostsOf(c).filter(h => h.state !== "alive");
 }
 
 // ---------------------------------------------------------------------------
@@ -407,9 +440,10 @@ function renderBackends() {
   const body = $("backendsBody");
   let rows = flattenBackends(cluster);
   if (modelFilter) rows = rows.filter(r => r.model === modelFilter);
+  const gone = modelFilter ? [] : goneHosts(cluster);
 
-  if (!rows.length) {
-    body.innerHTML = `<tr><td colspan="8" class="empty">no backends${modelFilter ? " for " + esc(modelFilter) : ""}</td></tr>`;
+  if (!rows.length && !gone.length) {
+    body.innerHTML = `<tr><td colspan="9" class="empty">no backends${modelFilter ? " for " + esc(modelFilter) : ""}</td></tr>`;
     $("backendSummary").textContent = "";
     return;
   }
@@ -422,45 +456,47 @@ function renderBackends() {
   }
 
   const hostWatts = new Map(hostPower(cluster).map(h => [h.host, h.watts]));
-  const totalInFlight = rows.reduce((a, r) => a + r.inFlight, 0);
+  const totalBusy = rows.reduce((a, r) => a + r.busy, 0);
   $("backendSummary").textContent =
-    `${rows.length} backend${rows.length === 1 ? "" : "s"} · ${groups.size} ${groupMode}${groups.size === 1 ? "" : "s"} · ${totalInFlight} in flight`;
+    `${rows.length} backend${rows.length === 1 ? "" : "s"} · ${groups.size} ${groupMode}${groups.size === 1 ? "" : "s"} · ${totalBusy} busy`;
 
   let html = "";
   for (const [name, list] of [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
-    const busy = list.reduce((a, r) => a + r.inFlight, 0);
+    const busy = list.reduce((a, r) => a + r.busy, 0);
     // Grouped by host, the host's own draw belongs on its header. Grouped by
-    // model it does not: node wattage is a whole-host figure and several
-    // models share a host, so printing it per model would imply a split the
+    // model it does not: node wattage is a whole-machine figure and several
+    // models share a machine, so printing it per model would imply a split the
     // BMC cannot make. That split is the energy store's job, not this table's.
     const w = groupMode === "host" ? hostWatts.get(name) : null;
-    // Ports on a model group, not a host group: a model is reached at a port,
-    // and the same model on several hosts usually shares one. Grouped by host
-    // the ports belong to different models and listing them together would
-    // imply an addressing that does not exist.
-    const ports = groupMode === "model"
-      ? [...new Set(list.map(r => r.port).filter(Boolean))].sort((a, b) => a - b)
-      : [];
-    html += `<tr class="grouphead"><td colspan="8">${esc(name)}` +
+    html += `<tr class="grouphead"><td colspan="9">${esc(name)}` +
             `<span class="cnt"> · ${list.length} backend${list.length === 1 ? "" : "s"}` +
-            `${busy ? " · " + busy + " in flight" : ""}` +
-            `${w ? " · " + esc(fmtW(w)) + " W" : ""}` +
-            `${ports.length ? " · :" + ports.map(esc).join(" :") : ""}</span></td></tr>`;
+            `${busy ? " · " + busy + " busy" : ""}` +
+            `${w ? " · " + esc(fmtW(w)) + " W" : ""}</span></td></tr>`;
     for (const r of list) {
-      const ctxFrac = r.slotCtx ? r.tokDecoded / r.slotCtx : 0;
+      const done = r.tokDecoded + r.tokRemain;
+      const tokFrac = done ? r.tokDecoded / done : 0;
       const vramFrac = r.vramTotal ? r.vramUsed / r.vramTotal : 0;
       const utilTxt = r.util === null ? '<span class="empty">—</span>'
                                       : `${r.util.toFixed(0)}%`;
+      const title = r.status + (r.phase ? " · " + r.phase : "") + (r.respawns ? ` · ${r.respawns} respawns` : "");
       html += `<tr>` +
-        `<td><span class="dot ${esc(r.status)}" title="${esc(r.status)}${r.reachable ? "" : " (peer unreachable)"}"></span></td>` +
+        `<td><span class="dot ${esc(r.status)}" title="${esc(title)}"></span></td>` +
+        `<td class="gpu">${esc(r.id)}${r.respawns ? ` <span class="respawns" title="respawns">↻${r.respawns}</span>` : ""}</td>` +
         `<td class="gpu">${r.gpuHTML}</td>` +
         `<td class="host">${esc(r.host)}</td>` +
-        `<td class="num">${r.inFlight}</td>` +
+        `<td class="num">${r.busy}/${r.slots}</td>` +
         `<td class="num">${fmtGB(r.rssMB)}</td>` +
         `<td class="num">${utilTxt}</td>` +
         `<td class="num">${r.vramTotal ? meter(vramFrac) + fmtGB(r.vramUsed) + "/" + fmtGB(r.vramTotal) : "—"}</td>` +
-        `<td class="num">${r.slotCtx ? meter(ctxFrac) + r.tokDecoded + "/" + r.slotCtx + "t" : "—"}</td>` +
+        `<td class="num">${done ? meter(tokFrac) + r.tokDecoded + "/" + done + "t" : "—"}</td>` +
         `</tr>`;
+    }
+  }
+  if (gone.length) {
+    html += `<tr class="grouphead"><td colspan="9">not alive<span class="cnt"> · ${gone.length}</span></td></tr>`;
+    for (const h of gone) {
+      html += `<tr class="gone"><td><span class="dot dead" title="${esc(h.state)}"></span></td>` +
+              `<td colspan="2" class="host">${esc(h.host)}</td><td colspan="6">${esc(h.state)}</td></tr>`;
     }
   }
   body.innerHTML = html;
@@ -520,6 +556,65 @@ function renderChatLinks() {
         `${esc(m)} · ${n}<span class="go">open ↗</span></a>`
       : `<span class="pill muted">${esc(m)}</span>`)
     .join("");
+}
+
+// ---------------------------------------------------------------------------
+// Render: aliases, from the stream's aliases event. Read-only: aliases are
+// changed with `viiwork alias`, which signs its writes.
+// ---------------------------------------------------------------------------
+// Compact because this column sits at the right edge of a table whose other
+// cells are peer-supplied model names: a full toLocaleString() ("9/12/2026,
+// 6:12:51 PM") was the single widest thing on the row.
+function fmtWhen(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d)) return "";
+  const now = new Date();
+  const sameDay = d.getFullYear() === now.getFullYear() &&
+                  d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  const p = n => String(n).padStart(2, "0");
+  return sameDay ? `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+                 : `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function renderAliases() {
+  const body = $("aliasesBody");
+  $("aliasCount").textContent = aliases.length ? String(aliases.length) : "";
+  if (!aliases.length) {
+    body.innerHTML = '<tr><td colspan="7" class="empty">no aliases</td></tr>';
+    return;
+  }
+  // How many backends across the mesh serve each model, so an alias can show
+  // what its target is actually backed by. A target with none is why the row
+  // is red.
+  const perModel = new Map();
+  for (const b of flattenBackends(cluster)) {
+    perModel.set(b.model, (perModel.get(b.model) || 0) + 1);
+  }
+  body.innerHTML = aliases.map(a => {
+    // Shadowed and unavailable read like an unhealthy backend: the name does
+    // not lead where its entry says. The dot carries the state, which is why
+    // the row needs no state column; the full entry is in `viiwork alias ls`.
+    const bad = a.state === "shadowed" || a.state === "unavailable";
+    const dot = bad ? "unhealthy" : a.state === "fallback" ? "starting" : "healthy";
+    const n = perModel.get(a.target) || 0;
+    const title = [a.state,
+      (a.fallbacks || []).length ? "fallbacks: " + a.fallbacks.join(", ") : "",
+      a.resolved && a.resolved !== a.target ? "resolved: " + a.resolved : "",
+      fmtWhen(a.updated_at) + (a.updated_by ? " · " + a.updated_by : "")]
+      .filter(Boolean).join(" — ");
+    return `<tr title="${esc(title)}">` +
+      `<td><span class="dot ${dot}"></span></td>` +
+      `<td class="gpu">${esc(a.name)}</td>` +
+      `<td class="gpu">${esc(a.target)}</td>` +
+      `<td${n ? "" : ' style="color:var(--bad)"'}>${n}</td>` +
+      `</tr>`;
+  }).join("");
+}
+
+function applyAliases(a) {
+  aliases = (a && a.aliases) || [];
+  renderAliases();
 }
 
 // ---------------------------------------------------------------------------
@@ -628,27 +723,17 @@ function renderActivity() {
 // Three readings, no charts: how much of the fleet is working, how full its
 // VRAM is, and how full its RAM is.
 //
-// Every one of these has to be deduplicated by host, and the GPU list is the
-// sharpest case. rocm-smi reports every card on a machine, not only the ones an
-// instance owns, so each of the several viiwork instances on a multi-model host
-// publishes that host's full GPU list. Summing the payload as it arrives counts
-// them once per instance: measured on the reference fleet, 110 GPU entries for
-// 50 actual cards. Keyed by host and gpu_id, the totals come out right.
+// GPUs are keyed by host and index. With one node per machine a card appears
+// once, but the key is what makes that true rather than assumed: v1 counted
+// each card once per instance on a multi-model host (110 entries for 50 cards).
 // ---------------------------------------------------------------------------
 function meshGPUs(c) {
-  const seen = new Map();   // "host#gpu_id" -> gpu
-  const take = (host, gpus) => {
-    for (const g of (gpus || [])) {
-      if (!host || g.gpu_id == null) continue;
-      const k = host + "#" + g.gpu_id;
+  const seen = new Map();   // "host#index" -> gpu
+  for (const h of liveHosts(c)) {
+    for (const g of (h.status.gpus || [])) {
+      if (g.index == null) continue;
+      const k = h.host + "#" + g.index;
       if (!seen.has(k)) seen.set(k, g);
-    }
-  };
-  if (c) {
-    take(c.hostname, c.local && c.local.gpus);
-    for (const p of (c.peers || [])) {
-      if (p.status !== "reachable") continue;
-      take(p.hostname || p.addr, p.gpus);
     }
   }
   return [...seen.values()];
@@ -750,7 +835,7 @@ function powerButton(host, isOnline, pc) {
   const action = isOnline ? "off" : "on";
   btn.textContent = action;
 
-  const self = cluster && cluster.hostname;
+  const self = cluster && cluster.view;
   if (self && host.toLowerCase() === String(self).toLowerCase()) {
     // The node serving this page will not act on its own machine — the server
     // refuses it too, this is just the honest version of that refusal.
@@ -796,24 +881,14 @@ const MAX_POWER_SAMPLES = 720;
 let powerSeries = [];       // [{t, sig, hosts:[{host, watts, source}]}]
 let powerHoverIdx = null;   // sample index under the pointer, or null
 
-// Node wattage is a whole-host measurement, but a multi-model host runs one
-// viiwork instance per model and every one of them reports the same BMC
-// reading. Summing the payload as it arrives would count that host once per
-// instance — three times over on the reference gb1 layout. So: key by
-// hostname, first reading wins, local before peers.
+// Node wattage is a whole-machine measurement, one reading per host. Keyed by
+// host name so a host can never be counted twice.
 function hostPower(c) {
   const seen = new Map();
-  const take = (host, watts, avail, source) => {
-    if (!host || !avail || !(watts > 0) || seen.has(host)) return;
-    seen.set(host, { host, watts, source: source || "" });
-  };
-  if (c) {
-    take(c.hostname, c.local && c.local.power_watts, c.local && c.local.power_available,
-         c.local && c.local.power_source);
-    for (const p of (c.peers || [])) {
-      if (p.status !== "reachable") continue;
-      take(p.hostname || p.addr, p.power_watts, p.power_available, p.power_source);
-    }
+  for (const h of liveHosts(c)) {
+    const p = h.status.power || {};
+    if (!p.available || !(p.watts > 0) || seen.has(h.host)) continue;
+    seen.set(h.host, { host: h.host, watts: p.watts, source: p.source || "" });
   }
   // Sorted by host name, not by value: a fleet reads as gb0, gb1, gb2… and a
   // row that keeps its place is one you can find again. Ranking by watts made
@@ -822,40 +897,39 @@ function hostPower(c) {
   return [...seen.values()].sort((a, b) => a.host.localeCompare(b.host, undefined, { numeric: true }));
 }
 
-// Rolling 24h energy, deduplicated the same way and for a stronger reason: the
-// durable store runs on exactly one instance per host, so the others report
-// nothing at all here rather than a second copy. Keying by host is what keeps
-// that true if a second instance is ever enabled by mistake.
-function hostEnergy(c) {
-  const seen = new Map();   // host -> {d1, d30}
-  const take = (host, d1, d30) => {
-    if (!host || seen.has(host)) return;
-    if (!(d1 > 0) && !(d30 > 0)) return;
-    seen.set(host, { d1: d1 || 0, d30: d30 || 0 });
-  };
-  if (c) {
-    take(c.hostname, c.local && c.local.energy_kwh_24h, c.local && c.local.energy_kwh_30d);
-    for (const p of (c.peers || [])) {
-      if (p.status !== "reachable") continue;
-      take(p.hostname || p.addr, p.energy_kwh_24h, p.energy_kwh_30d);
-    }
+// The build each machine is running, keyed by host. Deduplicated like
+// hostPower: co-located instances all report the same machine, and the first
+// one seen wins, local before peers. Absent for a host that reports no status
+// (powered off, or an allowlist entry that is not in the mesh) — blank, never
+// a guess.
+function hostVersions(c) {
+  const seen = new Map();
+  for (const h of liveHosts(c)) {
+    if (seen.has(h.host) || !h.status.ver) continue;
+    seen.set(h.host, h.status.ver);
   }
   return seen;
 }
 
-// Distinct hosts in the mesh, whether or not they can read power. The
-// difference between this and hostPower() is what the "n of m reporting" line
-// exists to show: a host with no /dev/ipmi0 is invisible to the graph and
-// should not be silently mistaken for a host drawing nothing.
-function meshHosts(c) {
-  const set = new Set();
-  if (c) {
-    if (c.hostname) set.add(c.hostname);
-    for (const p of (c.peers || [])) {
-      if (p.status === "reachable") set.add(p.hostname || p.addr);
-    }
+// Rolling 24h and 30d energy per host, from hosts that keep an energy store
+// (it is opt-in per machine).
+function hostEnergy(c) {
+  const seen = new Map();   // host -> {d1, d30}
+  for (const h of liveHosts(c)) {
+    const d1 = h.status.energy_kwh_24h, d30 = h.status.energy_kwh_30d;
+    if (seen.has(h.host) || (!(d1 > 0) && !(d30 > 0))) continue;
+    seen.set(h.host, { d1: d1 || 0, d30: d30 || 0 });
   }
-  return set;
+  return seen;
+}
+
+// Distinct machines in the mesh, whether or not they can read power. The
+// difference between this and hostPower() is what the "n of m reporting" line
+// exists to show: a host with no BMC and no GPU power reading is invisible to
+// the graph and should not be silently mistaken for a host drawing nothing.
+// Gateways serve no models and draw no measured power, so they do not count.
+function meshHosts(c) {
+  return new Set(hostsOf(c).filter(h => h.state === "alive" && h.role !== "gateway").map(h => h.host));
 }
 
 function recordPower(c) {
@@ -953,14 +1027,23 @@ function renderPowerNumbers() {
   // without the allowlist it would have no row at all — and no way back on.
   const pc = powerControlInfo();
   const onlineHosts = meshHosts(cluster);
+  const versions = hostVersions(cluster);
   const rows = hosts.map(h => ({ ...h, online: true }));
+  // A machine with no BMC and no GPU power reading has no series on the chart,
+  // but it is still a machine in the mesh and still runs a build worth seeing.
+  // It gets a row with a dash for watts, the same shape an allowlist host
+  // already had. The chart is unaffected: it draws from hostPower().
+  for (const name of onlineHosts) {
+    if (rows.some(r => r.host.toLowerCase() === name.toLowerCase())) continue;
+    rows.push({ host: name, watts: null, source: "", online: true });
+  }
   if (pc) {
     for (const name of pc.hosts) {
       if (rows.some(r => r.host.toLowerCase() === name.toLowerCase())) continue;
       rows.push({ host: name, watts: null, source: "", online: onlineHosts.has(name) });
     }
-    rows.sort((a, b) => a.host.localeCompare(b.host, undefined, { numeric: true }));
   }
+  rows.sort((a, b) => a.host.localeCompare(b.host, undefined, { numeric: true }));
 
   for (const h of rows) {
     const e = energy.get(h.host);
@@ -974,13 +1057,16 @@ function renderPowerNumbers() {
     const name = document.createElement("td");
     name.className = "name";
     name.textContent = h.host;                       // hostnames are peer-supplied
+    const ver = document.createElement("td");
+    ver.className = "ver";
+    ver.textContent = versions.get(h.host) || "";   // peer-supplied, textContent
     const src = document.createElement("td");
     src.className = "src";
     src.textContent = h.source;
     const val = h.watts === null ? cell(null) : cell(fmtW(h.watts), "W");
     const c24 = (e && e.d1 > 0) ? cell(fmtKWh(e.d1), "kWh") : cell(null);
     const c30 = (e && e.d30 > 0) ? cell(fmtKWh(e.d30), "kWh") : cell(null);
-    tr.append(sw, name, src, val, c24, c30);
+    tr.append(sw, name, ver, src, val, c24, c30);
     if (pc) {
       const td = document.createElement("td");
       td.className = "pw";
@@ -1169,27 +1255,20 @@ function powerTooltip(ev) {
 // hosts with different amounts of RAM stay comparable.
 //
 // Host memory reaches the stream coarsened (see hostMemDeadband in
-// meshactivity.go): an exact figure moves every second and would make the
+// internal/node/meshstream.go): an exact figure moves every second and would make the
 // server push a full snapshot that often. The strip is sized so a bucket is
 // under a pixel, which is why it can be coarsened without the reader noticing.
 // ---------------------------------------------------------------------------
 const MAX_MEM_SAMPLES = 240;
 const memSeries = new Map();   // host -> [{t, used, total}]
 
-// Same whole-host reasoning as hostPower(): several viiwork instances on one
-// box all report that box's RAM, so key by hostname and take one.
+// One reading per machine, keyed by host name as hostPower() is.
 function hostMem(c) {
   const seen = new Map();
-  const take = (host, used, total) => {
-    if (!host || !(total > 0) || !(used > 0) || seen.has(host)) return;
-    seen.set(host, { host, used, total });
-  };
-  if (c) {
-    take(c.hostname, c.local && c.local.host_mem_used_mb, c.local && c.local.host_mem_total_mb);
-    for (const p of (c.peers || [])) {
-      if (p.status !== "reachable") continue;
-      take(p.hostname || p.addr, p.host_mem_used_mb, p.host_mem_total_mb);
-    }
+  for (const h of liveHosts(c)) {
+    const used = h.status.host_mem_used_mb, total = h.status.host_mem_total_mb;
+    if (!(total > 0) || !(used > 0) || seen.has(h.host)) continue;
+    seen.set(h.host, { host: h.host, used, total });
   }
   return [...seen.values()].sort((a, b) => a.host.localeCompare(b.host, undefined, { numeric: true }));
 }
@@ -1328,10 +1407,12 @@ function wirePowerChart() {
 function applyCluster(c) {
   cluster = c;
   syncPromptCap(c);
-  const peers = (cluster.peers || []);
-  const up = peers.filter(p => p.status === "reachable").length;
+  const members = hostsOf(c);
+  const alive = members.filter(h => h.state === "alive").length;
+  const view = members.find(h => h.isView);
+  const ver = (view && view.status && view.status.ver) || "?";
   $("scope").textContent =
-    `${esc(cluster.hostname || "?")} · ${peers.length ? `${up}/${peers.length} peers reachable` : "no peers"} · v${esc(cluster.version || "?")}`;
+    `${c.view || "?"} · ${alive}/${members.length} members alive · ${c.mesh || "?"} mesh · ${ver.startsWith("v") ? ver : "v" + ver}`;
   renderModels();
   renderChatLinks();
   renderBackends();
@@ -1355,7 +1436,7 @@ function applyCluster(c) {
 // finished event, keyed by (node, request id) since request ids are per-node.
 // ---------------------------------------------------------------------------
 function connectStream() {
-  // One connection carries both feeds, distinguished by SSE event name. The
+  // One connection carries every feed, distinguished by SSE event name. The
   // page never polls: cluster snapshots are pushed when they change, and the
   // server suppresses identical ones so an idle mesh is silent.
   const es = new EventSource("/v1/mesh/stream");
@@ -1383,6 +1464,13 @@ function connectStream() {
     // one rather than a queue of them.
     if (halted) { pendingCluster = c; updateHaltLabel(); return; }
     applyCluster(c);
+  });
+
+  es.addEventListener("aliases", ev => {
+    let a;
+    try { a = JSON.parse(ev.data); } catch { return; }
+    if (halted) { pendingAliases = a; updateHaltLabel(); return; }
+    applyAliases(a);
   });
 
   es.addEventListener("activity", ev => {
@@ -1444,14 +1532,14 @@ function applyActivity(e) {
 }
 
 // syncPromptCap adopts the largest prompt-history capacity any node reports,
-// and trims the list if the number shrank. Taking the max rather than the local
-// node's own value matters because the list is cluster-wide: a peer configured
-// deeper than this node can still answer lookups for rows this node would
-// otherwise have dropped.
+// and trims the list if the number shrank. Taking the max rather than this
+// node's own value matters because the list is cluster-wide: a member
+// configured deeper than this node can still answer lookups for rows this node
+// would otherwise have dropped.
 function syncPromptCap(c) {
   if (!c) return;
-  let cap = c.local?.prompt_history || 0;
-  for (const p of (c.peers || [])) cap = Math.max(cap, p.prompt_history || 0);
+  let cap = 0;
+  for (const h of liveHosts(c)) cap = Math.max(cap, h.status.prompt_history || 0);
   if (!cap || cap === maxPrompts) return;
   maxPrompts = cap;
   while (promptOrder.length > maxPrompts) promptHistory.delete(promptOrder.shift());
@@ -1462,7 +1550,7 @@ function syncPromptCap(c) {
 // Halt: freeze the view for reading, without dropping what arrives meanwhile
 // ---------------------------------------------------------------------------
 function updateHaltLabel() {
-  const n = pendingEvents.length + (pendingCluster ? 1 : 0);
+  const n = pendingEvents.length + (pendingCluster ? 1 : 0) + (pendingAliases ? 1 : 0);
   $("halt").textContent = halted ? (n ? `resume (${n})` : "resume") : "halt";
 }
 
@@ -1477,6 +1565,7 @@ function setHalted(on) {
     pendingEvents = [];
     for (const e of queued) applyActivity(e);
     if (pendingCluster) { applyCluster(pendingCluster); pendingCluster = null; }
+    if (pendingAliases) { applyAliases(pendingAliases); pendingAliases = null; }
   }
   updateHaltLabel();
 }

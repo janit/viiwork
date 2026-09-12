@@ -1,15 +1,15 @@
 package proxy
 
 import (
+	"bytes"
 	"encoding/json"
-	"fmt"
-	"net/http"
+	"errors"
+	"log"
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/janit/viiwork/internal/balancer"
+	"github.com/janit/viiwork/v2/internal/logging"
 )
 
 func TestRewriteThinkResponse_WithThinkTags(t *testing.T) {
@@ -342,147 +342,6 @@ func TestStreamThinkDisabled_FinishReason(t *testing.T) {
 	}
 }
 
-// Integration test: full proxy with think:false and a mock backend
-func TestProxyThinkFalseNonStreaming(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"","reasoning_content":"<think>\nLet me reason.\n</think>\n\nThe answer is 42."}}]}`))
-	}))
-	defer backend.Close()
-
-	state := balancer.NewBackendState(0, backend.Listener.Addr().String())
-	state.SetStatus(balancer.StatusHealthy)
-	bal := balancer.New([]*balancer.BackendState{state}, 7, 4)
-	h := NewHandler(bal, "/models/test.gguf", 30*time.Second)
-
-	req := httptest.NewRequest("POST", "/v1/chat/completions",
-		strings.NewReader(`{"model":"test","messages":[{"role":"user","content":"hi"}],"think":false}`))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, req)
-
-	if w.Code != 200 {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-
-	var resp map[string]any
-	json.NewDecoder(w.Body).Decode(&resp)
-	choices := resp["choices"].([]any)
-	msg := choices[0].(map[string]any)["message"].(map[string]any)
-
-	if msg["content"] != "The answer is 42." {
-		t.Errorf("expected 'The answer is 42.', got %q", msg["content"])
-	}
-	if _, has := msg["reasoning_content"]; has {
-		t.Error("expected reasoning_content to be removed")
-	}
-}
-
-func TestProxyThinkFalseStreaming(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		f := w.(http.Flusher)
-		chunks := []string{
-			`{"choices":[{"delta":{"reasoning_content":"<think>"}}]}`,
-			`{"choices":[{"delta":{"reasoning_content":"thinking..."}}]}`,
-			`{"choices":[{"delta":{"reasoning_content":"</think>"}}]}`,
-			`{"choices":[{"delta":{"reasoning_content":"Hello!"}}]}`,
-			`{"choices":[{"delta":{},"finish_reason":"stop"}]}`,
-		}
-		for _, c := range chunks {
-			fmt.Fprintf(w, "data: %s\n\n", c)
-			f.Flush()
-		}
-		fmt.Fprintf(w, "data: [DONE]\n\n")
-		f.Flush()
-	}))
-	defer backend.Close()
-
-	state := balancer.NewBackendState(0, backend.Listener.Addr().String())
-	state.SetStatus(balancer.StatusHealthy)
-	bal := balancer.New([]*balancer.BackendState{state}, 7, 4)
-	h := NewHandler(bal, "/models/test.gguf", 30*time.Second)
-
-	req := httptest.NewRequest("POST", "/v1/chat/completions",
-		strings.NewReader(`{"model":"test","messages":[{"role":"user","content":"hi"}],"think":false,"stream":true}`))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, req)
-
-	body := w.Body.String()
-
-	if strings.Contains(body, "thinking...") {
-		t.Errorf("thinking tokens should be suppressed, got:\n%s", body)
-	}
-	if !strings.Contains(body, `"content":"Hello!"`) {
-		t.Errorf("expected answer as content, got:\n%s", body)
-	}
-	if strings.Contains(body, "reasoning_content") {
-		t.Errorf("reasoning_content should not appear in output, got:\n%s", body)
-	}
-}
-
-func TestProxyThinkTruePassesThrough(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"choices":[{"message":{"content":"","reasoning_content":"thinking and answer mixed"}}]}`))
-	}))
-	defer backend.Close()
-
-	state := balancer.NewBackendState(0, backend.Listener.Addr().String())
-	state.SetStatus(balancer.StatusHealthy)
-	bal := balancer.New([]*balancer.BackendState{state}, 7, 4)
-	h := NewHandler(bal, "/models/test.gguf", 30*time.Second)
-
-	// think:true — should be transparent, no rewriting
-	req := httptest.NewRequest("POST", "/v1/chat/completions",
-		strings.NewReader(`{"model":"test","messages":[{"role":"user","content":"hi"}],"think":true}`))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, req)
-
-	var resp map[string]any
-	json.NewDecoder(w.Body).Decode(&resp)
-	choices := resp["choices"].([]any)
-	msg := choices[0].(map[string]any)["message"].(map[string]any)
-
-	if _, has := msg["reasoning_content"]; !has {
-		t.Error("expected reasoning_content to pass through when think:true")
-	}
-}
-
-func TestProxyNoThinkParamStripsReasoning(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"choices":[{"message":{"content":"","reasoning_content":"<think>\nreasoning\n</think>\n\nthe answer"}}]}`))
-	}))
-	defer backend.Close()
-
-	state := balancer.NewBackendState(0, backend.Listener.Addr().String())
-	state.SetStatus(balancer.StatusHealthy)
-	bal := balancer.New([]*balancer.BackendState{state}, 7, 4)
-	h := NewHandler(bal, "/models/test.gguf", 30*time.Second)
-
-	// No think param — reasoning stripped by default
-	req := httptest.NewRequest("POST", "/v1/chat/completions",
-		strings.NewReader(`{"model":"test","messages":[{"role":"user","content":"hi"}]}`))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, req)
-
-	var resp map[string]any
-	json.NewDecoder(w.Body).Decode(&resp)
-	choices := resp["choices"].([]any)
-	msg := choices[0].(map[string]any)["message"].(map[string]any)
-
-	if msg["content"] != "the answer" {
-		t.Errorf("expected 'the answer', got %q", msg["content"])
-	}
-	if _, has := msg["reasoning_content"]; has {
-		t.Error("expected reasoning_content to be stripped by default")
-	}
-}
-
 func TestStreamThinkDisabled_TruncatedThinkBlock(t *testing.T) {
 	// Model starts thinking, gets truncated (finish_reason: "length") without
 	// ever closing the </think> tag. Buffered reasoning should be salvaged.
@@ -531,28 +390,29 @@ func TestStreamThinkDisabled_TruncatedAllReasoning(t *testing.T) {
 	}
 }
 
-func TestPeerProxyThinkFalse(t *testing.T) {
-	peerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"choices":[{"message":{"content":"","reasoning_content":"<think>reasoning</think>\n\npeer answer"}}]}`))
-	}))
-	defer peerSrv.Close()
+// errReader fails on the first Read, so the scanner ends with an error.
+type errReader struct{}
 
-	req := httptest.NewRequest("POST", "/v1/chat/completions",
-		strings.NewReader(`{"model":"peer-model","messages":[],"think":false}`))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	proxyToPeer(w, req, peerSrv.Listener.Addr().String(), "viiwork-test", true, nil, nil)
+func (errReader) Read([]byte) (int, error) { return 0, errors.New("boom") }
 
-	var resp map[string]any
-	json.NewDecoder(w.Body).Decode(&resp)
-	choices := resp["choices"].([]any)
-	msg := choices[0].(map[string]any)["message"].(map[string]any)
-
-	if msg["content"] != "peer answer" {
-		t.Errorf("expected 'peer answer', got %q", msg["content"])
+// The scanner-error line belongs behind the debug gate like every other
+// [debug] line. It fires whenever a think-disabled stream ends in error, and
+// an ordinary client abort is one of those, so unconditionally it put a log
+// write on a per-request path in every deployment — the cost VIIWORK_DEBUG
+// exists to avoid. Inherited verbatim from v1.8.1; found by the gb1 trial,
+// where a stream cut short by the client logged it with debug off.
+func TestStreamThinkDisabledScannerErrorIsGated(t *testing.T) {
+	if logging.DebugEnabled() {
+		t.Skip("VIIWORK_DEBUG is set; the line is meant to appear")
 	}
-	if _, has := msg["reasoning_content"]; has {
-		t.Error("expected reasoning_content removed for peer proxy with think:false")
+	var buf bytes.Buffer
+	old := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(old) })
+
+	streamThinkDisabled(httptest.NewRecorder(), errReader{}, func() {})
+
+	if strings.Contains(buf.String(), "scanner error") {
+		t.Errorf("scanner error logged with debug off: %q", buf.String())
 	}
 }

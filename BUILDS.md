@@ -1,6 +1,6 @@
 # Builds
 
-viiwork ships in two parallel builds living in the same repo. Both run the same Go server, the same balancer, the same dashboard, the same API. They differ only in the llama.cpp binary that the server spawns under the hood.
+viiwork ships in two parallel builds living in the same repo. Both run the same Go server, the same routing, the same dashboards, the same API. They differ only in the llama.cpp binary that the server spawns under the hood.
 
 | | Stable foundation | Experimental track |
 |---|---|---|
@@ -20,7 +20,7 @@ Build: `make docker` or `docker compose up -d` (compose's `build:` directive tri
 
 ## Experimental track — `viiwork:gfx906`
 
-A gfx906-specialized fork of llama.cpp with non-HIP backends, unused model architectures, unused quant formats, half the HIP MMQ instances, the grammar parser, and several sampler strategies removed. The fork is the subject of `docs/superpowers/specs/2026-04-07-gfx906-llama-cpp-fork-design.md` and lives in its own repo (`llama.cpp-gfx906`) on the dev node, not in this tree.
+A gfx906-specialized fork of llama.cpp with non-HIP backends, unused model architectures, unused quant formats, half the HIP MMQ instances, the grammar parser, and several sampler strategies removed. The fork lives in its own repo (`llama.cpp-gfx906`) on the dev machine, not in this tree.
 
 What it has shown so far:
 
@@ -35,7 +35,7 @@ What it has shown so far:
 What it's still missing before promotion:
 
 - **24 h formal soak** under production load to formally clear the spec's `≤5% RSS drift` exit gate. The 4 h A/B soak (bounded RSS, flat VRAM) and the 6 h extreme stress test (4,979 reqs, 0 failures across stable+fork, replica+tensor-split) both showed stable memory — this is likely a formality, not a risk. TODO: run and record.
-- **Phase 3 kernel work — PAUSED at hard-stop.** Profile-guided kernel selection showed conservative headroom of only +9 pp (below the +15 % spec floor) after PMC corrections. `mul_mat_vec_q` is at 12 % of HBM peak bandwidth; R-mode (row tensor parallelism) is demoted. The failed experiment images are preserved (`viiwork:gfx906-mmq64-experiment-2026-04-09`, `viiwork:gfx906-hipgraphs-experiment-2026-04-09`). See `docs/superpowers/specs/2026-04-09-gfx906-fork-phase-3-reassessment.md` and its addendum. TODO: decide whether to pursue a different kernel angle or accept that the strip-down is the entire win.
+- **Phase 3 kernel work — PAUSED at hard-stop.** Profile-guided kernel selection showed conservative headroom of only +9 pp (below the +15 % spec floor) after PMC corrections. `mul_mat_vec_q` is at 12 % of HBM peak bandwidth; R-mode (row tensor parallelism) is demoted. The failed experiment images are preserved (`viiwork:gfx906-mmq64-experiment-2026-04-09`, `viiwork:gfx906-hipgraphs-experiment-2026-04-09`). TODO: decide whether to pursue a different kernel angle or accept that the strip-down is the entire win.
 - Canary deploy on one production node alongside the cluster.
 
 Build: `make docker-gfx906` (or the alias `make docker-experimental`). Requires the fork tree at `$GFX906_FORK`. Override with `make docker-gfx906 GFX906_FORK=/path/to/llama.cpp-gfx906` if you keep the fork somewhere else.
@@ -90,7 +90,5 @@ Or manually: edit the `image:` line in `docker-compose.yaml` from `viiwork:gfx90
 
 ## See also
 
-- `docs/superpowers/specs/2026-04-07-gfx906-llama-cpp-fork-design.md` — full design rationale for the experimental track
-- `docs/superpowers/plans/2026-04-07-gfx906-fork-phase-0-1.md` — Phase 0+1 implementation plan (the strip-down work that produced `viiwork:gfx906`)
 - `bench-harness/README.md` — the harness that produced the milestone numbers above
 - Tag `milestone/gfx906-fork-4h-soak-2026-04-09` — committed proof of the 4 h A/B result

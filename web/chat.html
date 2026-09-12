@@ -69,6 +69,7 @@ const params = new URLSearchParams(location.search);
 const wanted = { model: params.get('model') || '', host: params.get('host') || MESH };
 let cluster = null;
 let modelsLoaded = false;
+const aliasTargets = new Map(); // alias name -> target model, from /v1/models
 
 // Auto-resize textarea
 promptEl.addEventListener('input', () => {
@@ -94,10 +95,20 @@ async function loadModels() {
     const data = await resp.json();
     modelSelect.innerHTML = '';
     let found = false;
-    for (const m of data.data) {
+    // Real models first, then aliases labelled with where they point: an alias
+    // is a stable name for whatever model it targets today.
+    const entries = data.data || [];
+    const real = entries.filter(m => m.owned_by !== 'alias');
+    const aliasEntries = entries.filter(m => m.owned_by === 'alias');
+    for (const m of [...real, ...aliasEntries]) {
       const opt = document.createElement('option');
       opt.value = m.id;
-      opt.textContent = m.id;
+      if (m.owned_by === 'alias') {
+        aliasTargets.set(m.id, m.target || '');
+        opt.textContent = m.id + ' \u2192 ' + (m.target || '?');
+      } else {
+        opt.textContent = m.id;
+      }
       if (m.id === wanted.model) { opt.selected = true; found = true; }
       modelSelect.appendChild(opt);
     }
@@ -126,27 +137,25 @@ async function loadCluster() {
   }
 }
 
-// Hosts serving a model, built the way /mesh builds its rows: the local node
-// is hostname + local.model, each reachable peer is its reported hostname plus
-// its models (the server falls back to the dial address for a peer too old to
-// report a hostname, so the router and this list agree on the name).
-// Unreachable peers are left out; pinning to one could only produce a 404.
+// Hosts serving a model: the alive members whose status lists it, by node
+// name, which is what the ?host= pin compares against. An alias lists the
+// hosts of its target. Members that are not alive are left out; pinning to one
+// could only produce a 404.
 function hostsForModel(model) {
-  const set = new Set();
   if (!cluster || !model) return [];
-  if (cluster.hostname && cluster.local?.model === model) set.add(cluster.hostname);
-  for (const p of cluster.peers || []) {
-    if (p.status !== 'reachable') continue;
-    if ((p.models || []).includes(model)) set.add(p.hostname || p.addr);
+  const name = aliasTargets.get(model) || model;
+  const set = new Set();
+  for (const m of cluster.members || []) {
+    if (m.state !== 'alive' || !m.status) continue;
+    if ((m.status.models || []).some(x => x.name === name)) set.add(m.node);
   }
   return [...set].sort();
 }
 
-// hostLabel maps an X-Viiwork-Origin address back to a hostname when the
-// cluster snapshot knows it, so the meta line names machines, not ports.
-function hostLabel(addr) {
-  const p = (cluster?.peers || []).find(p => p.addr === addr);
-  return p ? (p.hostname || p.addr) : addr;
+// hostLabel names a node for the meta line. Node names are already machine
+// names in viiwork 2, so there is nothing to translate.
+function hostLabel(name) {
+  return name;
 }
 
 // renderHosts rebuilds the backend selector for the current model: mesh
@@ -257,12 +266,17 @@ async function send() {
       return;
     }
 
-    // Where it actually ran, so a two-host comparison can be trusted: the
-    // pinned host if pinned, else X-Viiwork-Origin when the entry node proxied
-    // to a peer; its absence means the entry node served it itself.
+    // Where it actually ran, so a two-host comparison can be trusted: the node
+    // that executed it, and the node that forwarded it there when that was not
+    // the one this page talks to.
+    const node = resp.headers.get('X-Viiwork-Node');
     const origin = resp.headers.get('X-Viiwork-Origin');
-    const ranOn = pinned ? pinned + ' (pinned)' : origin ? hostLabel(origin) : 'entry node';
+    const realModel = resp.headers.get('X-Viiwork-Model');
+    const alias = resp.headers.get('X-Viiwork-Alias');
+    const ranOn = (node ? hostLabel(node) : 'entry node') + (pinned ? ' (pinned)' : '') +
+      (origin ? ' via ' + hostLabel(origin) : '');
     const gpu = resp.headers.get('X-GPU-Backend');
+    const modelLabel = alias && realModel ? alias + ' \u2192 ' + realModel : (realModel || model);
 
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
@@ -312,7 +326,7 @@ async function send() {
     const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
     const meta = document.createElement('div');
     meta.className = 'meta';
-    meta.textContent = model + ' @ ' + ranOn + (gpu ? ' ' + gpu : '') + ' | ' + elapsed + 's';
+    meta.textContent = modelLabel + ' @ ' + ranOn + (gpu ? ' ' + gpu : '') + ' | ' + elapsed + 's';
     msgDiv.appendChild(meta);
 
     conversation.push({ role: 'assistant', content: fullText });

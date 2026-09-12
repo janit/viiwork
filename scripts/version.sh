@@ -16,6 +16,18 @@
 # version, and it is updated as part of cutting a release, so it cannot drift
 # from what was shipped the way a tag the repo does not carry can.
 set -eu
+
+# changelog_version prints the version named by the top heading of the changelog
+# file $1: `## v2.0.0-alpha.1 (contracts)` gives v2.0.0-alpha.1.
+changelog_version() {
+	sed -n 's/^## \(v[0-9][0-9.]*\(-[0-9A-Za-z.][0-9A-Za-z.]*\)\{0,1\}\).*/\1/p' "$1" 2>/dev/null | head -1
+}
+
+# scripts/version_test.sh sources this file for the function above.
+if [ "${VIIWORK_VERSION_LIB:-}" = 1 ]; then
+	return 0
+fi
+
 cd "$(dirname "$0")/.."
 
 # An exact tag wins: that is a release build, and the tag is the whole answer.
@@ -24,7 +36,7 @@ if tag=$(git describe --tags --exact-match --dirty 2>/dev/null); then
 	exit 0
 fi
 
-version=$(sed -n 's/^## \(v[0-9][0-9.]*\).*/\1/p' CHANGELOG.md 2>/dev/null | head -1)
+version=$(changelog_version CHANGELOG.md)
 
 # No changelog heading either — an unpacked tarball, or a tree this script was
 # copied into. Fall back rather than fail a build over a version string.

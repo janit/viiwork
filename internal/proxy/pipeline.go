@@ -8,10 +8,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/janit/viiwork/internal/activity"
-	"github.com/janit/viiwork/internal/model"
-	"github.com/janit/viiwork/internal/pipeline"
+	"github.com/janit/viiwork/v2/internal/activity"
+	"github.com/janit/viiwork/v2/internal/pipeline"
+	"github.com/janit/viiwork/v2/meshapi"
 )
+
+// Ported from the v1 proxy's pipeline.go. Model entries are meshapi's, the
+// handler is v2's, and writeJSON lives in handler.go; the behaviour, headers and
+// response shape are unchanged.
 
 // PipelineResolver resolves model names to pipelines.
 type PipelineResolver struct {
@@ -52,11 +56,11 @@ func (pr *PipelineResolver) Resolve(modelName string) (*pipeline.Pipeline, *pipe
 }
 
 // VirtualModels returns all virtual model entries from all pipelines.
-func (pr *PipelineResolver) VirtualModels() []model.ModelEntry {
-	var entries []model.ModelEntry
+func (pr *PipelineResolver) VirtualModels() []meshapi.ModelEntry {
+	var entries []meshapi.ModelEntry
 	for _, p := range pr.pipelines {
 		for _, name := range p.VirtualModels() {
-			entries = append(entries, model.ModelEntry{ID: name, Object: "model", OwnedBy: "pipeline"})
+			entries = append(entries, meshapi.ModelEntry{ID: name, Object: "model", OwnedBy: meshapi.OwnedByPipeline})
 		}
 	}
 	return entries
@@ -98,23 +102,35 @@ func (pr *PipelineResolver) MatchesPipelinePrefix(modelName string) (string, boo
 	return "", false
 }
 
-func (h *Handler) SetPipelines(resolver *PipelineResolver, exec *pipeline.Executor) {
-	h.pipelineResolver = resolver
-	h.pipelineExecutor = exec
+// pipelineSourceText is the last user message, the text a pipeline processes.
+func pipelineSourceText(body []byte) string {
+	var fullReq struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	json.Unmarshal(body, &fullReq)
+	for i := len(fullReq.Messages) - 1; i >= 0; i-- {
+		if fullReq.Messages[i].Role == "user" {
+			return fullReq.Messages[i].Content
+		}
+	}
+	return ""
 }
 
 func (h *Handler) handlePipeline(w http.ResponseWriter, r *http.Request, p *pipeline.Pipeline, locale *pipeline.LocaleConfig, localeKey string, sourceText string, modelName string, taskID string) {
 	rid := activity.NewRequestID()
-	if h.activity != nil {
-		h.activity.EmitRequestTask(rid, -1, taskID, "[pipeline] %s started", modelName)
-		h.activity.StorePrompt(rid, modelName, sourceText)
+	if h.d.Activity != nil {
+		h.d.Activity.EmitRequestTask(rid, -1, taskID, "[pipeline] %s started", modelName)
+		h.d.Activity.StorePrompt(rid, modelName, sourceText)
 	}
 
 	start := time.Now()
-	result, err := h.pipelineExecutor.Run(r.Context(), p, locale, sourceText)
+	result, err := h.d.PipelineExec.Run(r.Context(), p, locale, sourceText)
 	if err != nil {
-		if h.activity != nil {
-			h.activity.EmitRequestTask(rid, -1, taskID, "[pipeline] %s failed: %v", modelName, err)
+		if h.d.Activity != nil {
+			h.d.Activity.EmitRequestTask(rid, -1, taskID, "[pipeline] %s failed: %v", modelName, err)
 		}
 		if stepErr, ok := err.(*pipeline.StepError); ok && stepErr.Status == http.StatusServiceUnavailable {
 			w.Header().Set("Retry-After", "5")
@@ -137,15 +153,15 @@ func (h *Handler) handlePipeline(w http.ResponseWriter, r *http.Request, p *pipe
 	}
 
 	elapsed := time.Since(start)
-	if h.activity != nil {
+	if h.d.Activity != nil {
 		var parts []string
 		for _, st := range result.StepTimings {
 			parts = append(parts, fmt.Sprintf("%s:%s", st.Name, st.Duration.Round(time.Millisecond)))
 		}
-		h.activity.EmitRequestTask(rid, -1, taskID, "[pipeline] %s done (%s) [%s]", modelName, elapsed.Round(time.Millisecond), strings.Join(parts, ","))
+		h.d.Activity.EmitRequestTask(rid, -1, taskID, "[pipeline] %s done (%s) [%s]", modelName, elapsed.Round(time.Millisecond), strings.Join(parts, ","))
 		// A pipeline assembles its own response below rather than proxying one,
 		// so there is no stream to capture — the final text is already in hand.
-		h.activity.StoreOutput(rid, modelName, result.Content, elapsed.Milliseconds())
+		h.d.Activity.StoreOutput(rid, modelName, result.Content, elapsed.Milliseconds())
 	}
 
 	// Pipeline headers
@@ -173,10 +189,4 @@ func (h *Handler) handlePipeline(w http.ResponseWriter, r *http.Request, p *pipe
 		},
 	}
 	writeJSON(w, http.StatusOK, resp)
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
 }

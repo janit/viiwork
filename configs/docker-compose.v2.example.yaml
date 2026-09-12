@@ -1,0 +1,60 @@
+# viiwork 2: one node per machine.
+#
+# Put this next to the machine's viiwork.yaml and start it with
+# `docker compose -f docker-compose.v2.example.yaml up -d`. See
+# docs/migrating-to-v2.md for converting v1 instance files.
+#
+# Reload the model list after editing viiwork.yaml:
+#   docker kill -s HUP viiwork
+
+services:
+  viiwork:
+    image: viiwork:latest
+    container_name: viiwork
+    restart: unless-stopped
+
+    # Gossip binds the machine's tailnet (or LAN) address on 7946 and the API
+    # listens on 8086. Members dial each other's real addresses, which a
+    # bridged container does not have.
+    network_mode: host
+
+    # A second ROCm container on the same machine (a v1 instance during a
+    # conversion, a benchmark) fails to initialise its GPUs without this.
+    ipc: host
+
+    # The on-GPU check matches backend processes against the host PIDs that
+    # rocm-smi and nvidia-smi report.
+    pid: host
+
+    devices:
+      - /dev/kfd
+      - /dev/dri
+      # - /dev/ipmi0   # whole-machine power from the BMC, if the board has one
+    group_add:
+      - video
+      - render
+
+    volumes:
+      - /models:/models:ro
+      - ./viiwork.yaml:/etc/viiwork/viiwork.yaml:ro
+      # The alias table lives here and must survive recreating the container.
+      # A host directory rather than a named volume, which any
+      # `docker volume prune` deletes while the node is stopped.
+      - /var/lib/viiwork:/var/lib/viiwork
+      # On a tailnet the node learns its address and finds other machines
+      # through tailscaled's local API. The directory, not the socket file: a
+      # mounted file keeps its old inode when tailscaled restarts.
+      - /var/run/tailscale:/var/run/tailscale:ro
+
+    # A secured mesh's secret: VIIWORK_MESH_SECRET=<base64 of exactly 32 bytes>,
+    # the same on every machine, in a file readable by root and the operators'
+    # group (mode 0640). An open mesh has no such file and sets mesh.open: true
+    # in viiwork.yaml instead.
+    env_file:
+      - path: /etc/viiwork/mesh.env
+        required: false
+
+    # A clean stop leaves the mesh, lets in-flight requests finish for
+    # health.respawn_grace (60 s by default) and stops the backends (up to
+    # 10 s): about 75 s. Docker's default of 10 s would kill the node mid-drain.
+    stop_grace_period: 90s

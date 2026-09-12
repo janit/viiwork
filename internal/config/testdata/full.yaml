@@ -1,0 +1,77 @@
+node:
+  name: node-a
+  state_dir: /var/lib/viiwork
+api:
+  host: 0.0.0.0
+  port: 8086
+  cors:
+    allow_origins: ["*.ts.net", "localhost", "127.0.0.1", "*.trippi.app"]
+    allow_tailnet_ips: true
+mesh:
+  network: tailnet
+  bind_port: 7946
+  advertise: ""
+  open: false
+  secret_env: VIIWORK_MESH_SECRET
+  secret_prev_env: VIIWORK_MESH_SECRET_PREV
+  secret_enforce: full
+  tailnet:
+    enabled: auto
+    socket: /var/run/tailscale/tailscaled.sock
+  lan:
+    mdns: false
+  seeds: ["100.64.0.20:7946"]
+  rejoin_interval: 60s
+  capacity_poll: 1s
+routing:
+  queue_max: 32
+  queue_timeout: 15s
+  forward_retry: 1
+  stale_after: 3s
+gpu:
+  vendor: nvidia
+  power_limit_watts: 0
+models:
+  - name: Qwen3.8-27B
+    engine: llamacpp
+    path: /models/Qwen3.8-27B-UD-Q4_K_XL.gguf
+    gpus: [0, 1]
+    gpus_per_backend: 2
+    context: 49152
+    parallel: 2
+    args: ["--spec-type", "draft-mtp", "--spec-draft-n-max", "1"]
+    llamacpp:
+      split_mode: layer
+      split_weights: [1.16, 1.0]
+  - name: granite-4.2-8b
+    engine: vllm
+    path: /models/granite-4.2-8b-fp8
+    gpus: [2]
+    context: 16384
+    parallel: 8
+    args: ["--enforce-eager", "--enable-auto-tool-choice", "--tool-call-parser", "hermes"]
+    vllm:
+      gpu_memory_utilization: 0.85
+  - name: DeepSeek-V4-Flash
+    engine: freetoken
+    path: /srv/models/DeepSeek-V4-Flash
+    gpus: [3]
+    context: 32768
+    parallel: 4
+    startup_timeout: 30m
+    env:
+      HOME: /home/janit
+    freetoken:
+      memory_ratio: 0.9
+      kv_reserve_tokens: 32768
+health:
+  interval: 5s
+  timeout: 10s
+  max_failures: 3
+  respawn_grace: 60s
+  max_respawns: 3
+activity:
+  prompt_history: 1000
+  event_history: 2000
+power:
+  source: none

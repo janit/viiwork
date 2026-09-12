@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+
+	"github.com/janit/viiwork/v2/internal/logging"
 )
 
 var thinkBlockRe = regexp.MustCompile(`(?s)<think>.*?</think>\s*`)
@@ -512,7 +514,9 @@ func streamThinkDisabled(w http.ResponseWriter, body io.Reader, cancel func()) (
 			f.Flush()
 		}
 	}
-	if err := scanner.Err(); err != nil {
+	if err := scanner.Err(); err != nil && logging.DebugEnabled() {
+		// Gated like every other [debug] line: a client that stops reading
+		// ends the stream in error too, so this sits on a per-request path.
 		log.Printf("[debug] stream think-disabled: scanner error (backend may have died): %v", err)
 	}
 	return false

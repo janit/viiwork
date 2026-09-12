@@ -3,86 +3,58 @@ package config
 import (
 	"time"
 
-	"github.com/janit/viiwork/energy"
-	"github.com/janit/viiwork/internal/activity"
-	"github.com/janit/viiwork/internal/power"
+	"github.com/janit/viiwork/v2/energy"
+	"github.com/janit/viiwork/v2/internal/activity"
+	"github.com/janit/viiwork/v2/internal/power"
 )
 
+const (
+	DefaultMeshSecretEnv     = "VIIWORK_MESH_SECRET"
+	DefaultMeshSecretPrevEnv = "VIIWORK_MESH_SECRET_PREV"
+	DefaultTailscaleSocket   = "/var/run/tailscale/tailscaled.sock"
+	DefaultEventHistory      = 2000
+)
+
+// Defaults returns the spec C1 defaults. Model-level defaults depend on each
+// model's engine and are applied by Parse after decoding.
 func Defaults() Config {
 	return Config{
-		Server: ServerConfig{
+		Node: NodeConfig{StateDir: "/var/lib/viiwork"},
+		API: APIConfig{
 			Host: "0.0.0.0",
-			Port: 8080,
-			// On by default, because the problem it solves is created by
-			// running viiwork at all: one instance per model means Port
-			// differs per instance and per host, and the mesh view is the
-			// one page you want to reach without looking anything up. A
-			// foreign service already holding 8086 costs nothing — the
-			// listener never binds and the node serves normally. Set 0 to
-			// stop asking for it.
-			MeshPort: 8086,
-			// Defaults cover the deployment viiwork documents — nodes on a
-			// tailnet — plus localhost for development. Your own application's
-			// origin is deployment-specific and belongs in your viiwork.yaml,
-			// not here.
-			//
-			// The API authenticates nothing, so this list is the only thing
-			// standing between it and any page a browser on your network
-			// happens to open. Narrow it rather than widen it; set
-			// allow_origins: [] to turn CORS off entirely.
-			CORS: CORSConfig{
-				AllowOrigins: []string{"*.ts.net", "localhost", "127.0.0.1"},
-			},
+			Port: 8086,
+			CORS: CORSConfig{AllowOrigins: []string{"*.ts.net", "localhost", "127.0.0.1"}},
+		},
+		Mesh: MeshConfig{
+			Network:        NetworkTailnet,
+			BindPort:       7946,
+			SecretEnv:      DefaultMeshSecretEnv,
+			SecretPrevEnv:  DefaultMeshSecretPrevEnv,
+			SecretEnforce:  EnforceFull,
+			Tailnet:        TailnetConfig{Enabled: ToggleAuto, Socket: DefaultTailscaleSocket},
+			LAN:            LANConfig{MDNS: ToggleAuto},
+			RejoinInterval: Duration{60 * time.Second},
+			CapacityPoll:   Duration{time.Second},
+		},
+		Routing: RoutingConfig{
+			QueueMax:     64,
+			QueueTimeout: Duration{20 * time.Second},
+			ForwardRetry: 1,
+			StaleAfter:   Duration{3 * time.Second},
+		},
+		GPU: GPUConfig{Vendor: VendorAuto},
+		Health: HealthConfig{
+			Interval:     Duration{5 * time.Second},
+			Timeout:      Duration{10 * time.Second},
+			MaxFailures:  3,
+			RespawnGrace: Duration{60 * time.Second},
+			MaxRespawns:  3,
 		},
 		Activity: ActivityConfig{
 			PromptHistory: activity.DefaultPromptHistory,
+			EventHistory:  DefaultEventHistory,
 		},
-		Model: ModelConfig{
-			ContextSize: 13337,
-			NGPULayers:  -1,
-			Parallel:    1,
-		},
-		GPUs: GPUConfig{
-			Count:    10,
-			BasePort: 9001,
-		},
-		Backend: BackendConfig{
-			Binary:    "llama-server",
-			ExtraArgs: []string{"--reasoning-format", "deepseek"},
-		},
-		Health: HealthConfig{
-			Interval: Duration{5 * time.Second},
-			// 30s, not 3s: on CPU-bound hosts a busy prompt-eval starves the
-			// llama-server's /health responder, and an aggressive timeout
-			// triggers 3/3 failures → respawn → cold reload → cascade. Field
-			// report on 4-core EPYC 3151 took 502 rate from 40% (3s) to 0%
-			// (30s) at concurrency 16.
-			Timeout:            Duration{30 * time.Second},
-			MaxFailures:        3,
-			RespawnGrace:       Duration{60 * time.Second},
-			EvictOnHardFailure: true,
-		},
-		Balancer: BalancerConfig{
-			LatencyWindow:     Duration{30 * time.Second},
-			HighLoadThreshold: 7,
-			MaxInFlightPerGPU: 4,
-		},
-		Peers: PeersConfig{
-			PollInterval: Duration{10 * time.Second},
-			Timeout:      Duration{3 * time.Second},
-			Gossip: GossipConfig{
-				Enabled:         false,
-				SecretEnv:       DefaultMeshSecretEnv,
-				DiscoveryEvery:  6,
-				MaxLearnedPeers: 200,
-			},
-		},
-		Cost: CostConfig{
-			Timezone: "Europe/Helsinki",
-		},
-		Power: PowerConfig{
-			Source: power.SourceAuto,
-		},
+		Power: PowerConfig{Source: power.SourceAuto},
 		Energy: EnergyConfig{
 			Dir:            "/var/lib/viiwork/energy",
 			SampleInterval: Duration{30 * time.Second},
@@ -90,5 +62,6 @@ func Defaults() Config {
 			HourSlots:      energy.DefaultHourSlots,
 			DaySlots:       energy.DefaultDaySlots,
 		},
+		Cost: CostConfig{Timezone: "Europe/Helsinki"},
 	}
 }

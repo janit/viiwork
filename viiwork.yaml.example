@@ -1,285 +1,41 @@
-server:
+# viiwork 2 node config: one file per machine. Every model on the machine is an
+# entry under models:, the API is on 8086 and gossip on 7946 everywhere.
+# Converting from v1: docs/migrating-to-v2.md.
+#
+# The mesh secret comes from the environment, never from this file:
+#   VIIWORK_MESH_SECRET=$(openssl rand -base64 32)
+# To run a mesh without a secret, leave it unset and set mesh.open: true.
+
+node:
+  name: ""                   # empty = hostname; must be unique in the mesh
+  state_dir: /var/lib/viiwork # durable state (alias table); a real volume in docker
+
+api:
   host: 0.0.0.0
-  port: 8080
-  # mesh_port: a second, well-known port whose "/" is the MESH dashboard.
-  #
-  # It exists because `port` above is not guessable. A host runs one instance
-  # per model, each on its own port, so reaching the fleet view means knowing
-  # which instance is up on which host -- exactly the thing you do not know
-  # when something is wrong. http://<any-host>:8086/ always answers instead.
-  #
-  # Every instance asks for this port and the OS gives it to one of them; the
-  # rest keep asking, so it stays up as long as ANY viiwork on the host does,
-  # and moves on its own when the holder restarts. Nothing needs designating,
-  # and the same value is correct on every instance on every host.
-  #
-  # The node's own API stays on `port` and is unaffected. Set 0 to opt out.
-  mesh_port: 8086
-  # cors: which browser ORIGINS may read this API. Only relevant when a page
-  # served from somewhere else fetches viiwork directly; a server-side caller
-  # (curl, a backend proxying on behalf of its own UI) is unaffected by CORS
-  # and ignores all of this.
-  #
-  # Read the default as a deliberate policy, not boilerplate: viiwork
-  # authenticates nothing, so anything a browser is allowed to call here, it is
-  # allowed to drive the fleet with. The list below is the whole control.
-  #
-  #   "*.example.com" matches subdomains only, never the bare apex.
-  #   Any other entry must match the host exactly.
-  #   allow_origins: []  turns CORS off entirely (the pre-1.0 behaviour).
-  #
-  # cors:
-  #   allow_origins: ["*.ts.net", "localhost", "127.0.0.1", "*.your-app.example"]
-  #   allow_tailnet_ips: true   # also allow 100.64.0.0/10 and fd7a:115c:a1e0::/48
-  #                             # literals, since a tailnet host is reached by
-  #                             # address about as often as by MagicDNS name.
+  port: 8086
 
-model:
-  # Any GGUF llama.cpp can load. gemma-4-26B-A4B (MoE, 4B active) is a good
-  # default on a 16 GB card: it fits with KV headroom and is the highest-
-  # throughput model measured on this hardware. See "Recommended Models" in
-  # README.md for measured picks per layout.
-  path: /models/gemma-4-26B-A4B-it-UD-Q3_K_XL.gguf
-  context_size: 13337
-  n_gpu_layers: -1
-  # parallel: 1  # slots per backend. llama.cpp DIVIDES context_size across
-  #              # slots, so parallel: 4 with context_size: 131072 gives each
-  #              # request 32K, not 128K. Raise it only together with a
-  #              # deliberate context decision — the two trade off directly.
-  #              # With several backends, prefer more backends over more slots:
-  #              # N replicas each at full context beat one backend at N slots.
+mesh:
+  network: tailnet           # tailnet | lan
+  open: false
+  seeds: []                  # optional "ip:7946" of any member, e.g. a gateway host
 
-gpus:
-  # Use 'devices' to specify exact GPU IDs (recommended for multi-instance):
-  #   devices: [0, 1, 2]
-  # Or use 'count' for simple single-instance setups (uses GPUs 0..count-1):
-  count: 10
-  base_port: 9001
-  # offset: 0  # shift the GPU index range when several viiwork instances share
-  #            # a host and each drives a different slice of the GPUs.
-  # power_limit_watts: 180  # optional: limit per-GPU power via rocm-smi
-  #
-  # tensor_split: split ONE model across several GPUs, for models too large for
-  # a single card. Not shown here to keep this file readable — see
-  # configs/viiwork.tensor-split.yaml.example for the full block
-  # (enabled / mode / group_size / weights / main_gpu) and the reasoning behind
-  # each knob.
+models:
+  - name: Qwen3.8-27B        # the served model id
+    engine: llamacpp         # llamacpp | vllm | freetoken
+    path: /models/Qwen3.8-27B-UD-Q4_K_XL.gguf
+    gpus: [0, 1]
+    gpus_per_backend: 2      # one backend split across both cards
+    context: 49152           # tokens PER SLOT
+    parallel: 2
+    startup_timeout: 45m     # split models load slowly; the default is 10m
+    args: ["--spec-type", "draft-mtp", "--spec-draft-n-max", "1",
+           "--chat-template-kwargs", '{"enable_thinking": false}']
+  - name: granite-4.2-8b
+    engine: llamacpp
+    path: /models/granite-4.2-8b-Q8_0.gguf
+    gpus: [2]
+    context: 16384
+    parallel: 2
 
-backend:
-  binary: llama-server
-  extra_args: ["--reasoning-format", "deepseek"]  # enables <think> tag parsing for thinking models
-  # Thinking models: several current families (Gemma 4, Qwen3.8, Laguna) reason
-  # by default, which shows up as latency and tokens you may not want for prose.
-  # Disabling it is per-template and NOT uniform — see docs/thinking-models.md:
-  #   extra_args: ["--jinja", "--chat-template-kwargs", "{\"enable_thinking\": false}"]
-  # `--reasoning-budget 0` does not take on the Gemma 4 template, and Laguna
-  # inverts the flag (it wants enable_thinking TRUE). Verify per model rather
-  # than copying a flag between them.
-  # threads: 0  # 0 = auto-derive max(1, nproc/n_backends). Override to pin a
-  #             # specific count. Bypassed entirely if --threads is in extra_args.
-
-# activity: in-memory request history for the dashboards. None of it is
-# persisted; a restart clears it.
-#
-# activity:
-#   prompt_history: 1000   # requests keeping their prompt and output for lookup.
-#                          # Memory is roughly this times up to 100 KB (prompt and
-#                          # output are each truncated at 50 000 chars), so 1000 is
-#                          # ~100 MB of worst-case headroom and far less in practice.
-#                          # Below 1 falls back to the default. Nodes publish this
-#                          # on /v1/status so the dashboard sizes its list to match.
-
-health:
-  interval: 5s
-  # timeout: 30s default. CPU-bound hosts (especially 4-core w/ many backends)
-  # benefit from the generous default — llama-server's /health responder gets
-  # starved during prompt-eval contention and an aggressive timeout triggers
-  # respawn cascades. Lower this only if you're confident in your CPU headroom.
-  timeout: 30s
-  # max_failures x interval must cover the COLD LOAD, not just a restart.
-  # llama-server answers /health with 503 "Loading model" for the entire time
-  # it is reading tensors, so every probe during load counts as a failure and
-  # the ladder can respawn a backend that was about to become ready — throwing
-  # away all the work and starting the load over.
-  #
-  # 3 x 5s = 15s is fine for a small model on NVMe. It is nowhere near enough
-  # for a large model on slow storage: a 104 GB model read at ~30 MB/s needs
-  # ~60 min, i.e. ~700 probes at 5s. Size it as roughly
-  #     model_bytes / observed_read_bytes_per_sec / interval
-  # and then double it. Erring high only delays detection of a genuinely dead
-  # backend on first start; erring low can make a big model never load at all.
-  max_failures: 3
-  # respawn_grace: max wait for in-flight requests to drain on an unhealthy
-  # backend before forcing respawn. 0 disables (legacy: kill immediately on
-  # MaxFailures). 60s default lets in-flight requests finish so they don't
-  # all get killed by a slow-but-recoverable backend.
-  respawn_grace: 60s
-  # evict_on_hard_failure: when true (default), an EOF or "connection refused"
-  # from a backend's inference path is treated as a definitive process-gone
-  # signal — the backend is marked unhealthy immediately (so the picker stops
-  # routing to it) and the manager respawns after one failed probe instead of
-  # max_failures. Set false to fall back to v0.5.0 health-ladder-only behavior.
-  evict_on_hard_failure: true
-
-balancer:
-  latency_window: 30s
-  high_load_threshold: 7
-  max_in_flight_per_gpu: 4
-
-# Mesh: uncomment and list peer viiwork hosts to enable cluster mode.
-# peers:
-#   hosts:
-#     - 192.168.1.10:8080
-#     - 192.168.1.11:8080
-#   poll_interval: 10s
-#   timeout: 3s
-#   # Gossip: learn peers from peers, so peers.hosts is a seed list rather than
-#   # the whole fleet. Off by default. Requires VIIWORK_MESH_SECRET (>= 32
-#   # bytes, same value on every node) — generate with: openssl rand -base64 48
-#   gossip:
-#     enabled: false
-#     secret_env: VIIWORK_MESH_SECRET
-#     discovery_every: 6          # cluster-poll each peer every N status rounds
-#     max_learned_peers: 200
-#     allow_private: false        # 100.64.0.0/10 is always allowed
-#     require_forward_proof: false # flip true only once the whole fleet signs
-
-# Node power reading over IPMI. Requires ipmitool and /dev/ipmi0 in the
-# container (add "- /dev/ipmi0:/dev/ipmi0" to the compose devices list).
-#
-# The default "auto" probes DCMI, then the Power Supply sensor class, then any
-# Watts-valued sensor, and logs which one it settled on. Pin a source only if
-# auto picks the wrong one -- on boards exposing several Watts sensors it warns
-# and lists the alternatives.
-#
-#   auto           probe, keep the first that answers (default)
-#   dcmi           DCMI whole-node reading
-#   sdr            sum the "Power Supply" sensor class
-#   sensor:<NAME>  one named sensor, e.g. sensor:SYS_POWER
-#   none           disable without probing
-#
-# power:
-#   source: auto
-
-# Chassis power control (v1.5.0+). OFF by default, and off is the only safe
-# default: this is the one part of the API that can switch a machine off, on a
-# service that authenticates nothing.
-#
-# hosts is an allowlist and there is no wildcard. A host absent from it cannot
-# be targeted at all -- being peered with a node is not consent to switch its
-# machine off. The node serving a dashboard also refuses to act on its own
-# host, so a page cannot power off the machine answering it.
-#
-# A running host is reached IN-BAND through the node living on it (/dev/ipmi0,
-# no credentials). The bmc block is only needed for hosts that must be
-# controllable while POWERED OFF -- there is no node there to ask, so the BMC
-# has to be reached over the network. Without it, a host can be switched off
-# but not back on, and the dashboard says so instead of offering a button that
-# fails.
-#
-# Addresses are optional per host: a node discovers its own BMC address in-band
-# and shares it, so a host seen online at least once needs no entry. Write one
-# only for a host that must be reachable before this node has ever seen it up
-# -- and note these are often DHCP, so a written address can go stale while a
-# learned one cannot.
-#
-# power:
-#   control:
-#     enabled: true
-#     hosts: [gb0, gb1, gb2, gb3, gb4]
-#     bmc:
-#       username: admin
-#       password_env: BMC_PASSWORD   # set it in .env, not here
-#       addresses:
-#         gb0: 192.168.1.65
-
-# Durable energy history: per-host kWh and a per-model split of it.
-#
-# Needs a volume that outlives the container, plus /dev/ipmi0 for node power and
-# rocm-smi for the per-GPU split. Disabled by default because writing to a
-# container filesystem would be durable in name only.
-#
-# Node wattage is a whole-host measurement, so on a host running several viiwork
-# instances (the multi-model layout) enable this on exactly ONE of them --
-# otherwise the same host draw is recorded several times over.
-#
-# Disk is fixed at creation and cannot grow: ~2.6 MB for a 10-GPU host, ~660 KB
-# for two. Slot counts are ring lengths and therefore the retention; changing one
-# discards that ring's history.
-#
-# energy:
-#   enabled: true
-#   dir: /var/lib/viiwork/energy
-#   sample_interval: 30s   # 2x the BMC refresh; records are always 1/minute
-#   minute_slots: 1440     # 24h at 1-minute resolution
-#   hour_slots: 8760       # 365d at 1-hour resolution
-#   day_slots: 365         # 365d of daily totals
-
-# Electricity cost tracking: uncomment and set ENTSOE_API_KEY in .env
-# cost:
-#   bidding_zone: 10YFI-1--------U  # Finland
-#   timezone: Europe/Helsinki
-#   transfer:
-#     winter:
-#       peak_cents_kwh: 4.28
-#       offpeak_cents_kwh: 2.49
-#     summer:
-#       flat_cents_kwh: 2.49
-#   electricity_tax_cents_kwh: 2.253
-#   vat_percent: 25.5
-
-# Localization pipelines: virtual models that chain multiple real models.
-# Consumer calls e.g. model "localize-fi" and gets culturally adapted text.
-# pipelines:
-#   localize:
-#     locale_aliases:
-#       fi: fi-FI
-#       se: sv-SE
-#       pt: pt-BR
-#       es: es-MX
-#       fr: fr-FR
-#     locales:
-#       pt-BR:
-#         language: Portuguese
-#         audience: "Brazilian general audience"
-#         formality: informal
-#         glossary: glossaries/pt-br.yaml
-#       fi-FI:
-#         language: Finnish
-#         audience: "Finnish general audience"
-#         formality: formal
-#         glossary: glossaries/fi.yaml
-#     steps:
-#       - name: translate
-#         model: alma-r-13b
-#         prompt: prompts/translate.tmpl
-#         temperature: 0.1
-#       - name: localize
-#         model: gemma-4-31B-it-qat-UD-Q4_K_XL
-#         prompt: prompts/localize.tmpl
-#         temperature: 0.4
-#       - name: qc
-#         model: EuroLLM-22B-Instruct-2512-Q5_K_M
-#         prompt: prompts/qc.tmpl
-#         temperature: 0.1
-#         json_output: true
-#
-#   # Text improvement pipeline: generates text then rewrites to remove AI patterns.
-#   # Consumer calls model "improve-default" (or "improve-en").
-#   improve:
-#     locale_aliases:
-#       en: default
-#     locales:
-#       default:
-#         language: English
-#         audience: "general reader"
-#         formality: neutral
-#     steps:
-#       - name: generate
-#         model: gemma-4-31B-it-qat-UD-Q4_K_XL
-#         prompt: prompts/generate.tmpl
-#         temperature: 0.7
-#       - name: improve
-#         model: gemma-4-31B-it-qat-UD-Q4_K_XL
-#         prompt: prompts/improve.tmpl
-#         temperature: 0.3
+power:
+  source: none               # auto | dcmi | sdr | sensor:<NAME> | none

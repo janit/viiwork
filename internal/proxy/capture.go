@@ -18,6 +18,12 @@ import (
 // requests in flight, which backpressure already bounds.
 const maxCaptureBytes = 2 << 20
 
+// captureTailBytes is how much of the newest output is kept past the cap. A
+// long stream's final usage chunk lies beyond maxCaptureBytes, and without the
+// tail tokens_total would silently undercount exactly the longest requests
+// (P4 Decision 13).
+const captureTailBytes = 16 << 10
+
 // captureWriter tees a proxied response into a bounded buffer on its way to
 // the client, so the finished text can be recorded for the prompt history.
 //
@@ -36,6 +42,7 @@ type captureWriter struct {
 	buf      []byte
 	status   int
 	overflow bool
+	tail     []byte // the newest bytes past the cap, at most captureTailBytes once trimmed
 }
 
 func (c *captureWriter) WriteHeader(status int) {
@@ -45,18 +52,49 @@ func (c *captureWriter) WriteHeader(status int) {
 
 func (c *captureWriter) Write(b []byte) (int, error) {
 	if !c.overflow {
-		if room := maxCaptureBytes - len(c.buf); room > 0 {
-			if len(b) <= room {
-				c.buf = append(c.buf, b...)
-			} else {
-				c.buf = append(c.buf, b[:room]...)
-				c.overflow = true
-			}
+		if room := maxCaptureBytes - len(c.buf); len(b) <= room {
+			c.buf = append(c.buf, b...)
 		} else {
+			c.buf = append(c.buf, b[:room]...)
 			c.overflow = true
+			c.keepTail(b[room:])
 		}
+	} else {
+		c.keepTail(b)
 	}
 	return c.ResponseWriter.Write(b)
+}
+
+// keepTail appends past-the-cap bytes to a rolling tail. Nothing here runs
+// below the cap, so the common response pays nothing for it.
+func (c *captureWriter) keepTail(b []byte) {
+	if len(b) >= captureTailBytes {
+		c.tail = append(c.tail[:0], b[len(b)-captureTailBytes:]...)
+		return
+	}
+	if c.tail == nil {
+		c.tail = make([]byte, 0, 2*captureTailBytes)
+	}
+	if len(c.tail)+len(b) > cap(c.tail) {
+		keep := captureTailBytes - len(b)
+		copy(c.tail, c.tail[len(c.tail)-keep:])
+		c.tail = c.tail[:keep]
+	}
+	c.tail = append(c.tail, b...)
+}
+
+// CompletionTokens is usage.completion_tokens from the finished response, read
+// once after the response completes and never per token. Past the cap it reads
+// the tail, dropping its first, partial line.
+func (c *captureWriter) CompletionTokens() (int64, bool) {
+	if !c.overflow {
+		return extractCompletionTokens(c.buf)
+	}
+	tail := c.tail
+	if i := bytes.IndexByte(tail, '\n'); i >= 0 {
+		tail = tail[i+1:]
+	}
+	return extractCompletionTokens(tail)
 }
 
 // Unwrap lets http.ResponseController reach the real writer, should anything
@@ -174,4 +212,49 @@ func appendChoiceText(payload []byte, content, reasoning *strings.Builder) {
 		reasoning.WriteString(ch.Delta.ReasoningContent)
 		reasoning.WriteString(ch.Message.ReasoningContent)
 	}
+}
+
+type usageShape struct {
+	Usage *struct {
+		CompletionTokens *float64 `json:"completion_tokens"`
+	} `json:"usage"`
+}
+
+var usageKey = []byte(`"usage"`)
+
+// extractCompletionTokens finds usage.completion_tokens in a finished
+// response: a single JSON object, or else an SSE stream, where the last data
+// payload carrying a numeric value wins. Absent gives (0, false): a streaming
+// client that did not ask for usage is counted as a request with no tokens.
+func extractCompletionTokens(raw []byte) (int64, bool) {
+	if n, ok := usageOf(bytes.TrimSpace(raw)); ok {
+		return n, true
+	}
+	var last int64
+	found := false
+	for _, line := range bytes.Split(raw, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if !bytes.HasPrefix(line, sseDataPrefix) {
+			continue
+		}
+		payload := bytes.TrimSpace(line[len(sseDataPrefix):])
+		if !bytes.Contains(payload, usageKey) {
+			continue // only chunks that mention usage are decoded
+		}
+		if n, ok := usageOf(payload); ok {
+			last, found = n, true
+		}
+	}
+	return last, found
+}
+
+func usageOf(payload []byte) (int64, bool) {
+	if len(payload) == 0 || payload[0] != '{' {
+		return 0, false
+	}
+	var u usageShape
+	if json.Unmarshal(payload, &u) != nil || u.Usage == nil || u.Usage.CompletionTokens == nil {
+		return 0, false
+	}
+	return int64(*u.Usage.CompletionTokens), true
 }

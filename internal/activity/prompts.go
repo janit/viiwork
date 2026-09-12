@@ -3,7 +3,7 @@ package activity
 import (
 	"sync"
 
-	"github.com/janit/viiwork/meshapi"
+	"github.com/janit/viiwork/v2/meshapi"
 )
 
 // DefaultPromptHistory is the number of requests a node keeps when nothing is

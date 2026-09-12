@@ -34,12 +34,12 @@ docker compose up -d
 
 echo "==> Waiting for viiwork to start (this may take a few minutes while models load)..."
 for i in $(seq 1 90); do
-    if curl -sf http://localhost:8080/v1/models >/dev/null 2>&1; then
-        echo "==> viiwork is up."
+    if curl -sf http://localhost:8086/health >/dev/null 2>&1; then
+        echo "==> viiwork is up (/health answers)."
         exit 0
     fi
     sleep 2
 done
 
-echo "==> WARNING: viiwork did not respond within 3 minutes. Check logs with: docker compose logs"
+echo "==> WARNING: /health did not answer within 3 minutes. Check logs with: docker compose logs"
 exit 1

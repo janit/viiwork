@@ -3,8 +3,33 @@ set -euo pipefail
 
 # Interactive setup for viiwork node(s).
 # Generates viiwork configs, docker-compose, and optionally downloads models.
+#
+# NOTE: this script still writes viiwork 1.x instance configs — one instance per
+# model, each on its own port, with server:/gpus:/balancer: sections. A viiwork
+# 2 node refuses those outright ("v1 config: see docs/migrating-to-v2.md"),
+# because v2 runs one node per machine from a single models: list. Converting
+# the script is tracked separately; until then it is gated, so that nobody
+# discovers the mismatch only after it has downloaded a few hundred GB.
 
-echo "=== viiwork node setup ==="
+if [ "${VIIWORK_ALLOW_V1_SETUP:-}" != "1" ]; then
+  cat >&2 <<'GATE'
+setup-node.sh writes viiwork 1.x configs, which a viiwork 2 node will not load.
+
+For viiwork 2, write the machine's file by hand — it is one file per machine:
+
+  cp viiwork.yaml.example viiwork.yaml     # then edit models: for this machine
+  viiwork-accept config --file viiwork.yaml --dummy-secret
+
+  README.md                 configuration reference
+  docs/migrating-to-v2.md   converting existing 1.x instances, and per-host steps
+
+The GPU detection and model downloads here are still useful on a 1.x fleet. To
+run it anyway, set VIIWORK_ALLOW_V1_SETUP=1.
+GATE
+  exit 2
+fi
+
+echo "=== viiwork node setup (viiwork 1.x configs) ==="
 echo ""
 
 # --- llama.cpp variant selection ---
