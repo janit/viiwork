@@ -22,6 +22,16 @@ func TestCheckMemberAddr(t *testing.T) {
 		{NetworkTailnet, "0.0.0.0", "unspecified"},
 		{NetworkTailnet, "169.254.169.254", "link-local"},
 		{NetworkTailnet, "64:ff9b::a9fe:a9fe", "link-local"},
+		// The NAT64 and IPv4-mapped forms are unwrapped before judging, so an
+		// address cannot be smuggled past the range check by encoding it in
+		// one. Pinned for the general case, not only for the metadata address
+		// above: the unwrap is what makes every other rule here reachable.
+		{NetworkTailnet, "64:ff9b::8.8.8.8", "not on the tailnet range"},
+		{NetworkTailnet, "64:ff9b::7f00:1", "loopback"},
+		{NetworkTailnet, "::ffff:8.8.8.8", "not on the tailnet range"},
+		{NetworkTailnet, "64:ff9b::100.64.0.2", ""},
+		{NetworkTailnet, "255.255.255.255", "not on the tailnet range"},
+		{NetworkTailnet, "fd7a:115c:a1e0::1", "not on the tailnet range"},
 		{NetworkTailnet, "224.0.0.251", "multicast"},
 		{NetworkLAN, "192.168.42.144", ""},
 		{NetworkLAN, "10.1.2.3", ""},

@@ -1,5 +1,90 @@
 # Changelog
 
+## v2.0.0-beta2
+
+Room in the mesh dashboard's backends table, which has to fit a whole fleet on
+one screen. Two columns were spending width on things their own numbers already
+said.
+
+- **The GPU column is compact.** A tensor-split group reads `gpu-4+5` rather
+  than `gpu-4 + gpu-5`: the repeated prefix was the widest thing in the table
+  and said nothing new. GPU ids are also coerced to integers before rendering,
+  since they are peer-supplied and that string is interpolated into the page.
+- **The VRAM column has lost its bar.** A 46px meter sat beside
+  `25.5G/32.0G`, showing the same ratio the numbers give. Only its warning
+  survives, as the colour of the text — amber above 70% of the card, red above
+  90% — so the signal is kept at no width. The Tokens column keeps its meter,
+  where there is no second reading of the same thing.
+- **The parts that decide who may do what are now covered by tests.**
+  `internal/power`'s chassis control had none at all: the allowlist (no
+  wildcard, no suffix matching, an empty list permitting nothing), the fixed
+  action set, `Local` refusing to cut its own power before reaching
+  `ipmitool`, and the diagnostic path that must never echo the BMC password.
+  `internal/activity` went from a third covered to nearly all of it, and the
+  mesh address check gained the NAT64 and IPv4-mapped cases that prove an
+  address cannot be smuggled past a range check by encoding it in another form.
+- **A member could put an alias in the table that no operator could.** The
+  gossip merge validated the alias *name* but never the entry, while the local
+  write path refuses an empty target ("target is required"). A live entry with
+  no target is now ignored on merge too; a tombstone legitimately has none.
+  Found by the repository's first fuzz targets, which cover the two entry
+  points that consume bytes from another member — `Service.NotifyMsg` and
+  `Service.MergeRemoteState` — and assert the table stays within its cap, holds
+  no unnamed or unvalidated entry, and still marshals. 720,000 executions found
+  nothing further.
+- **`viiwork-mcp` pointed at the wrong port.** Its default was
+  `http://localhost:8080`, which is viiwork 1's port and serves nothing on a v2
+  fleet, so running it without `--url` or `VIIWORK_URL` only ever produced a
+  connection refusal. Now 8086, in the flag help, the doc comment and
+  `.mcp.json`. It also calls `meshapi.PathModels`, `PathCluster` and
+  `PathChatCompletions` rather than repeating the strings, and has tests: it
+  previously had none.
+- **`mesh.Options` documents two things a second implementation lost time to.**
+  `OnChange` may be called *before* `Start` returns — the dispatcher runs
+  before memberlist does, and memberlist notifies about the local node while
+  bootstrapping, so a handler reading something built from `Start`'s return
+  value races its own assignment. And `TailnetSocket` and `LocalAPISocket` are
+  not alternatives: the first turns discovery on, the second answers "what is
+  my own tailnet address" and is needed even with discovery off. Both found by
+  the gateway building against beta1; no behaviour changed.
+- **Fixed a panic in the activity log.** `emit` sent to a snapshot of the
+  subscribers taken under the lock and released before sending, while
+  `Subscribe` closes a subscriber's channel when the log is at capacity. The
+  two interleaving meant a send on a closed channel, which panics — a select's
+  `default` case does not prevent that. Sends now happen under the lock, which
+  cannot stall because they are already non-blocking. The capacity is 16 and a
+  browser tab or a connected mesh-stream client is one each, so this was not a
+  stress-only path. `TestEmitDoesNotPanicWhileSubscribersAreEvicted` reproduces
+  it in 200 rounds against the old code.
+- **Truncated prompts are cut on a rune boundary.** The 50,000-character cap is
+  applied in bytes, which lands mid-character in any non-ASCII script — the
+  normal case on a translation fleet — and the tail reached `/v1/prompts` as
+  invalid UTF-8 for the JSON encoder to silently replace with U+FFFD.
+- **The single-node dashboard escapes for attribute position too.** Its
+  escaper set `textContent` and read back `innerHTML`, which leaves `"` and
+  `'` untouched — safe between tags, unsafe inside an attribute, and it was
+  used inside one (`class="status ..."`). A value carrying a quote would have
+  closed the attribute and turned the rest into markup. Nothing reached it:
+  that value is the node's own backend state, from a fixed vocabulary. Fixed
+  anyway, along with an event type that went to the page unescaped and GPU ids
+  that are now coerced to integers before being rendered as markup, so the
+  page no longer depends on where its data happens to come from. `/mesh`,
+  which does render other members' data, was already strict.
+- **Endpoint paths are pinned** in `meshapi/wire_test.go`, for the same reason
+  field names are: a consumer in another repository dials them or compares
+  against them, so changing one silently breaks something that cannot be
+  updated in the same commit. Only machine-to-machine paths are listed. The
+  browser pages and `/v1/metrics`, which only the dashboard fetches, are
+  deliberately left out — freezing a UI route in a package with no migration
+  path would make an HTML URL a permanent commitment, and the boundary this
+  contract draws is what nodes say to each other.
+- The README describes viiwork as built *originally for* Radeon VII rather than
+  *on* it: the config already accepts NVIDIA hardware and other engines, so the
+  old phrasing read as a hardware requirement rather than as provenance.
+
+Both dashboard changes are in `web/`, which `viiwork-nvidia` imports rather
+than forking, so they reach that fleet view too.
+
 ## v2.0.0-beta1
 
 **First public release of viiwork 2.** Everything below under `v2.0.0-rc.2`,

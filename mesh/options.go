@@ -37,25 +37,44 @@ type Payload interface {
 // config.MeshConfig because the gateway, which imports this package from
 // another module, has no viiwork config.
 type Options struct {
-	Name           string
-	Network        string // NetworkTailnet | NetworkLAN
-	BindPort       int
-	Advertise      netip.Addr // zero = resolve from the network
-	APIPort        int
-	Role           string // meshapi.RoleNode | meshapi.RoleGateway
-	Version        string
-	SecretKey      []byte // nil = open mesh
-	PreviousKey    []byte // rotation; requires SecretKey
-	Enforce        string // EnforceFull | EnforceOutgoing | EnforceNone
+	Name        string
+	Network     string // NetworkTailnet | NetworkLAN
+	BindPort    int
+	Advertise   netip.Addr // zero = resolve from the network
+	APIPort     int
+	Role        string // meshapi.RoleNode | meshapi.RoleGateway
+	Version     string
+	SecretKey   []byte // nil = open mesh
+	PreviousKey []byte // rotation; requires SecretKey
+	Enforce     string // EnforceFull | EnforceOutgoing | EnforceNone
+	// The two socket fields are not alternatives, whatever the names suggest:
+	// each does its own job and a node on a tailnet usually wants both set to
+	// the same path. TailnetSocket turns the discovery feeder on, so that this
+	// member finds others. LocalAPISocket answers "what is my own tailnet
+	// address", which is needed to advertise correctly even when discovery is
+	// off and the member is joining by seed. Setting only TailnetSocket, or
+	// setting LocalAPISocket only when the feeder is enabled, silently ignores
+	// a non-default path — a mistake a second implementation made against
+	// v2.0.0-beta1.
 	TailnetSocket  string // "" = no tailnet feeder
-	LocalAPISocket string // resolves this node's tailnet address, discovery on or off; see advertiseSocket
+	LocalAPISocket string // resolves this node's own tailnet address, discovery on or off; see advertiseSocket
 	MDNS           bool
 	Seeds          []string
 	RejoinInterval time.Duration
-	Payload        Payload           // nil = none
-	OnChange       func(MemberEvent) // nil = none; called from one goroutine, in order
-	Log            io.Writer         // nil = os.Stdout
-	Debug          bool              // pass memberlist [DEBUG] lines through
+	Payload        Payload // nil = none
+
+	// OnChange is called for every membership change, from one goroutine, in
+	// order.
+	//
+	// **It may be called before Start returns.** The dispatcher starts before
+	// memberlist does, and memberlist notifies about the local node while it is
+	// still bootstrapping, so a handler that reads something built from Start's
+	// return value races with its own assignment. Hand that value over
+	// atomically, or accept the events in this window: nothing is lost by
+	// dropping them, because a member list is re-read on the next tick anyway.
+	OnChange func(MemberEvent) // nil = none
+	Log      io.Writer         // nil = os.Stdout
+	Debug    bool              // pass memberlist [DEBUG] lines through
 
 	// Seams for tests (P3-P6 integration tests, gateway tests).
 	Tune           func(*memberlist.Config) // applied last
