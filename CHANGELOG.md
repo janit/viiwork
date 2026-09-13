@@ -351,8 +351,8 @@ together, or runs as two meshes until the last machine is across. A v1
 is `github.com/janit/viiwork/v2`, and `meshapi`'s wire types moved with the
 protocol. `docs/migrating-to-v2.md` maps every key and covers rollback;
 `viiwork-accept config` validates the new file while v1 is still serving. The
-entries below under `v2.0.0-beta2`, `-beta1`, `-rc.2`, `-rc.1` and `-alpha.1`
-are kept because they say why each part is the way it is.
+entries below under `v2.0.0-beta2`, `-beta1`, `-alpha.3`, `-alpha.2` and
+`-alpha.1` are kept because they say why each part is the way it is.
 
 ### Since beta2
 
@@ -484,17 +484,17 @@ than forking, so they reach that fleet view too.
 
 ## v2.0.0-beta1
 
-**First public release of viiwork 2.** Everything below under `v2.0.0-rc.2`,
-`v2.0.0-rc.1` and `v2.0.0-alpha.1` was developed privately and is released
+**First public release of viiwork 2.** Everything below under `v2.0.0-alpha.3`,
+`v2.0.0-alpha.2` and `v2.0.0-alpha.1` was developed privately and is released
 together here; those entries are kept because they say why each part is the way
 it is.
 
 Beta rather than a release candidate because this is the first build outside
 the fleet it was written on: one machine has been converted and is serving
-production traffic, and `llamacpp` is the only engine. See the rc.2 notes for
+production traffic, and `llamacpp` is the only engine. See the alpha.3 notes for
 what shipped most recently, and `docs/migrating-to-v2.md` to convert a 1.x host.
 
-## v2.0.0-rc.2
+## v2.0.0-alpha.3
 
 ### Acceptance tooling, a conversion guide, and three fixes from the first real node
 
@@ -538,7 +538,7 @@ old instances have stopped. `update.sh` and `rebuild.sh` now wait on
 - `llamacpp` is the only engine. The vLLM and FreeToken engines land in v2.1.0.
 - `scripts/setup-node.sh` and `deploy.sh` still write and drive v1 layouts.
 
-## v2.0.0-rc.1
+## v2.0.0-alpha.2
 
 ### One binary, one node per machine, a mesh that forms itself
 
@@ -633,7 +633,7 @@ with its merge rule.
 
 The binary still runs v1. `cmd/viiwork` uses the v1 config and mesh packages,
 moved unchanged to `internal/v1/config` and `internal/v1/meshapi`, until
-2.0.0-rc.1 switches it over. Contracts change only by bumping the alpha.
+2.0.0-alpha.2 switches it over. Contracts change only by bumping the alpha.
 
 ## v1.8.1
 
