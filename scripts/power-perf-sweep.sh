@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Sweep a Radeon VII's power cap across a range, measure tok/s + watts +
 # temperature on the production model, and print a Pareto-frontier table
-# with the best tok/s-per-Watt setting marked. Used by setup-node.sh as
+# with the best tok/s-per-Watt setting marked. Originally driven by setup-node.sh as
 # an opt-in step to find a per-node `power_limit_watts` value, and
 # runnable standalone.
 #
@@ -25,7 +25,7 @@
 #   RUNS           measured runs per setting, default 3
 #   WARMUPS        discarded warmup runs per setting, default 1
 #   N_PREDICT      tokens to generate per run, default 100
-#   IMAGE          docker image with llama-cli, default viiwork:gfx906
+#   IMAGE          docker image with llama-cli, default viiwork
 #   MODEL_FILE     gguf filename inside MODELS_DIR, default gemma3-26B Q3_K_XL
 #   PROMPT_FILE    host path to prompt file, default /tmp/rocprof-prompts/helsinki.txt
 #   OUT            CSV output path, default /tmp/power-perf-sweep-<TS>.csv
@@ -36,9 +36,10 @@ WATTS_LIST="${WATTS_LIST:-150 180 210 250}"
 RUNS="${RUNS:-3}"
 WARMUPS="${WARMUPS:-1}"
 N_PREDICT="${N_PREDICT:-100}"
-IMAGE="${IMAGE:-viiwork:gfx906}"
+IMAGE="${IMAGE:-viiwork}"
 MODEL_FILE="${MODEL_FILE:-gemma-4-26B-A4B-it-UD-Q3_K_XL.gguf}"
-MODELS_DIR="${MODELS_DIR:-/home/janit/viiwork-private/models}"
+REPO_DIR="${REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+MODELS_DIR="${MODELS_DIR:-${REPO_DIR}/models}"
 PROMPT_FILE="${PROMPT_FILE:-/tmp/rocprof-prompts/helsinki.txt}"
 OUT="${OUT:-/tmp/power-perf-sweep-$(date -u +%Y%m%dT%H%M%SZ).csv}"
 DEFAULT_WATTS="${DEFAULT_WATTS:-250}"
@@ -48,11 +49,11 @@ ROCM_SMI="${ROCM_SMI:-/opt/rocm/bin/rocm-smi}"
 # === Pre-flight checks ===
 [ -f "${MODELS_DIR}/${MODEL_FILE}" ] || { echo "ERROR: model not found at ${MODELS_DIR}/${MODEL_FILE}"; exit 1; }
 if [ ! -f "${PROMPT_FILE}" ]; then
-    if [ "${PROMPT_FILE}" = "/tmp/rocprof-prompts/helsinki.txt" ] && [ -f "/home/janit/viiwork-private/bench-harness/soak.py" ]; then
+    if [ "${PROMPT_FILE}" = "/tmp/rocprof-prompts/helsinki.txt" ] && [ -f "${REPO_DIR}/bench-harness/soak.py" ]; then
         mkdir -p "$(dirname "${PROMPT_FILE}")"
         python3 -c "
 import sys
-sys.path.insert(0, '/home/janit/viiwork-private/bench-harness')
+sys.path.insert(0, '${REPO_DIR}/bench-harness')
 from soak import HELSINKI_PROMPT
 open('${PROMPT_FILE}','w').write(HELSINKI_PROMPT)
 "

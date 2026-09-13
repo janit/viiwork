@@ -235,6 +235,7 @@ func (l *loop) starting() next {
 			l.releaseTicket()
 			l.gpuHealthyAt = b.deps.Now()
 			l.checkGPU()
+			l.checkGPUBinding()
 			return toRunning
 		}
 		if act != ActionNone {
@@ -306,15 +307,18 @@ func (l *loop) loadTick() {
 	}
 	ctx, cancel := context.WithTimeout(l.ctx, b.deps.Timing.LoadInterval)
 	defer cancel()
+	b.mu.Lock()
+	spec := b.spec
+	b.mu.Unlock()
 	var (
 		load            engine.Load
 		decoded, remain int64
 		err             error
 	)
-	if tpr, ok := b.eng.(TokenProgressReader); ok {
-		load, decoded, remain, err = tpr.LoadProgress(ctx, addr)
+	if tpr, ok := b.eng.(engine.TokenProgressReader); ok {
+		load, decoded, remain, err = tpr.LoadProgress(ctx, spec, addr)
 	} else {
-		load, err = b.eng.Load(ctx, addr)
+		load, err = b.eng.Load(ctx, spec, addr)
 	}
 	if err != nil {
 		if !l.loadFailLogged && l.ctx.Err() == nil {
@@ -394,6 +398,60 @@ func (l *loop) checkGPU() {
 		b.emit("not on assigned GPU (want %v, holds %v)", b.gpus, heldGPUs(pidGPUs, backendPIDs))
 	}
 	l.gpuDecided = true
+}
+
+// checkGPUBinding compares the card the engine says it bound against the card
+// this node pinned it to. Once per launch, on the transition to healthy, which
+// re-checks after a respawn for free.
+//
+// Worth doing because the failure it catches is otherwise silent: pinning
+// happens through CUDA_VISIBLE_DEVICES, whose index CUDA resolves in whatever
+// order CUDA_DEVICE_ORDER selects, and getting that wrong produces a backend
+// that loads, serves and answers every probe while the GPU panel attributes its
+// load, its VRAM and its wattage to a neighbouring card. On a host recording
+// energy the misattribution is written to disk.
+//
+// A mismatch is REPORTED, NOT ACTED ON. The backend is serving correctly and
+// taking it out of the mesh would trade a wrong label for a lost GPU. That is
+// deliberately unlike the on-GPU PID check above, which condemns, because that
+// one detects a backend holding no card of ours at all.
+//
+// Four cases are silently "unknown" rather than a mismatch: an engine that does
+// not implement the capability, one that reports no card (an older build), a
+// host whose inventory cannot be read or does not carry UUIDs (every non-NVIDIA
+// vendor today), and a multi-card backend, which has no single expected card.
+// A check that guessed would cry wolf on every node in the fleet.
+func (l *loop) checkGPUBinding() {
+	b := l.b
+	r, ok := b.eng.(engine.GPUBindingReader)
+	if !ok || len(b.gpus) != 1 {
+		return
+	}
+	addr := b.Addr()
+	if addr == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(l.ctx, b.deps.Health.Timeout.Duration)
+	defer cancel()
+	got, reported, err := r.BoundGPU(ctx, addr)
+	if err != nil || !reported || got == "" {
+		return
+	}
+	inv, err := gpu.Inventory(ctx, b.deps.Vendor, b.deps.Run)
+	if err != nil || len(inv) == 0 {
+		return
+	}
+	want := ""
+	for _, id := range inv {
+		if id.Index == b.gpus[0] {
+			want = id.UUID
+		}
+	}
+	if want == "" || want == got {
+		return
+	}
+	b.logf("pinned to GPU %d (%s) but the engine bound %s — check models[].gpus and CUDA_DEVICE_ORDER", b.gpus[0], want, got)
+	b.emit("is on the wrong GPU: expected %s, engine bound %s", want, got)
 }
 
 func heldGPUs(pidGPUs map[int][]int, pids []int) []int {

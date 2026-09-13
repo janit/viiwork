@@ -1,5 +1,85 @@
 # Changelog
 
+## v2.1.0
+
+**The engine plugin foundation.** Adding an inference engine to viiwork is now
+one package and one blank import. `internal/engine` stopped being a place where
+engines happen to live and became a documented extension point: an engine owns
+its own YAML block, its own defaults, its own validation and its own image, and
+nothing in `internal/config`, `internal/supervisor`, `internal/node`,
+`internal/route` or `internal/proxy` knows its name.
+
+**No operator config file changes.** The `llamacpp:`, `vllm:` and `freetoken:`
+blocks keep exactly the keys they had; what changed is who owns them. A v2.0.0
+`viiwork.yaml` parses and validates identically, which is asserted against a
+v2.0.0-era test config carrying all three blocks and against the shipped
+example.
+
+**llama.cpp on Radeon VII is the reference implementation**, not a special case.
+Its option types moved into its own package, its "can run on CPU" exception
+became a declared capability rather than a name compared in `internal/config`,
+and it passes the same conformance kit any new engine would. That is a promotion:
+the reference implementation is the one others are checked against.
+
+- **`docs/adding-an-engine.md`**, the contract an engine is written against: the
+  five methods and what each must guarantee, four optional capabilities found by
+  type assertion, and — the section that saves the most time — what the node
+  already does, so an engine author writes none of it.
+- **`internal/engine/enginetest`**, a conformance kit an engine runs against
+  itself. It is tested against a deliberately broken engine in a subprocess, so
+  that "my engine passes" is evidence rather than decoration.
+- **A report-only GPU binding check.** An engine that can say which card it
+  bound is cross-checked against the host inventory, and a mismatch is reported
+  and left alone: the backend is serving correctly, and taking it out of the
+  mesh would trade a wrong label for a lost GPU. The failure it catches is
+  otherwise silent — a backend pinned to the wrong card serves perfectly while
+  the dashboard and the energy store bill a neighbour.
+- **`Load` is handed its `Spec`**, and `Slots`/`CtxPerSlot` are documented as
+  what the backend will *actually* serve rather than an echo of the config. The
+  first cut of the contract said they "restate what the node asked for … so a
+  clamped value is visible as a disagreement", which cannot be true — a
+  disagreement needs two opinions — and left both fields unfillable by any
+  engine that cannot observe them. Found by a clean-room spike that wrote two
+  engines against the documentation alone; both independently reached the same
+  unsound workaround, a map from backend address to the `Spec` `Command` saw,
+  which misreports as soon as the node reassigns a port.
+- **Contract C8**, the client API seam. `/v1/chat/completions`,
+  `/v1/completions` and `/v1/embeddings` come from a registry rather than three
+  string literals, so adding a client API shape later is a package rather than
+  an excavation. There is no second dialect and none is planned. The
+  OpenAI-compatible API stays native and pass-through: allocation counts on
+  every proxy and router benchmark are unchanged, and a dialect is edge-only, so
+  the mesh still forwards OpenAI whatever a client spoke.
+- **Every Dockerfile moved under `docker/`.** The root `Dockerfile` became
+  `docker/Dockerfile.rocm`: it always meant "llama.cpp for ROCm/gfx906" and said
+  so nowhere, which with three engines coming is a trap. `make docker` still
+  builds it.
+- **The gfx906 fork build track is removed** — `Dockerfile.gfx906`,
+  `make docker-gfx906`, `scripts/switch-node-build.sh`. It was retired on
+  2026-08-30 with its record kept internally; its measurements were real (+3.0% sustained tok/s over a 4 h A/B soak) but its
+  base was ~2000 tags behind, its architecture prune is what made it unable to
+  load three of the fleet's five models, and the published repo was advertising
+  a build no outside reader could make.
+- **`scripts/setup-node.sh` is removed.** It wrote viiwork 1.x layouts that a v2
+  node refuses, and its first prompt offered a choice between the ROCm image and
+  the now-retired fork image. Copy `configs/docker-compose.v2.example.yaml` and
+  `viiwork.yaml.example` instead; `docs/migrating-to-v2.md` converts a v1 host.
+
+**Reviewed from the outside.** A clean-room spike wrote the vLLM and FreeToken
+engines against these documents without reading the implementation, and
+integration touched exactly two files outside the two engine packages — the
+blank imports — which is the footprint this contract claims. It also found the
+`Load` defect above, two places where the prose promised more than the code
+does, and a live capture showing an engine serving 64,128 tokens of context
+while advertising 1,048,576. The contract corrections are in this release; the
+engines and the context fix are v2.2.
+
+**Tested without an engine, a GPU or a network**, as everything here is: unit
+tests, node tests against fake binaries, the race detector on the supervisor,
+and before/after allocation benchmarks on the request path. The vLLM and
+FreeToken engines, which are this contract's first outside consumers and its
+real review, arrive in v2.2.0.
+
 ## v2.0.0
 
 **viiwork 2.0.** One process per machine supervising every model on it, a mesh

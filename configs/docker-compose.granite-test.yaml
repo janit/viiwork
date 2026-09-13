@@ -8,7 +8,7 @@
 #   3. Download model (~5 GB, one time):
 #        ./scripts/download-granite41-8b.sh
 #   4. Build test image (~10 min, one time):
-#        docker build -t viiwork:granite-test -f Dockerfile.granite-test .
+#        docker build -t viiwork:granite-test -f docker/test/Dockerfile.granite-test .
 #
 # Run / probe:
 #   Up:     docker compose -f configs/docker-compose.granite-test.yaml up -d

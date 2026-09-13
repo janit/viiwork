@@ -32,7 +32,7 @@ machine through the change and covers rollback; `viiwork-accept config`
 validates the new file while v1 is still serving. viiwork 1.x remains at tag
 [`v1.8.1`](https://github.com/janit/viiwork/releases/tag/v1.8.1).
 
-![viiwork mesh dashboard](viiwork-v150.webp)
+![viiwork mesh dashboard](docs/img/viiwork-v150.webp)
 
 ## Background
 
@@ -98,11 +98,12 @@ any node, and `SIGHUP` (`docker kill -s HUP viiwork`) applies an edited model
 list: added models start, removed ones drain and stop, and a changed entry
 restarts that model only.
 
-`./scripts/setup-node.sh` still writes **viiwork 1.x** instance configs, which
-a viiwork 2 node refuses, so it now stops with a pointer here rather than
-running. Write the machine's file from `viiwork.yaml.example` and check it with
-`viiwork-accept config`; [docs/migrating-to-v2.md](docs/migrating-to-v2.md)
-converts existing 1.x instances.
+There is no interactive setup script: `scripts/setup-node.sh` wrote **viiwork
+1.x** instance configs, which a viiwork 2 node refuses, and it was removed in
+v2.1.0 rather than left as a trap. Write the machine's file from
+`viiwork.yaml.example` and check it with `viiwork-accept config`;
+[docs/migrating-to-v2.md](docs/migrating-to-v2.md) converts existing 1.x
+instances.
 
 ## Tensor-Split Mode
 
@@ -635,9 +636,9 @@ under [Security](#security).
 
 The list below is grounded in what's actually deployed on the reference fleet (10× Radeon VII) and what's been stress-tested — numbers are measured throughput, not estimated. The shape of these recommendations is driven by one hard constraint: any model whose weights + KV cache don't fit in a single 16 GB card pays a ~3× throughput tax (validated on Qwen3.5-A3B Q4_K_M vs Q3_K_M on the same GPU). For models above that line, tensor-split across 2+ GPUs avoids the tax at the cost of single-stream parallelism.
 
-> **Build note.** Hybrid-attention models (Qwen3.5-A3B, Qwen3.6/3.8, Laguna, anything using DeltaNet / linear attention) need an upstream-current `llama.cpp` — build a fresh image from `Dockerfile`. The `viiwork:gfx906` fork is pruned to `llama / qwen2 / qwen3 / qwen3moe / gemma / gemma2 / gemma3 / gemma3n / gemma4` and will reject hybrid archs at load time. Standard transformer models run on either build.
+> **Build note.** Hybrid-attention models (Qwen3.5-A3B, Qwen3.6/3.8, Laguna, anything using DeltaNet / linear attention) need an upstream-current `llama.cpp` — build a fresh image from `docker/Dockerfile.rocm`.
 >
-> Same-week architectures can need more than "current master" — they can need an *unmerged* one. Check `general.architecture` in the GGUF before planning a bring-up: if `llama-server` answers `unknown model architecture: 'X'`, no flag will fix it and the only path is a build from whichever PR adds `X` (Qwen3.8-Flash-Next needed PR #27742 from `unslothai/llama.cpp`; master rejected it outright). Pin the PR head in a dedicated `Dockerfile.<model>-test` rather than tracking `master`, and re-pin to a release tag once it merges.
+> Same-week architectures can need more than "current master" — they can need an *unmerged* one. Check `general.architecture` in the GGUF before planning a bring-up: if `llama-server` answers `unknown model architecture: 'X'`, no flag will fix it and the only path is a build from whichever PR adds `X` (Qwen3.8-Flash-Next needed PR #27742 from `unslothai/llama.cpp`; master rejected it outright). Pin the PR head in a dedicated `docker/test/Dockerfile.<model>-test` rather than tracking `master`, and re-pin to a release tag once it merges.
 
 > **Quant choice on gfx906: take the highest quant that fits.** Measured on
 > Qwen3.8-27B, Q6_K costs **0 tok/s** against Q4 despite reading 28% more bytes
@@ -675,7 +676,7 @@ The list below is grounded in what's actually deployed on the reference fleet (1
 > published quant. Check the largest tensor before assuming VRAM total is what
 > matters — total capacity is necessary, not sufficient.
 
-> **Gemma 4 quant: prefer QAT.** Gemma 4 ships [quantization-aware-trained Q4 checkpoints](https://blog.google/innovation-and-ai/technology/developers-tools/quantization-aware-training-gemma-4/) — int4 weights at near-bf16 quality and ~3× less memory than fp16. `scripts/setup-node.sh` and `scripts/download-gemma4-31b.sh` default to these. Two gotchas, both verified on gfx906: (1) Google's own day-one GGUFs are broken (garbage detokenization / leaked special tokens) — use Unsloth's clean requants (`unsloth/gemma-4-*-it-qat-GGUF`) and a current `llama.cpp` (`viiwork:latest`, b10437+); (2) Gemma 4 is a *thinking* model — for prose/direct output, disable thinking server-side with `args: ["--jinja", "--chat-template-kwargs", "{\"enable_thinking\": false}"]` (`--reasoning-budget 0` does not take on this template).
+> **Gemma 4 quant: prefer QAT.** Gemma 4 ships [quantization-aware-trained Q4 checkpoints](https://blog.google/innovation-and-ai/technology/developers-tools/quantization-aware-training-gemma-4/) — int4 weights at near-bf16 quality and ~3× less memory than fp16. `scripts/download-gemma4-31b.sh` defaults to these. Two gotchas, both verified on gfx906: (1) Google's own day-one GGUFs are broken (garbage detokenization / leaked special tokens) — use Unsloth's clean requants (`unsloth/gemma-4-*-it-qat-GGUF`) and a current `llama.cpp` (`viiwork:latest`, b10437+); (2) Gemma 4 is a *thinking* model — for prose/direct output, disable thinking server-side with `args: ["--jinja", "--chat-template-kwargs", "{\"enable_thinking\": false}"]` (`--reasoning-budget 0` does not take on this template).
 
 ### Validated production deployments
 
@@ -707,7 +708,7 @@ same walls.
 |---|---|---|
 | Soofi-S-30B-A3B (hybrid Mamba-2 / MoE) | **Blocked** on HuggingFace manual approval | Configs written and validated (`configs/viiwork.soofi-s-30b-ts2-gpu01.yaml`). The GGUF declares `general.architecture = nemotron_h_moe`, **not** "soofi" — it reuses an existing arch, so no llama.cpp bump is needed; do not grep binaries for "soofi". Quant choice inverts the rule above: columns (2688/1856/3712) are not divisible by 256, so every K-quant falls back — Q6_K becomes q8_0 (~32 GB, no quality gain) and Q5_K_M becomes q5_1 (~25 GB, the pick). No community requant exists to route around the gate, and self-converting is blocked because the base repo is gated too. |
 | Qwen3.8-Flash-Next (125B total / 6B active, GDN + QSA hybrid) | **Runs, but loses to the 27B** — not retained | Loads and serves correctly across all 10 GPUs, and is *slower than Qwen3.8-27B on two*: 8.7 / 16.0 / 20.4 tok/s at conc 1 / 2 / 4 against the 27B's 10.2 / 18.6 / 27.0. The cause is structural, not tuning. `general.architecture = qwen4exp`, which upstream master rejects outright (`unknown model architecture`); support is only in the still-open PR #27742 from `unslothai/llama.cpp` (branch `qwen4exp/qwen3.8-flash-next`). The blocker is `per_layer_token_embd.weight`: **26.82 GB as one indivisible IQ4_NL tensor** (51.2B elements — the n-gram table). A Radeon VII holds 16.37 GB and `-ot` assigns a whole tensor to one device, so it can never be GPU-resident here and stays in host RAM. Decode is then pinned to a **single CPU core** (measured 0.91 of 4 cores busy with GPUs at 0%), which is the real ceiling: 48.5/160 GB VRAM is in use while 30.9 GB sits in RSS. Needs cards ≥27 GB to be worth revisiting. Re-tested at UD-Q4_K_XL (103.7 GB) to rule out the quant: decode was **unchanged at 12.6 tok/s**, confirming the ceiling is CPU, not quantization — on gfx906 the higher quant rides free. Quality at Q4_K_XL was *better* than the 27B on Finnish (correct terminology throughout vs four terminology errors and a case error) and equal on strict-JSON extraction, and it was more token-efficient (5 of 8 eval prompts completed in budget vs the 27B's 2 of 8). But **neither model solves hard reasoning through this stack**: on one bridge-crossing problem the 27B burned 6,000 tokens / 6.4 min and Flash-Next 10,000 tokens / 17.1 min, both still mid-deliberation, and Flash-Next's decode degraded 12.6 -> 9.7 tok/s as context grew (QSA attention cost). Both emit raw chain-of-thought into `content` with no `<think>` delimiters, which looks like a template/integration gap rather than a reasoning limit — worth retrying under vLLM/SGLang before concluding anything about the models. Verdict: not retained; the 27B gives comparable quality at 1.6x the speed on 2 GPUs instead of 10. |
-| Muse-Glimmer-30B (meta-models) | Ran on GPUs 4+7, since displaced | Needs llama.cpp **b10369+** (`muse_glimmer` landed in PR #26841); the older b9222 pin could not load it and `Dockerfile.gfx906` is arch-pruned. kquant-dynamic is 19.65 GB so TS=2 is required, not preferred. Output needs `reasoning_strength: low` — at the template default the model self-talks and that text leaks into `content`. `--mmproj` and the DFlash drafter are deliberately not wired in (upstream #26873, #26894). |
+| Muse-Glimmer-30B (meta-models) | Ran on GPUs 4+7, since displaced | Needs llama.cpp **b10369+** (`muse_glimmer` landed in PR #26841); the older b9222 pin could not load it. kquant-dynamic is 19.65 GB so TS=2 is required, not preferred. Output needs `reasoning_strength: low` — at the template default the model self-talks and that text leaks into `content`. `--mmproj` and the DFlash drafter are deliberately not wired in (upstream #26873, #26894). |
 
 ### Single-GPU picks (≤16 GB)
 
@@ -733,48 +734,73 @@ For models above the single-GPU ceiling. Layer-mode tensor split costs roughly 2
 
 > Other 30-32B models (Qwen3-32B, DeepSeek-R1-Distill, Qwen2.5-Coder, etc.) load on this hardware but aren't currently part of the reference fleet — drop them into `configs/` and run `scripts/bench-sustained.sh` to add measured numbers.
 
+## Engines
+
+viiwork supervises inference engines; an engine is named in a model's
+`engine:` key, and the block below it belongs to that engine.
+
+| Engine | What it drives | Status |
+|---|---|---|
+| `llamacpp` | `llama-server`, the reference implementation | ships in v2.1.0 |
+| `vllm` | `vllm serve` | arrives in v2.2.0 |
+| `freetoken` | `ft serve` | arrives in v2.2.0 |
+
+Engines are named for the engine, never for a GPU vendor: FreeToken runs on
+CUDA today and may add others, vLLM already has a ROCm build, and nothing in
+viiwork pairs an engine with a vendor.
+
+**Adding one is one package and one blank import.**
+[docs/adding-an-engine.md](docs/adding-an-engine.md) is the implementer's guide
+— the five methods and what each must guarantee, the optional capabilities, and
+a table of what the node already does so you write none of it. New engines run
+`internal/engine/enginetest` against themselves for a pass/fail contract check.
+
 ## Builds
 
-viiwork ships in two parallel builds in this same repo. They share the Go node, router, dashboards and API — they differ only in the llama.cpp binary the server spawns.
+One image per engine, all under `docker/`, each named for what it carries. The
+Go binary is the same in every one; what differs is the base image that carries
+the engine's runtime, so pinning that base is how the inference stack gets
+pinned.
 
-| | Stable foundation | Experimental track |
-|---|---|---|
-| Image | `viiwork:latest` | `viiwork:gfx906` |
-| Dockerfile | `Dockerfile` | `Dockerfile.gfx906` |
-| Make target | `make docker` (alias `make docker-stable`) | `make docker-gfx906` (alias `make docker-experimental`) |
-| llama.cpp | Pinned upstream `ggml-org/llama.cpp` release | Local `llama.cpp-gfx906` fork tree (stripped, gfx906-specialized) |
-| Status | Default. Production-stable, runs everywhere. | Bake-in track, opt-in per node. +3.0% sustained tok/s vs upstream and identical memory profile in the 4 h A/B soak (`milestone/gfx906-fork-4h-soak-2026-04-09`). |
+| Image | Dockerfile | Engine | Make target |
+|---|---|---|---|
+| `viiwork:latest` | `docker/Dockerfile.rocm` | `llamacpp` on ROCm / gfx906 | `make docker-rocm` (aliases `make docker`, `make docker-stable`) |
+| — | `docker/Dockerfile.vllm` | `vllm` | **arrives in v2.2.0** |
+| — | `docker/Dockerfile.freetoken` | `freetoken` | **arrives in v2.2.0** |
 
-`scripts/setup-node.sh` asks which build to use as its very first prompt — option 1 (stable) is the default. To switch a running node between tracks in place without re-running setup, use `scripts/switch-node-build.sh`.
+`make docker` builds the ROCm image: Radeon VII is the core of this fleet and
+the unqualified target pointing at it is right. The gfx906 *fork* track, a
+second llama.cpp build that this repo advertised until v2.1.0, is retired — see
+[BUILDS.md](BUILDS.md) for what it measured and why it went anyway.
 
-See **[BUILDS.md](BUILDS.md)** for the full comparison, when to use which, image distribution between nodes, rollback procedure, and the specific design rationale for the experimental track.
+Adding an engine, and an image for it, is documented in
+**[docs/adding-an-engine.md](docs/adding-an-engine.md)**.
 
 ## Docker Build
 
-Both builds pin llama.cpp to a specific release tag and patch the HIP FP8 header for gfx906 compatibility. To bump the upstream version on the stable build:
+The ROCm image pins llama.cpp to a specific release tag and patches the HIP FP8
+header for gfx906 compatibility. To bump the upstream version:
 
 ```bash
 docker compose build --build-arg LLAMA_CPP_VERSION=b8700
 ```
 
-The experimental build is pinned to a specific commit on the `llama.cpp-gfx906` fork — bump it by updating the fork tree at `$GFX906_FORK` (default `~/gfx906-work/llama.cpp-gfx906`) and re-running `make docker-gfx906`.
-
 The FP8 patch is required because ROCm 6.2+ includes `<hip/hip_fp8.h>` for all architectures, but gfx906 has no FP8 hardware and the header fails to compile.
 
 ## Scripts
 
-`setup-node.sh` and `switch-node-build.sh` still write and drive **viiwork 1.x**
-layouts (one instance per model per host) and have not been converted yet; use
-them for v1 hosts, or convert their output with
-[docs/migrating-to-v2.md](docs/migrating-to-v2.md). `update.sh` and `rebuild.sh`
+`setup-node.sh` was removed in v2.1.0: it wrote **viiwork 1.x** layouts (one
+instance per model per host), and its first prompt offered a choice between the
+ROCm image and the retired gfx906 fork image. Set a v2 node up by copying
+`configs/docker-compose.v2.example.yaml` and `viiwork.yaml.example`; convert a
+v1 host with [docs/migrating-to-v2.md](docs/migrating-to-v2.md).
+`update.sh` and `rebuild.sh`
 restart the compose project in the repository directory and wait on the v2 API
 port. Host acceptance is `viiwork-accept`, below.
 
 
 | Script | Description |
 |--------|-------------|
-| `scripts/setup-node.sh` | Interactive setup: pick build (stable/experimental), detect GPUs, select models (replica or tensor-split), download, generate configs, optionally run the power/perf benchmark |
-| `scripts/switch-node-build.sh` | Flip a running node between the stable foundation and the experimental gfx906 track in place |
 | `scripts/power-perf-sweep.sh` | Sweep one GPU through power-cap settings (150/180/210/250W), measure tok/s + watts + temperature, recommend the best `power_limit_watts`. ~15-20 min, power-cap-only, fully reversible |
 | `scripts/power-perf-sweep-phase2.sh` | Advanced sweep: voltage curve + memory clock tuning. Riskier than Phase 1 — requires explicit user go-ahead. Has correctness gate (compares outputs against baseline) |
 | `scripts/setup-opencode.sh` | Configure OpenCode client with auto-detected models |
@@ -861,8 +887,7 @@ Add it to your MCP client's configuration as a stdio transport server pointing a
 make build         # build binary (with git version embedded)
 make mcp           # build MCP server
 make test          # run unit tests
-make docker        # build stable Docker image (viiwork:latest)
-make docker-gfx906 # build experimental Docker image (viiwork:gfx906)
+make docker        # build the ROCm image (viiwork:latest); alias of make docker-rocm
 
 go test ./...                                   # unit tests
 go test -tags=integration ./mesh/... ./internal/proxy/ ./internal/alias/ ./internal/node/

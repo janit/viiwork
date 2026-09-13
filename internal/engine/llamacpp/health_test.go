@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/janit/viiwork/v2/internal/config"
 	"github.com/janit/viiwork/v2/internal/engine"
 )
 
@@ -77,7 +76,7 @@ func TestProbe(t *testing.T) {
 }
 
 func TestLoadIdle(t *testing.T) {
-	l, err := New().Load(context.Background(), serve(t, answer(200, fixture(t, "slots-idle.json"))))
+	l, err := New().Load(context.Background(), engine.Spec{}, serve(t, answer(200, fixture(t, "slots-idle.json"))))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +86,7 @@ func TestLoadIdle(t *testing.T) {
 }
 
 func TestLoadProgressBusy(t *testing.T) {
-	l, decoded, remain, err := New().LoadProgress(context.Background(), serve(t, answer(200, fixture(t, "slots-busy.json"))))
+	l, decoded, remain, err := New().LoadProgress(context.Background(), engine.Spec{}, serve(t, answer(200, fixture(t, "slots-busy.json"))))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +97,7 @@ func TestLoadProgressBusy(t *testing.T) {
 
 func TestLoadProgressIgnoresStaleTokenOnIdleSlot(t *testing.T) {
 	body := `[{"id":0,"n_ctx":4096,"is_processing":false,"next_token":[{"n_decoded":999,"n_remain":5}]},{"id":1,"n_ctx":4096,"is_processing":false}]`
-	_, decoded, remain, err := New().LoadProgress(context.Background(), serve(t, answer(200, body)))
+	_, decoded, remain, err := New().LoadProgress(context.Background(), engine.Spec{}, serve(t, answer(200, body)))
 	if err != nil || decoded != 0 || remain != 0 {
 		t.Errorf("decoded=%d remain=%d err=%v, want 0, 0, nil", decoded, remain, err)
 	}
@@ -107,20 +106,20 @@ func TestLoadProgressIgnoresStaleTokenOnIdleSlot(t *testing.T) {
 func TestLoadErrors(t *testing.T) {
 	e := New()
 	ctx := context.Background()
-	if _, err := e.Load(ctx, serve(t, answer(501, `{"error":"slots endpoint disabled"}`))); err == nil || !strings.Contains(err.Error(), "501") {
+	if _, err := e.Load(ctx, engine.Spec{}, serve(t, answer(501, `{"error":"slots endpoint disabled"}`))); err == nil || !strings.Contains(err.Error(), "501") {
 		t.Errorf("501: err = %v, want it to name the status", err)
 	}
-	if _, err := e.Load(ctx, serve(t, answer(200, "not json"))); err == nil {
+	if _, err := e.Load(ctx, engine.Spec{}, serve(t, answer(200, "not json"))); err == nil {
 		t.Error("an undecodable body must be an error")
 	}
-	if l, err := e.Load(ctx, serve(t, answer(200, "[]"))); err != nil || l.Slots != 0 {
+	if l, err := e.Load(ctx, engine.Spec{}, serve(t, answer(200, "[]"))); err != nil || l.Slots != 0 {
 		t.Errorf("empty array: %+v, %v", l, err)
 	}
 }
 
 func TestRegistered(t *testing.T) {
-	e, ok := engine.Lookup(config.EngineLlamaCpp)
-	if !ok || e.Name() != config.EngineLlamaCpp {
+	e, ok := engine.Lookup(Name)
+	if !ok || e.Name() != Name {
 		t.Fatalf("engine.Lookup(llamacpp) = %v, %v", e, ok)
 	}
 }

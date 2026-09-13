@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/janit/viiwork/v2/internal/config"
 	"github.com/janit/viiwork/v2/internal/engine"
 )
 
@@ -44,7 +43,7 @@ func New() *Engine {
 	}
 }
 
-func (e *Engine) Name() string { return config.EngineLlamaCpp }
+func (e *Engine) Name() string { return Name }
 
 // DefaultStartupTimeout is the spec's 10 minutes. Large split models on slow
 // risers need more, set per model with startup_timeout.
@@ -63,21 +62,20 @@ var mallocEnv = []string{
 // own args come last, so an operator's flag wins: llama.cpp takes the last
 // occurrence of a repeated flag.
 func (e *Engine) Command(s engine.Spec) (engine.Command, error) {
-	m := s.Model
-	o := m.LlamaCpp
-	if o == nil {
-		return engine.Command{}, fmt.Errorf("llamacpp: model %s has no llamacpp options (its config was not parsed)", m.Name)
+	o, err := options(s)
+	if err != nil {
+		return engine.Command{}, fmt.Errorf("llamacpp: model %s: %w", s.Name, err)
 	}
-	parallel := max(m.Parallel, 1)
+	parallel := max(s.Parallel, 1)
 
 	args := []string{
-		"--model", m.Path,
-		// --alias makes the backend answer to the model's name (spec C2).
-		"--alias", m.Name,
+		"--model", s.Path,
+		// --alias makes the backend answer to the model's name (C7).
+		"--alias", s.Name,
 		"--host", "127.0.0.1",
 		"--port", strconv.Itoa(s.Port),
 		// v2 context is per slot; llama.cpp divides --ctx-size across slots.
-		"--ctx-size", strconv.Itoa(m.Context * parallel),
+		"--ctx-size", strconv.Itoa(s.Context * parallel),
 		"--parallel", strconv.Itoa(parallel),
 	}
 	if len(s.GPUs) == 0 {
@@ -92,29 +90,29 @@ func (e *Engine) Command(s engine.Spec) (engine.Command, error) {
 	if len(s.GPUs) >= 2 {
 		mode := o.SplitMode
 		if mode == "" {
-			mode = config.SplitLayer
+			mode = SplitLayer
 		}
 		args = append(args, "--split-mode", mode, "--tensor-split", tensorSplit(o.SplitWeights, len(s.GPUs)))
-		if mode == config.SplitRow {
+		if mode == SplitRow {
 			args = append(args, "--main-gpu", strconv.Itoa(o.MainGPU))
 		}
 	}
 
-	if !hasAnyArg(m.Args, "--threads", "-t") {
+	if !hasAnyArg(s.Args, "--threads", "-t") {
 		threads := o.Threads
 		if threads == 0 {
-			threads = autoThreads(e.nproc(), m.Backends())
+			threads = autoThreads(e.nproc(), max(s.Backends, 1))
 		}
 		args = append(args, "--threads", strconv.Itoa(threads))
 	}
 
-	if !hasAnyArg(m.Args, "--mmap", "--no-mmap") {
-		if size, err := e.modelSize(m.Path); err == nil && needsNoMmap(size, e.totalRAM()) {
+	if !hasAnyArg(s.Args, "--mmap", "--no-mmap") {
+		if size, err := e.modelSize(s.Path); err == nil && needsNoMmap(size, e.totalRAM()) {
 			args = append(args, "--no-mmap")
 		}
 	}
 
-	args = append(args, m.Args...)
+	args = append(args, s.Args...)
 	return engine.Command{
 		Path: o.Binary,
 		Args: args,

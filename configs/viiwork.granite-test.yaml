@@ -1,6 +1,6 @@
 # Granite 4.1-8B bring-up test config.
 #
-# Pairs with Dockerfile.granite-test and docker-compose.granite-test.yaml.
+# Pairs with docker/test/Dockerfile.granite-test and docker-compose.granite-test.yaml.
 # 8B Q4_K_M is ~5 GB weights -- trivially single-GPU on a Radeon VII (16 GB).
 # Plenty of headroom for a generous KV cache.
 #

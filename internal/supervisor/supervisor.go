@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"reflect"
 	"sync"
 	"time"
 
@@ -65,7 +64,7 @@ func (s *Supervisor) Apply(models []config.Model) error {
 			return fmt.Errorf("model %s is listed twice", cfg.Name)
 		}
 		seen[cfg.Name] = true
-		if old, ok := current[cfg.Name]; ok && reflect.DeepEqual(old.cfg, cfg) {
+		if old, ok := current[cfg.Name]; ok && old.cfg.Equal(cfg) {
 			continue
 		}
 		if _, ok := engine.Lookup(cfg.Engine); !ok {
@@ -76,7 +75,7 @@ func (s *Supervisor) Apply(models []config.Model) error {
 	next := make([]*Model, 0, len(models))
 	var started []*Model
 	for _, cfg := range models {
-		if old, ok := current[cfg.Name]; ok && reflect.DeepEqual(old.cfg, cfg) {
+		if old, ok := current[cfg.Name]; ok && old.cfg.Equal(cfg) {
 			next = append(next, old)
 			delete(current, cfg.Name)
 			continue

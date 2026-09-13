@@ -24,7 +24,11 @@ import (
 	"time"
 
 	"github.com/janit/viiwork/v2/internal/accept"
+
+	// Acceptance validates a config file for the node that will run it, so it
+	// must know the same engines the node does.
 	"github.com/janit/viiwork/v2/internal/config"
+	_ "github.com/janit/viiwork/v2/internal/engine/llamacpp"
 )
 
 // version is stamped at build time: -ldflags "-X main.version=...".

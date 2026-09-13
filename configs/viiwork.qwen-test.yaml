@@ -2,7 +2,7 @@
 #
 # Purpose: first-load test of hybrid Gated-DeltaNet + MoE arch on gfx906
 # via a recent upstream llama.cpp (not the stripped fork). Paired with
-# Dockerfile.qwen-test and configs/docker-compose.qwen-test.yaml.
+# docker/test/Dockerfile.qwen-test and configs/docker-compose.qwen-test.yaml.
 #
 # Layout on gb1 (10 GPUs total):
 #   GPUs 0-2  : production viiwork (port 8080)     -- untouched

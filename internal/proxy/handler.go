@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/janit/viiwork/v2/internal/activity"
+	"github.com/janit/viiwork/v2/internal/api"
 	"github.com/janit/viiwork/v2/internal/logging"
 	"github.com/janit/viiwork/v2/internal/pipeline"
 	"github.com/janit/viiwork/v2/internal/route"
@@ -78,32 +79,42 @@ func NewHandler(d Deps) *Handler { return &Handler{d: d} }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
-	case "/v1/chat/completions", "/v1/completions", "/v1/embeddings":
-		if r.Method != http.MethodPost {
-			writeError(w, http.StatusMethodNotAllowed, errTypeInvalidRequest, "method not allowed")
-			return
-		}
-		h.handleInference(w, r)
 	case meshapi.PathModels:
+		// Not part of a dialect (C8): the model list answers the fleet's
+		// question, not a client library's. A second dialect wanting a
+		// differently shaped catalogue gets its own path.
 		if r.Method != http.MethodGet {
 			http.NotFound(w, r)
 			return
 		}
 		h.handleModels(w)
+		return
 	case meshapi.PathCapacity:
 		if r.Method != http.MethodGet {
 			http.NotFound(w, r)
 			return
 		}
 		h.handleCapacity(w)
-	default:
-		http.NotFound(w, r)
+		return
 	}
+	// Inference paths come from the dialect registry rather than from three
+	// string literals here, so adding a client API shape later is a package
+	// and a blank import rather than an excavation. One map lookup, no
+	// allocation; see internal/api.
+	if d, ok := api.Lookup(r.URL.Path); ok {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, errTypeInvalidRequest, "method not allowed")
+			return
+		}
+		h.handleInference(w, r, d)
+		return
+	}
+	http.NotFound(w, r)
 }
 
 // handleInference runs the inference flow of P4 Task 8: parse, verify a
 // forward, resolve, then dispatch with retries over the router.
-func (h *Handler) handleInference(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) handleInference(w http.ResponseWriter, r *http.Request, dialect api.Dialect) {
 	start := time.Now()
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
@@ -118,40 +129,22 @@ func (h *Handler) handleInference(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var fields struct {
-		Model string `json:"model"`
-		Think *bool  `json:"think"`
-		Task  string `json:"task"`
+	req, _, err := dialect.Decode(r, body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, errTypeInvalidRequest, "failed to read request")
+		return
 	}
-	if model, ok := extractModelFast(body); ok {
-		// The fast path proved think and task absent, so the zero values are right.
-		fields.Model = model
-	} else {
-		json.Unmarshal(body, &fields)
-	}
-	if fields.Model == "" {
+	body = req.Body
+	if req.Model == "" {
 		writeError(w, http.StatusBadRequest, errTypeInvalidRequest, "model is required")
 		return
 	}
+	fields := struct {
+		Model string
+		Think *bool
+	}{Model: req.Model, Think: req.Think}
 	thinkDisabled := fields.Think == nil || !*fields.Think
-
-	// The body's task wins over the header. Engines never see the field, and
-	// peers get the task as the header.
-	taskID := sanitizeTaskID(fields.Task)
-	if taskID == "" {
-		taskID = sanitizeTaskID(r.Header.Get(HeaderTask))
-	}
-	if fields.Task != "" {
-		var generic map[string]json.RawMessage
-		if err := json.Unmarshal(body, &generic); err == nil {
-			if _, present := generic["task"]; present {
-				delete(generic, "task")
-				if rewritten, err := json.Marshal(generic); err == nil {
-					body = rewritten
-				}
-			}
-		}
-	}
+	taskID := req.Task
 	if taskID != "" {
 		r.Header.Set(HeaderTask, taskID)
 	}

@@ -12,6 +12,7 @@ import (
 	"github.com/janit/viiwork/v2/internal/config"
 	"github.com/janit/viiwork/v2/internal/engine"
 	"github.com/janit/viiwork/v2/internal/gpu"
+	"gopkg.in/yaml.v3"
 )
 
 const gib = int64(1) << 30
@@ -43,7 +44,11 @@ func testEngine(nproc int, ramBytes, modelBytes int64, sizeErr error) *Engine {
 
 func command(t *testing.T, e *Engine, m config.Model, backend int) engine.Command {
 	t.Helper()
-	cmd, err := e.Command(engine.Spec{Model: m, GPUs: m.BackendGPUs(backend), Port: 40001, Vendor: gpu.VendorAMD})
+	spec := config.ModelSpec(m)
+	spec.GPUs = m.BackendGPUs(backend)
+	spec.Port = 40001
+	spec.Vendor = gpu.VendorAMD
+	cmd, err := e.Command(spec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +66,7 @@ func flagValue(args []string, flag string) (string, bool) {
 
 func TestNameAndTimeout(t *testing.T) {
 	e := New()
-	if e.Name() != config.EngineLlamaCpp || e.DefaultStartupTimeout() != 10*time.Minute {
+	if e.Name() != Name || e.DefaultStartupTimeout() != 10*time.Minute {
 		t.Errorf("Name=%q DefaultStartupTimeout=%v", e.Name(), e.DefaultStartupTimeout())
 	}
 }
@@ -215,11 +220,30 @@ func TestCommandOperatorArgsComeLast(t *testing.T) {
 	}
 }
 
-func TestCommandMissingOptionsBlock(t *testing.T) {
-	m := config.Model{Name: "handmade", Engine: config.EngineLlamaCpp, Path: "/m.gguf", GPUs: []int{0}, GPUsPerBackend: 1, Context: 1, Parallel: 1}
-	_, err := testEngine(4, gib, gib, nil).Command(engine.Spec{Model: m, GPUs: []int{0}, Port: 1})
-	if err == nil || !strings.Contains(err.Error(), "handmade") {
-		t.Errorf("err = %v, want an error naming the model", err)
+// A model with no llamacpp: block at all is the ordinary case now that
+// defaults live in the engine, so it must work rather than fail.
+func TestCommandWithoutOptionsBlock(t *testing.T) {
+	m := parseModel(t, "  - name: bare\n    engine: llamacpp\n    path: /m.gguf\n    gpus: [0]\n    context: 4096\n")
+	cmd := command(t, testEngine(4, gib, gib, nil), m, 0)
+	if cmd.Path != "llama-server" {
+		t.Errorf("binary = %q, want the engine's default", cmd.Path)
+	}
+	if v, _ := flagValue(cmd.Args, "--alias"); v != "bare" {
+		t.Errorf("--alias = %q, want the model name", v)
+	}
+}
+
+// An unusable block is an error from Command, not a panic, and it names the
+// model so the log says which backend failed to start.
+func TestCommandRejectsUnknownOptionKey(t *testing.T) {
+	spec := engine.Spec{Name: "handmade", Path: "/m.gguf", GPUs: []int{0}, Port: 1, Context: 1, Parallel: 1, Backends: 1}
+	if err := yaml.Unmarshal([]byte("split_mod: layer\n"), &spec.Options); err != nil {
+		t.Fatal(err)
+	}
+	spec.Options = *spec.Options.Content[0]
+	_, err := testEngine(4, gib, gib, nil).Command(spec)
+	if err == nil || !strings.Contains(err.Error(), "handmade") || !strings.Contains(err.Error(), "split_mod") {
+		t.Errorf("err = %v, want an error naming the model and the key", err)
 	}
 }
 

@@ -12,14 +12,14 @@ type fakeEngine struct{ name string }
 func (f fakeEngine) Name() string { return f.name }
 
 func (f fakeEngine) Command(s Spec) (Command, error) {
-	return Command{Path: "/bin/true", Args: []string{"--alias", s.Model.Name}}, nil
+	return Command{Path: "/bin/true", Args: []string{"--alias", s.Name}}, nil
 }
 
 func (f fakeEngine) Probe(context.Context, string) (Probe, error) {
 	return Probe{Ready: true, Progress: -1}, nil
 }
 
-func (f fakeEngine) Load(context.Context, string) (Load, error) {
+func (f fakeEngine) Load(context.Context, Spec, string) (Load, error) {
 	return Load{Slots: 2, Busy: 1}, nil
 }
 
