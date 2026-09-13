@@ -32,12 +32,18 @@ func firstFloat(fields map[string]string, keys []string) float64 {
 
 func ParseROCmSMI(data []byte) []GPUSample {
 	var raw map[string]map[string]string
-	if err := json.Unmarshal(data, &raw); err != nil { return nil }
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil
+	}
 	var samples []GPUSample
 	for card, fields := range raw {
-		if !strings.HasPrefix(card, "card") { continue }
+		if !strings.HasPrefix(card, "card") {
+			continue
+		}
 		id, err := strconv.Atoi(strings.TrimPrefix(card, "card"))
-		if err != nil { continue }
+		if err != nil {
+			continue
+		}
 		util, _ := strconv.ParseFloat(fields["GPU use (%)"], 64)
 		vramTotal, _ := strconv.ParseFloat(fields["VRAM Total Memory (B)"], 64)
 		vramUsed, _ := strconv.ParseFloat(fields["VRAM Total Used Memory (B)"], 64)

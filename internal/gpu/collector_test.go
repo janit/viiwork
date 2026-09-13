@@ -1,8 +1,8 @@
 package gpu
 
 import (
-	"errors"
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -19,12 +19,18 @@ func TestCollectorWithMockCommand(t *testing.T) {
 	c.Sample(context.Background())
 
 	samples := hist.Samples(0)
-	if len(samples) != 1 { t.Fatalf("expected 1 sample, got %d", len(samples)) }
-	if samples[0].Utilization != 85 { t.Errorf("expected 85, got %f", samples[0].Utilization) }
+	if len(samples) != 1 {
+		t.Fatalf("expected 1 sample, got %d", len(samples))
+	}
+	if samples[0].Utilization != 85 {
+		t.Errorf("expected 85, got %f", samples[0].Utilization)
+	}
 
 	select {
 	case msg := <-ch:
-		if len(msg) == 0 { t.Error("expected non-empty broadcast") }
+		if len(msg) == 0 {
+			t.Error("expected non-empty broadcast")
+		}
 	default:
 		t.Error("expected broadcast message")
 	}
@@ -36,7 +42,9 @@ func TestCollectorUnavailable(t *testing.T) {
 	c := &StatCollector{history: hist, broadcaster: bcast}
 	c.Sample(context.Background())
 	samples := hist.Samples(0)
-	if len(samples) != 0 { t.Errorf("expected 0 samples, got %d", len(samples)) }
+	if len(samples) != 0 {
+		t.Errorf("expected 0 samples, got %d", len(samples))
+	}
 }
 
 func TestCollectorAvailable(t *testing.T) {
@@ -44,7 +52,9 @@ func TestCollectorAvailable(t *testing.T) {
 	bcast := NewBroadcaster()
 	c := &StatCollector{history: hist, broadcaster: bcast}
 	c.available.Store(true)
-	if !c.Available() { t.Error("expected available") }
+	if !c.Available() {
+		t.Error("expected available")
+	}
 }
 
 func TestCollectorRecordsPower(t *testing.T) {
@@ -55,8 +65,12 @@ func TestCollectorRecordsPower(t *testing.T) {
 	c.Sample(context.Background())
 
 	samples := hist.Samples(0)
-	if len(samples) != 1 { t.Fatalf("expected 1 sample, got %d", len(samples)) }
-	if samples[0].PowerW != 163.0 { t.Errorf("expected 163.0 W in history, got %f", samples[0].PowerW) }
+	if len(samples) != 1 {
+		t.Fatalf("expected 1 sample, got %d", len(samples))
+	}
+	if samples[0].PowerW != 163.0 {
+		t.Errorf("expected 163.0 W in history, got %f", samples[0].PowerW)
+	}
 }
 
 // fakeROCm answers only the arg sets that do not contain the given flag.
@@ -65,7 +79,9 @@ func fakeROCm(reject string, out string, seen *[][]string) func([]string) cmdFun
 		return func(ctx context.Context) ([]byte, error) {
 			*seen = append(*seen, args)
 			for _, a := range args {
-				if a == reject { return nil, errors.New("unrecognized argument " + reject) }
+				if a == reject {
+					return nil, errors.New("unrecognized argument " + reject)
+				}
 			}
 			return []byte(out), nil
 		}
@@ -79,18 +95,30 @@ func TestCollectorFallsBackWhenShowpowerRejected(t *testing.T) {
 	hist := NewHistory(720)
 	c := newStatCollector(hist, NewBroadcaster(), fakeROCm("--showpower", sampleROCmJSON, &seen))
 
-	if !c.Available() { t.Fatal("expected GPU metrics to survive a rejected --showpower") }
-	if c.PowerAvailable() { t.Error("expected PowerAvailable() false when the flag was rejected") }
-	if len(seen) < 2 { t.Fatalf("expected --showpower tried first then dropped, got %v", seen) }
-	if len(hist.Samples(0)) == 0 { t.Error("expected utilisation and VRAM to still be recorded") }
+	if !c.Available() {
+		t.Fatal("expected GPU metrics to survive a rejected --showpower")
+	}
+	if c.PowerAvailable() {
+		t.Error("expected PowerAvailable() false when the flag was rejected")
+	}
+	if len(seen) < 2 {
+		t.Fatalf("expected --showpower tried first then dropped, got %v", seen)
+	}
+	if len(hist.Samples(0)) == 0 {
+		t.Error("expected utilisation and VRAM to still be recorded")
+	}
 }
 
 func TestCollectorAdoptsPowerWhenAvailable(t *testing.T) {
 	var seen [][]string
 	c := newStatCollector(NewHistory(720), NewBroadcaster(), fakeROCm("--nonexistent", sampleROCmJSONWithPower, &seen))
 
-	if !c.Available() || !c.PowerAvailable() { t.Fatalf("expected power to be adopted, available=%v power=%v", c.Available(), c.PowerAvailable()) }
-	if len(seen) != 2 { t.Errorf("expected one probe plus the initial sample, got %v", seen) }
+	if !c.Available() || !c.PowerAvailable() {
+		t.Fatalf("expected power to be adopted, available=%v power=%v", c.Available(), c.PowerAvailable())
+	}
+	if len(seen) != 2 {
+		t.Errorf("expected one probe plus the initial sample, got %v", seen)
+	}
 }
 
 // A rocm-smi that accepts --showpower but reports no wattage must be reported
@@ -99,6 +127,10 @@ func TestCollectorPowerAcceptedButEmpty(t *testing.T) {
 	var seen [][]string
 	c := newStatCollector(NewHistory(720), NewBroadcaster(), fakeROCm("--nonexistent", sampleROCmJSON, &seen))
 
-	if !c.Available() { t.Fatal("expected GPU metrics available") }
-	if c.PowerAvailable() { t.Error("expected PowerAvailable() false when no wattage was reported") }
+	if !c.Available() {
+		t.Fatal("expected GPU metrics available")
+	}
+	if c.PowerAvailable() {
+		t.Error("expected PowerAvailable() false when no wattage was reported")
+	}
 }

@@ -262,7 +262,8 @@ func New(cfg *config.Config, o Options) (*Node, error) {
 	inference := proxy.NewHandler(proxy.Deps{
 		Self: n.name, Version: o.Version, Router: n.router, Reports: n.capPoller, Local: n.sup,
 		Auth: auth, Counters: n.counters, ForwardRetry: cfg.Routing.ForwardRetry, Activity: n.activity,
-		Pipelines: resolverPipelines, PipelineExec: executor,
+		StaleAfter: cfg.Routing.StaleAfter.Duration,
+		Pipelines:  resolverPipelines, PipelineExec: executor,
 		Resolve: n.resolver.Resolve, ExtraModels: n.resolver.ModelEntries,
 	})
 

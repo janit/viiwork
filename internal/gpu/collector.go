@@ -107,7 +107,9 @@ func powerless(err error) string {
 }
 
 func (c *StatCollector) Sample(ctx context.Context) {
-	if !c.available.Load() { return }
+	if !c.available.Load() {
+		return
+	}
 	out, err := c.cmdFactory(ctx)
 	if err != nil {
 		c.logger.Printf("rocm-smi failed: %v", err)

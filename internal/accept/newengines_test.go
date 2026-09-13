@@ -140,3 +140,19 @@ func TestVLLMMultiCardIsToldToSetAStartupTimeout(t *testing.T) {
 		t.Errorf("an explicit 45m must satisfy the rule, got: %s", c.Detail)
 	}
 }
+
+// replaceInFile rewrites one exact substring in a file the test wrote.
+func replaceInFile(t *testing.T, path, old, new string) {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	if !strings.Contains(s, old) {
+		t.Fatalf("%q not found in %s", old, path)
+	}
+	if err := os.WriteFile(path, []byte(strings.Replace(s, old, new, 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}

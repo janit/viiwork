@@ -51,6 +51,8 @@ func (b *Broadcaster) Broadcast(data []byte) {
 func (b *Broadcaster) Close() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	for _, ch := range b.clients { close(ch) }
+	for _, ch := range b.clients {
+		close(ch)
+	}
 	b.clients = nil
 }

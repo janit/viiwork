@@ -8,7 +8,7 @@ import (
 )
 
 type PricePoint struct {
-	Time      time.Time
+	Time     time.Time
 	CentsKWh float64
 }
 

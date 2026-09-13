@@ -39,14 +39,20 @@ func isWinter(month time.Month) bool {
 }
 
 func isOffPeak(t time.Time) bool {
-	if t.Weekday() == time.Sunday { return true }
+	if t.Weekday() == time.Sunday {
+		return true
+	}
 	hour := t.Hour()
 	return hour < 7 || hour >= 22
 }
 
 func ResolveTransfer(t time.Time, cfg CostConfig) float64 {
-	if !isWinter(t.Month()) { return cfg.Transfer.Summer.FlatCentsKWh }
-	if isOffPeak(t) { return cfg.Transfer.Winter.OffpeakCentsKWh }
+	if !isWinter(t.Month()) {
+		return cfg.Transfer.Summer.FlatCentsKWh
+	}
+	if isOffPeak(t) {
+		return cfg.Transfer.Winter.OffpeakCentsKWh
+	}
 	return cfg.Transfer.Winter.PeakCentsKWh
 }
 

@@ -1,5 +1,35 @@
 # Changelog
 
+## v2.2.0-beta2
+
+**`/v1/fleet/capacity`** — one node's view of what the whole mesh can serve,
+per model, with a per-host breakdown. Added after beta1 rather than folded into
+it silently: beta1 is on the fleet being tested, and what is under test should
+be what ships.
+
+It exists because a consumer sizing its own concurrency had no way to see the
+fleet. `/v1/capacity` is node-local, so gb1 answers 12 for a model the fleet
+serves 36 of. routemap4 was configured at 4 — and because viiwork fills a
+node's own slots before forwarding, four in flight never crossed gb1's 12, so
+gb2 and gb3 were never reached at all. 24 slots idle by construction.
+
+Aggregated from capacity reports every node already holds, so it adds no
+inter-node traffic, and `/v1/capacity` is untouched. Totals count only reports
+`capacity.Fresh()` accepts — the router's own predicate, so what a consumer is
+told matches what the router will use. A host the node has lost sight of is
+listed with `stale: true` and **no numbers**: absent is not zero, so "the fleet
+shrank" stays distinguishable from "we cannot see gb3". `view` names the
+answering node, and `ctx` is the minimum across fresh hosts.
+
+`docs/consuming-fleet-capacity.md` is the integration guide: poll on a
+5-minute cache, keep the configured capacity as the floor for every failure
+case (**including the 404 an older node returns**), spread ingress across
+`hosts[].api`, and let the existing queue absorb the overshoot as latency
+rather than errors.
+
+Additive to C4. A beta1 node and a beta2 node interoperate; the older one
+simply does not serve the path.
+
 ## v2.2.0-beta1
 
 **A beta, and the reason is the scale of what has been served.** Both engines

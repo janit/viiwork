@@ -98,9 +98,19 @@ func SummarizeConfig(path string, lookupEnv func(string) (string, bool), modelsR
 		weightsPath := hostPath(m.Path, modelsRoot)
 		size, err := weightsSize(weightsPath)
 		weights := Check{Name: "weights " + m.Name}
-		if err != nil {
+		switch {
+		case isHubID(m.Path):
+			// Not a filesystem path at all: vLLM and FreeToken both load a
+			// HuggingFace repo id, and the engine resolves it from its own
+			// cache or the hub at load time. There is nothing to stat, and
+			// failing here would tell an operator mid-conversion that working
+			// weights are missing.
+			weights.Pass = true
+			weights.Detail = m.Path + " (hub id — not checked locally)"
+			size, err = 0, nil
+		case err != nil:
 			weights.Detail = err.Error()
-		} else {
+		default:
 			weights.Pass = true
 			weights.Detail = fmt.Sprintf("%s %s", weightsPath, formatBytes(size))
 			ms.WeightsBytes = size
@@ -142,6 +152,37 @@ func startupCheck(m config.Model, size int64, sized bool) Check {
 }
 
 // hostPath rewrites a container path under /models/ to modelsRoot.
+// isHubID reports whether path is a HuggingFace repo id (org/name) rather than
+// a filesystem path. The two are distinguishable by shape: a repo id has
+// exactly one slash, neither side empty, no leading "/" or "./", and no file
+// extension on the name. Anything else is treated as a path, so a real missing
+// file still fails the check.
+func isHubID(path string) bool {
+	if path == "" || strings.HasPrefix(path, "/") || strings.HasPrefix(path, ".") {
+		return false
+	}
+	org, name, ok := strings.Cut(path, "/")
+	if !ok || org == "" || name == "" || strings.Contains(name, "/") {
+		return false
+	}
+	// A name ending in a weight-file extension is a relative path, not a repo:
+	// "models/m.gguf". Testing for ANY extension does not work, because model
+	// names routinely contain dots — filepath.Ext("Qwen2.5-0.5B-Instruct") is
+	// ".5B-Instruct", which would make every Qwen2.5 and granite-4.2 repo id
+	// look like a file.
+	return !weightFileExt[strings.ToLower(filepath.Ext(name))]
+}
+
+// weightFileExt is the extensions that mean "this is a file on disk". Kept
+// small and explicit: a name that does not end in one of these is treated as a
+// repo id, and the only cost of a wrong guess is a check that says "not
+// checked locally" instead of stat-ing something that was never there.
+var weightFileExt = map[string]bool{
+	".gguf": true, ".safetensors": true, ".bin": true,
+	".pt": true, ".pth": true, ".onnx": true,
+	".json": true, ".yaml": true, ".yml": true,
+}
+
 func hostPath(p, modelsRoot string) string {
 	if modelsRoot == "" || !strings.HasPrefix(p, containerModels) {
 		return p

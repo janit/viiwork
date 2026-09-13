@@ -30,7 +30,9 @@ type Tracker struct {
 
 func NewTracker(fetcher *SpotFetcher, cfg CostConfig, power PowerReader) *Tracker {
 	loc, err := time.LoadLocation(cfg.Timezone)
-	if err != nil { loc = time.UTC }
+	if err != nil {
+		loc = time.UTC
+	}
 	return &Tracker{
 		fetcher: fetcher, cfg: cfg, power: power,
 		location: loc, logger: log.New(os.Stdout, "[cost] ", log.LstdFlags),
@@ -77,20 +79,46 @@ func (t *Tracker) Update(ctx context.Context) {
 }
 
 func (t *Tracker) Available() bool {
-	t.mu.RLock(); defer t.mu.RUnlock(); return t.available
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.available
 }
 
 func (t *Tracker) EURPerHour() float64 {
-	t.mu.RLock(); defer t.mu.RUnlock(); return t.breakdown.CostEURPerHour
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.breakdown.CostEURPerHour
 }
 
 func (t *Tracker) TodayEUR() float64 {
-	t.mu.RLock(); defer t.mu.RUnlock(); return t.todayEUR
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.todayEUR
 }
 
 // CostReader interface methods (individual field accessors for cross-package use)
-func (t *Tracker) SpotCentsKWh() float64     { t.mu.RLock(); defer t.mu.RUnlock(); return t.breakdown.SpotCentsKWh }
-func (t *Tracker) TransferCentsKWh() float64  { t.mu.RLock(); defer t.mu.RUnlock(); return t.breakdown.TransferCentsKWh }
-func (t *Tracker) TaxCentsKWh() float64       { t.mu.RLock(); defer t.mu.RUnlock(); return t.breakdown.TaxCentsKWh }
-func (t *Tracker) VATPercent() float64         { t.mu.RLock(); defer t.mu.RUnlock(); return t.breakdown.VATPercent }
-func (t *Tracker) TotalCentsKWh() float64      { t.mu.RLock(); defer t.mu.RUnlock(); return t.breakdown.TotalCentsKWh }
+func (t *Tracker) SpotCentsKWh() float64 {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.breakdown.SpotCentsKWh
+}
+func (t *Tracker) TransferCentsKWh() float64 {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.breakdown.TransferCentsKWh
+}
+func (t *Tracker) TaxCentsKWh() float64 {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.breakdown.TaxCentsKWh
+}
+func (t *Tracker) VATPercent() float64 {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.breakdown.VATPercent
+}
+func (t *Tracker) TotalCentsKWh() float64 {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.breakdown.TotalCentsKWh
+}

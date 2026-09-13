@@ -60,7 +60,7 @@ type LocaleFileConfig struct {
 
 // PipelineConfig is the top-level YAML configuration for a pipeline.
 type PipelineConfig struct {
-	LocaleAliases map[string]string          `yaml:"locale_aliases"`
+	LocaleAliases map[string]string           `yaml:"locale_aliases"`
 	Locales       map[string]LocaleFileConfig `yaml:"locales"`
 	Steps         []StepConfig                `yaml:"steps"`
 }

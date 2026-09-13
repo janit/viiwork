@@ -8,6 +8,7 @@ const (
 	PathStatus          = "/v1/status"
 	PathCluster         = "/v1/cluster"
 	PathCapacity        = "/v1/capacity"
+	PathFleetCapacity   = "/v1/fleet/capacity"
 	PathModels          = "/v1/models"
 	PathChatCompletions = "/v1/chat/completions"
 	PathCompletions     = "/v1/completions"

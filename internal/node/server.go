@@ -91,7 +91,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case path == meshapi.PathHealth && get:
 		s.handleHealth(w)
-	case path == meshapi.PathModels, path == meshapi.PathCapacity,
+	case path == meshapi.PathModels, path == meshapi.PathCapacity, path == meshapi.PathFleetCapacity,
 		path == meshapi.PathChatCompletions, path == meshapi.PathCompletions, path == meshapi.PathEmbeddings:
 		s.d.Inference.ServeHTTP(w, r)
 	case path == meshapi.PathAliases || strings.HasPrefix(path, meshapi.PathAliases+"/"):

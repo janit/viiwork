@@ -62,6 +62,9 @@ type Deps struct {
 	Auth         *ForwardAuth
 	Counters     *Counters
 	ForwardRetry int
+	// StaleAfter is routing.stale_after. The fleet view uses it so its totals
+	// count exactly the reports the router would trust.
+	StaleAfter   time.Duration
 	Activity     *activity.Log // nil = no events, no prompt history
 	Pipelines    *PipelineResolver
 	PipelineExec *pipeline.Executor
@@ -95,6 +98,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.handleCapacity(w)
+		return
+	case meshapi.PathFleetCapacity:
+		if r.Method != http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		h.handleFleetCapacity(w, r)
 		return
 	}
 	// Inference paths come from the dialect registry rather than from three

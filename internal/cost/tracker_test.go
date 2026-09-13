@@ -21,8 +21,8 @@ func TestTrackerBasic(t *testing.T) {
 			Summer: SummerTransferConfig{FlatCentsKWh: 2.49},
 		},
 		ElectricityTaxCentsKWh: 2.253,
-		VATPercent: 25.5,
-		Timezone: "Europe/Helsinki",
+		VATPercent:             25.5,
+		Timezone:               "Europe/Helsinki",
 	}
 	pw := &mockPower{watts: 280.0, available: true}
 
@@ -36,8 +36,12 @@ func TestTrackerBasic(t *testing.T) {
 	tracker := NewTracker(fetcher, cfg, pw)
 	tracker.Update(context.Background())
 
-	if !tracker.Available() { t.Error("expected available") }
-	if tracker.EURPerHour() == 0 { t.Error("expected non-zero cost rate") }
+	if !tracker.Available() {
+		t.Error("expected available")
+	}
+	if tracker.EURPerHour() == 0 {
+		t.Error("expected non-zero cost rate")
+	}
 }
 
 func TestTrackerUnavailableWithoutPower(t *testing.T) {
@@ -46,7 +50,9 @@ func TestTrackerUnavailableWithoutPower(t *testing.T) {
 	fetcher := &SpotFetcher{}
 	tracker := NewTracker(fetcher, cfg, pw)
 	tracker.Update(context.Background())
-	if tracker.Available() { t.Error("expected unavailable without power") }
+	if tracker.Available() {
+		t.Error("expected unavailable without power")
+	}
 }
 
 func TestTrackerUnavailableWithoutPrices(t *testing.T) {
@@ -55,7 +61,9 @@ func TestTrackerUnavailableWithoutPrices(t *testing.T) {
 	fetcher := &SpotFetcher{} // empty cache
 	tracker := NewTracker(fetcher, cfg, pw)
 	tracker.Update(context.Background())
-	if tracker.Available() { t.Error("expected unavailable without prices") }
+	if tracker.Available() {
+		t.Error("expected unavailable without prices")
+	}
 }
 
 func TestTrackerAccumulation(t *testing.T) {
@@ -64,8 +72,8 @@ func TestTrackerAccumulation(t *testing.T) {
 			Summer: SummerTransferConfig{FlatCentsKWh: 2.49},
 		},
 		ElectricityTaxCentsKWh: 2.253,
-		VATPercent: 25.5,
-		Timezone: "UTC",
+		VATPercent:             25.5,
+		Timezone:               "UTC",
 	}
 	pw := &mockPower{watts: 1000.0, available: true}
 
@@ -84,5 +92,7 @@ func TestTrackerAccumulation(t *testing.T) {
 	tracker.Update(context.Background())
 	second := tracker.TodayEUR()
 
-	if second <= first { t.Errorf("expected accumulation: first=%f, second=%f", first, second) }
+	if second <= first {
+		t.Errorf("expected accumulation: first=%f, second=%f", first, second)
+	}
 }
