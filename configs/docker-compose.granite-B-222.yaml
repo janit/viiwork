@@ -1,4 +1,4 @@
-# Granite 4.1-30B Layout B: 3× tensor-split-pair replicas.
+# Granite 4.2-30B Layout B: 3× tensor-split-pair replicas.
 #
 # Run / probe:
 #   Up:     docker compose -f configs/docker-compose.granite-B-222.yaml up -d

@@ -85,9 +85,9 @@ models:
     gpus_per_backend: 2      # one backend across both cards
     context: 49152           # tokens PER SLOT
     parallel: 2
-  - name: granite-4.1-8b
+  - name: granite-4.2-8b
     engine: llamacpp
-    path: /models/granite-4.1-8b-Q4_K_M.gguf
+    path: /models/granite-4.2-8b-Q4_K_M.gguf
     gpus: [2, 3, 4, 5]       # gpus_per_backend defaults to 1: four replicas
     context: 16384
     parallel: 2
@@ -212,7 +212,7 @@ An alias is a stable, mesh-wide name for a real model: point clients at
 `stable-coder`, and switch which model it means once, from any machine.
 
 ```bash
-viiwork alias set stable-coder Qwen3.8-27B --fallback granite-4.1-8b
+viiwork alias set stable-coder Qwen3.8-27B --fallback granite-4.2-8b
 viiwork alias ls
 viiwork alias history stable-coder
 viiwork alias revert stable-coder      # swap back to the previous version
@@ -634,6 +634,32 @@ under [Security](#security).
 
 ## Recommended Models
 
+### What the reference fleet runs today
+
+Five models across a five-host ROCm mesh, read from `/v1/capacity` on
+2026-09-13. The table below this one is the evaluation catalogue — measurements
+for models that were benchmarked, whether or not they are deployed — so start
+here for what is actually in service.
+
+| Model | Spread | Context per slot | Role |
+|---|---|---|---|
+| `Qwen3.8-27B` | 2 hosts | 49152 | general coder and prose; behind `stable-coder` and `stable-prose` |
+| `granite-4.2-8b` | 2 hosts | 16384 | fast utility model; behind `stable-granite` and `stable-factcheck` |
+| `translategemma-27b-it` | 3 hosts, 3 backends each | 4096 | the translation lane; behind `stable-translate` |
+| `gemma-4-31B-it` | 3 hosts | 6144 | prose |
+| `Ornith-1.5-35B-A3B` | 1 host | 262144 | long context |
+
+Two things this shows that the catalogue does not. **A model is usually served
+by more than one host**, which is what lets a node forward a request rather than
+queue it — spread is a routing property, not a redundancy nicety. And **context
+per slot varies by an order of magnitude between models on the same hardware**,
+because it is traded against slot count and VRAM per backend, not fixed by the
+checkpoint.
+
+Aliases are mesh-wide and resolve on whichever node a request reaches; see
+[Aliases](#aliases). `viiwork alias list` against any node prints the live table.
+
+
 The list below is grounded in what's actually deployed on the reference fleet (10× Radeon VII) and what's been stress-tested — numbers are measured throughput, not estimated. The shape of these recommendations is driven by one hard constraint: any model whose weights + KV cache don't fit in a single 16 GB card pays a ~3× throughput tax (validated on Qwen3.5-A3B Q4_K_M vs Q3_K_M on the same GPU). For models above that line, tensor-split across 2+ GPUs avoids the tax at the cost of single-stream parallelism.
 
 > **Build note.** Hybrid-attention models (Qwen3.5-A3B, Qwen3.6/3.8, Laguna, anything using DeltaNet / linear attention) need an upstream-current `llama.cpp` — build a fresh image from `docker/Dockerfile.rocm`.
@@ -695,9 +721,9 @@ viiwork 1.x instance files: convert them with
 | Qwen3.5-35B-A3B (MoE hybrid, 3B active) | Q3_K_M + KV-q4 | replica per GPU | **40.7 tok/s** sustained at conc=9 (15-min stress, 0 fail). 2.8× faster than Q4_K_M because weights fit fully in VRAM. |
 | Gemma-4-31B-IT (33B dense) | QAT UD-Q4_K_XL | TS=2 single backend | ~17.3 GB across 2 GPUs (down from ~21.5 GB at the old Q5_K_S, same prose quality); used as the prose generator in the localization pipeline. Run with `--jinja --chat-template-kwargs '{"enable_thinking": false}'` for direct output. See `configs/viiwork.gemma4-31b-ts2.yaml`. |
 | EuroLLM-22B-Instruct-2512 | Q5_K_M | TS=2 single backend | ~16 GB across 2 GPUs; purpose-trained on 24 EU languages + Norwegian / Icelandic / Russian — the translator step in the localization pipeline. |
-| Laguna-XS-2.1 (MoE, 33B / ~2.8B active) — *deployed on the reference host* | Q4_K_M | 5× TS=2 (10 GPUs) | 36.3 tok/s single-stream per backend; **113 tok/s aggregate** at conc=5. That is 3.1× single-stream, not 5× — the reference host has 4 CPU cores for 5 backends and viiwork warns about the oversubscription at startup. VRAM 14.6/13.2 GB per pair at 128K. TS=2 is mandatory: 20.3 GB does not fit one 16 GB card. |
+| Laguna-XS-2.1 (MoE, 33B / ~2.8B active) — *evaluated, since displaced* | Q4_K_M | 5× TS=2 (10 GPUs) | 36.3 tok/s single-stream per backend; **113 tok/s aggregate** at conc=5. That is 3.1× single-stream, not 5× — the reference host has 4 CPU cores for 5 backends and viiwork warns about the oversubscription at startup. VRAM 14.6/13.2 GB per pair at 128K. TS=2 is mandatory: 20.3 GB does not fit one 16 GB card. |
 | Laguna-S-2.1 (MoE, 118B / 8.1B active) — *evaluated, not retained* | unsloth UD-Q6_K (97.9 GB) | TS=10 (whole host) | 20.8 tok/s decode, 176 tok/s prefill. Beat its own projection on decode but **prefill is the weak side**: ~3.4 TFLOPS effective, 2.9× less FLOP-efficient per token than a dense 27B, because top-10-of-256 routing at `-ub 512` leaves each expert ~20 tokens of work. A cold 256K fill costs ~72 min, so the advertised context is real in VRAM and unaffordable in wall-clock. Replaced by the XS fleet above after use. |
-| Granite-4.1-8B | Q4_K_M | single-GPU replica × N | ~5 GB weights, generous KV headroom for 16k context. Run with `-fa on`. IBM's enterprise/utility model — strong instruction following, function/tool calling, RAG / structured-output workflows, multilingual; well-suited to back-office automation, doc Q&A, and embedding into agentic loops where you want a small, predictable, English-leaning helper next to a heavier reasoning model on the mesh. |
+| Granite-4.2-8B | Q4_K_M | single-GPU replica × N | ~5 GB weights, generous KV headroom for 16k context. Run with `-fa on`. IBM's enterprise/utility model — strong instruction following, function/tool calling, RAG / structured-output workflows, multilingual; well-suited to back-office automation, doc Q&A, and embedding into agentic loops where you want a small, predictable, English-leaning helper next to a heavier reasoning model on the mesh. |
 
 ### Bring-ups in progress
 
@@ -718,7 +744,7 @@ For lightweight / multi-replica setups. Q3_K_M is the practical ceiling on a Rad
 |---|---|---|---|
 | Gemma-4-26B-A4B-IT | QAT UD-Q4_K_XL | ~14.2 GB | Best general-purpose pick on 16 GB; QAT Q4 = near-bf16 quality. Tight on a single card — run with KV-q4 + short context (`-fa on --cache-type-k q4_0 --cache-type-v q4_0`). For replica×N throughput or more KV headroom, drop to non-QAT UD-Q3_K_XL (~12.5 GB). |
 | Gemma-4-E4B-IT | QAT UD-Q4_K_XL | ~4.2 GB | 8B multimodal; QAT Q4 = near-bf16 quality at half the VRAM of the old Q8_0 (~8.2 GB). |
-| Granite-4.1-8B | Q4_K_M | ~5 GB | Strong instruction following, tool calling, RAG / structured-output workflows. Use as a fast utility model alongside a heavier reasoner. |
+| Granite-4.2-8B | Q4_K_M | ~5 GB | Strong instruction following, tool calling, RAG / structured-output workflows. Use as a fast utility model alongside a heavier reasoner. |
 
 ### Tensor-split picks (multi-GPU)
 

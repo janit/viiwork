@@ -1,4 +1,4 @@
-# Granite 4.1-8B Layout A: 4× single-GPU replicas (1+1+1+1).
+# Granite 4.2-8B Layout A: 4× single-GPU replicas (1+1+1+1).
 #
 # 4 backends, each pinned to one Radeon VII running 8B Q4_K_M (~5 GB).
 # Plenty of VRAM headroom (16 GB - 5 GB - KV) for 16k context.
@@ -9,7 +9,7 @@ server:
   port: 8095
 
 model:
-  path: /models/granite-4.1-8b.Q4_K_M.gguf
+  path: /models/granite-4.2-8b-Q4_K_M.gguf
   context_size: 16384
   n_gpu_layers: -1
 

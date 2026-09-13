@@ -112,7 +112,7 @@ The second served an 8B model on one card:
 server:
   port: 9102
 model:
-  path: /models/granite-4.1-8b-Q4_K_M.gguf
+  path: /models/granite-4.2-8b-Q4_K_M.gguf
   context_size: 32768
   parallel: 2
 gpus:
@@ -147,9 +147,9 @@ models:
     startup_timeout: 45m      # split across two cards: allow a long load (section 9)
     args: ["--spec-type", "draft-mtp", "--spec-draft-n-max", "1"]
 
-  - name: granite-4.1-8b
+  - name: granite-4.2-8b
     engine: llamacpp
-    path: /models/granite-4.1-8b-Q4_K_M.gguf
+    path: /models/granite-4.2-8b-Q4_K_M.gguf
     gpus: [2]
     context: 16384            # 32768 total / 2 slots
     parallel: 2
@@ -159,8 +159,8 @@ The context arithmetic is the one change that silently matters. Copying
 `context_size: 98304` into `context` would ask llama.cpp for 196,608 tokens
 (`context × parallel`) and very likely fail to fit in VRAM.
 
-The v1 model ids were `Qwen3.8-27B-Q6_K` and `granite-4.1-8b-Q4_K_M`, taken from
-the file names. Under v2 clients send `Qwen3.8-27B` and `granite-4.1-8b`, or an
+The v1 model ids were `Qwen3.8-27B-Q6_K` and `granite-4.2-8b-Q4_K_M`, taken from
+the file names. Under v2 clients send `Qwen3.8-27B` and `granite-4.2-8b`, or an
 alias (section 10).
 
 ## 5. Mesh mode
@@ -349,7 +349,7 @@ The examples convert `node-a`, and `node-b` is a machine already running v2.
    node's view of the mesh:
 
    ```bash
-   viiwork-accept join --observer node-b:8086 --node node-a --expect Qwen3.8-27B,granite-4.1-8b
+   viiwork-accept join --observer node-b:8086 --node node-a --expect Qwen3.8-27B,granite-4.2-8b
    ```
 
    then start the node (`docker compose up -d`, or `systemctl start viiwork`).
@@ -502,14 +502,14 @@ PASS  api port 8086
 PASS  gossip port 7946
 PASS  weights Qwen3.8-27B  /srv/models/Qwen3.8-27B-Q6_K.gguf 22.1 GiB
 FAIL  startup_timeout Qwen3.8-27B  gpus_per_backend 2, weights 22.1 GiB: need at least 45m0s, have engine default
-PASS  weights granite-4.1-8b  /srv/models/granite-4.1-8b-Q4_K_M.gguf 4.6 GiB
-PASS  startup_timeout granite-4.1-8b  engine default
+PASS  weights granite-4.2-8b  /srv/models/granite-4.2-8b-Q4_K_M.gguf 4.6 GiB
+PASS  startup_timeout granite-4.2-8b  engine default
 config viiwork.yaml: 7/8 passed
 
 node node-a  state_dir /var/lib/viiwork  network tailnet  mesh secured  api 8086  gossip 7946
 MODEL           ENGINE    GPUS  BACKENDS  SLOTS  CTX/SLOT  STARTUP  WEIGHTS
 Qwen3.8-27B     llamacpp  0,1   1         2      49152     default  22.1 GiB
-granite-4.1-8b  llamacpp  2     1         2      16384     default  4.6 GiB
+granite-4.2-8b  llamacpp  2     1         2      16384     default  4.6 GiB
 ```
 
 ### join
@@ -528,16 +528,16 @@ expect a few seconds on top of the join itself.
 | `--poll` | `250ms` | time between polls |
 
 ```bash
-viiwork-accept join --observer node-b:8086 --node node-a --expect Qwen3.8-27B,granite-4.1-8b
+viiwork-accept join --observer node-b:8086 --node node-a --expect Qwen3.8-27B,granite-4.2-8b
 ```
 
 ```text
-PASS  joined node-a  6.3s  models Qwen3.8-27B, granite-4.1-8b
+PASS  joined node-a  6.3s  models Qwen3.8-27B, granite-4.2-8b
 join node-a: 1/1 passed
 ```
 
 On a timeout the detail says what was seen last, such as
-`alive, missing granite-4.1-8b`, `not a member`, or `last error: ...` when the
+`alive, missing granite-4.2-8b`, `not a member`, or `last error: ...` when the
 observer did not answer.
 
 ### ready
@@ -557,7 +557,7 @@ viiwork-accept ready --node node-a:8086 --timeout 50m
 
 ```text
 PASS  ready Qwen3.8-27B  3m14.2s
-PASS  ready granite-4.1-8b  4m1.9s
+PASS  ready granite-4.2-8b  4m1.9s
 PASS  all backends healthy
 ready node-a:8086: 3/3 passed
 ```
@@ -621,9 +621,9 @@ viiwork-accept models --node node-a:8086 --via node-b:8086
 PASS  content Qwen3.8-27B  1.9s  ready
 PASS  tools Qwen3.8-27B  3.4s  finish_reason tool_calls, 1 tool call
 PASS  pin Qwen3.8-27B  1.2s  node-a via node-b
-PASS  content granite-4.1-8b  400ms  ready
-PASS  tools granite-4.1-8b  900ms  finish_reason tool_calls, 1 tool call
-PASS  pin granite-4.1-8b  300ms  node-a via node-b
+PASS  content granite-4.2-8b  400ms  ready
+PASS  tools granite-4.2-8b  900ms  finish_reason tool_calls, 1 tool call
+PASS  pin granite-4.2-8b  300ms  node-a via node-b
 models node-a:8086: 6/6 passed
 ```
 
@@ -690,8 +690,8 @@ follows:
 ```bash
 viiwork alias set stable-coder Qwen3.8-27B
 viiwork-accept alias --entry node-a:8086 --entry node-b:8086 --alias stable-coder --expect-model Qwen3.8-27B
-viiwork alias set stable-coder granite-4.1-8b
-viiwork-accept alias --entry node-a:8086 --entry node-b:8086 --alias stable-coder --expect-model granite-4.1-8b
+viiwork alias set stable-coder granite-4.2-8b
+viiwork-accept alias --entry node-a:8086 --entry node-b:8086 --alias stable-coder --expect-model granite-4.2-8b
 viiwork alias revert stable-coder
 viiwork-accept alias --entry node-a:8086 --entry node-b:8086 --alias stable-coder --expect-model Qwen3.8-27B
 ```
@@ -748,7 +748,7 @@ models:
   model, and switch the model without touching the client:
 
   ```bash
-  viiwork alias set stable-coder Qwen3.8-27B --fallback granite-4.1-8b
+  viiwork alias set stable-coder Qwen3.8-27B --fallback granite-4.2-8b
   viiwork alias ls
   viiwork alias revert stable-coder
   ```
