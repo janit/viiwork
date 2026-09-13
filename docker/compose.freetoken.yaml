@@ -110,7 +110,19 @@ services:
       # The node's /health reports 503 until a backend is actually serving, not
       # merely listening, which is what makes this meaningful during
       # FreeToken's multi-minute startup.
-      test: ["CMD", "curl", "-fsS", "http://localhost:8086/health"]
+      #
+      # python3, NOT curl: Dockerfile.freetoken installs python3, python3-venv,
+      # python3-dev, ca-certificates and ipmitool, and there is no curl in the
+      # nvidia/cuda base either. A curl probe therefore exits -1 on every
+      # interval and the container never leaves "starting", then reports
+      # unhealthy while the node is serving perfectly. That is harmless to
+      # routing -- restart: unless-stopped does not act on health -- but it
+      # makes `docker ps` lie, which is the one thing a healthcheck is for.
+      # urlopen raises on a non-2xx, so this keeps the "503 means not ready"
+      # semantics the curl form had. compose.vllm.yaml keeps curl because
+      # vLLM's published image ships /usr/bin/curl; this base does not.
+      test: ["CMD", "python3", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8086/health', timeout=4)"]
       interval: 30s
       timeout: 5s
       # Generous: weights, cache pools, CUDA graphs and then filling a GPU

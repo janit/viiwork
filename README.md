@@ -32,7 +32,7 @@ machine through the change and covers rollback; `viiwork-accept config`
 validates the new file while v1 is still serving. viiwork 1.x remains at tag
 [`v1.8.1`](https://github.com/janit/viiwork/releases/tag/v1.8.1).
 
-![viiwork mesh dashboard](docs/img/viiwork-v150.webp)
+![viiwork mesh dashboard](docs/img/viiwork-v220.webp)
 
 ## Background
 

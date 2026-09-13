@@ -83,6 +83,24 @@ def get_json(url, timeout=10):
         return json.loads(r.read().decode())
 
 
+def aliases_for(base):
+    """real model name -> an alias pointing at it, for alias-addressed traffic.
+
+    Alias resolution happens on the ORIGIN node, once per request, before
+    routing. beta3 made ?model= resolve aliases too, so a soak that only ever
+    sends real names never exercises either path under load.
+    """
+    out = {}
+    try:
+        d = get_json(f"{base}/v1/aliases")
+    except Exception:
+        return out
+    for a in d.get("aliases", []):
+        if a.get("state") == "ok" and a.get("resolved"):
+            out.setdefault(a["resolved"], a["name"])
+    return out
+
+
 def fleet_capacity(base):
     """Per-model fleet slots and the hosts serving them."""
     d = get_json(f"{base}/v1/fleet/capacity")
@@ -153,16 +171,17 @@ def one_request(url, model, max_tokens, timeout):
         return type(e).__name__, ttfb, (time.monotonic() - t0) * 1000, 0, None
 
 
-def worker(stop, rec, model, urls, idx, phase, max_tokens, timeout):
+def worker(stop, rec, model, urls, idx, phase, max_tokens, timeout, send_as=None):
     """One in-flight request at a time, looping until the phase ends.
 
     Each worker pins a URL round-robin across the model's hosts, which is the
     configuration docs/consuming-fleet-capacity.md tells a consumer to use.
     """
     url = urls[idx % len(urls)]
+    name = send_as or model
     while not stop.is_set():
-        status, ttfb, total, tokens, ra = one_request(url, model, max_tokens, timeout)
-        rec.add(phase=phase, model=model, url=url, status=status,
+        status, ttfb, total, tokens, ra = one_request(url, name, max_tokens, timeout)
+        rec.add(phase=phase, model=model, via=("alias" if send_as else "direct"), url=url, status=status,
                 ttfb_ms=ttfb, total_ms=total, tokens=tokens, retry_after=ra,
                 t=time.time())
 
@@ -233,6 +252,22 @@ def report(rec, models, out_prefix):
     print("\n" + "=" * 100)
     print("FINDINGS")
     print("=" * 100)
+    # Transport failures are checked across the WHOLE run, not just the over
+    # phases. The first version of this looked only at over-capacity and
+    # printed "OK, 0" while five timeouts sat in warm and under — a soak that
+    # only inspects the phase it expects trouble in will miss trouble
+    # everywhere else.
+    allbad = [r for r in rec.reqs if not isinstance(r["status"], int)]
+    if allbad:
+        byp = defaultdict(int)
+        for r in allbad:
+            byp[(r["phase"], r["model"], r["status"])] += 1
+        print(f"  FINDING: {len(allbad)} transport failures across the run:")
+        for (ph, m, s), n in sorted(byp.items()):
+            print(f"      {n:5} x {s:18} {m:24} in {ph}")
+    else:
+        print("  OK  transport failures across the run: 0")
+
     over = [r for r in rec.reqs if r["phase"].startswith("over")]
     if over:
         bad = [r for r in over if not isinstance(r["status"], int)]
@@ -241,10 +276,16 @@ def report(rec, models, out_prefix):
         print(f"  over-capacity: {len(over)} requests, "
               f"{sum(1 for r in over if r['status']==200)} served, "
               f"{sum(1 for r in over if r['status']==429)} x 429, {len(n503)} x 503")
-        print(f"  {'OK ' if not bad else 'FINDING: '}transport failures (timeout/refused): {len(bad)}"
+        print(f"  {'OK ' if not bad else 'FINDING: '}over-capacity transport failures: {len(bad)}"
               + ("" if not bad else "  <-- backpressure should be a STATUS, not a dropped connection"))
         print(f"  {'OK ' if not no_ra else 'FINDING: '}503s without Retry-After: {len(no_ra)}/{len(n503)}"
               + ("" if not no_ra else "  <-- a 503 must tell a client when to come back"))
+    al = [r for r in rec.reqs if r.get("via") == "alias"]
+    if al:
+        bad = [r for r in al if not isinstance(r["status"], int)]
+        ok = sum(1 for r in al if r["status"] == 200)
+        print(f"  alias-addressed: {len(al)} requests, {ok} served, {len(bad)} transport failures")
+
     u = [r["ttfb_ms"] for r in rec.reqs if r["phase"] == "under" and r["status"] == 200]
     v = [r["ttfb_ms"] for r in rec.reqs if r["phase"] == "recover" and r["status"] == 200]
     if u and v:
@@ -280,6 +321,9 @@ def main():
     ap.add_argument("--ingress", choices=["spread", "single"], default="spread",
                     help="spread: one URL per host, as a consumer should. "
                          "single: everything through --url, which tests forwarding instead")
+    ap.add_argument("--alias-share", type=float, default=0.25,
+                    help="fraction of workers addressing a model by its alias, where one exists; "
+                         "alias resolution is per-request on the origin node and deserves load")
     ap.add_argument("--dry-run", action="store_true", help="print the plan and exit")
     a = ap.parse_args()
 
@@ -287,6 +331,7 @@ def main():
     PHASES = build_phases([float(x) for x in a.over.split(",") if x.strip()])
 
     cap = fleet_capacity(a.url)
+    alias = aliases_for(a.url) if a.alias_share > 0 else {}
     if a.models:
         want = {m.strip() for m in a.models.split(",")}
         cap = {k: v for k, v in cap.items() if k in want}
@@ -299,6 +344,9 @@ def main():
     for name, info in sorted(cap.items(), key=lambda kv: -kv[1]["slots"]):
         conc = [max(1, round(info["slots"] * r)) for _, r, _ in PHASES]
         print(f"{name:24} {info['slots']:5} " + " ".join(f"{c:>7}" for c in conc))
+    if alias:
+        print("alias-addressed traffic at %.0f%%: %s" % (
+            a.alias_share * 100, ", ".join(f"{v}->{k}" for k, v in sorted(alias.items()))))
     peak = sum(max(1, round(i["slots"] * 2.0)) for i in cap.values())
     print(f"\npeak concurrency at 2x: {peak} in flight across {len(cap)} models")
     for p, r, s in PHASES:
@@ -319,9 +367,11 @@ def main():
             for name, info in cap.items():
                 urls = info["urls"] if a.ingress == "spread" else [a.url]
                 n = max(1, round(info["slots"] * ratio))
+                n_alias = int(round(n * a.alias_share)) if name in alias else 0
                 for i in range(n):
+                    send_as = alias[name] if i < n_alias else None
                     t = threading.Thread(target=worker,
-                                         args=(stop, rec, name, urls, i, phase, a.max_tokens, a.timeout),
+                                         args=(stop, rec, name, urls, i, phase, a.max_tokens, a.timeout, send_as),
                                          daemon=True)
                     t.start()
                     threads.append(t)

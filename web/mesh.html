@@ -333,6 +333,18 @@ const promptOrder = [];           // keys in first-seen order, oldest first
 // nothing, hence the fallback.
 let maxPrompts = 1000;
 
+// Repaints are coalesced. Every event folds into the state above, but painting
+// is bound to time rather than to arrival: a stream replays each member's whole
+// event ring when it opens, so a soak delivers tens of thousands of events back
+// to back, and painting per event rebuilt the thousand-row prompt list once for
+// each of them — which stopped the page painting at all. Nothing is dropped.
+// These flags merge only repaints that would have drawn the same rows, and the
+// drain tick reads the very maps the events just wrote.
+//
+// In-flight has no flag: the tick paints it every time regardless, because its
+// ages advance whether or not an event arrived.
+const dirty = { prompts: false, activity: false };
+
 // Halt freezes the view. It queues incoming events instead of applying them,
 // rather than merely skipping the re-render, because the two lists evict as
 // they grow: a frozen render over a mutating map would leave rows on screen
@@ -718,7 +730,7 @@ function recordPrompt(e, host) {
     t: e.t || Math.floor(Date.now() / 1000),
     done: isDone
   });
-  renderPrompts();
+  dirty.prompts = true;
 }
 
 function renderActivity() {
@@ -1529,7 +1541,6 @@ function applyActivity(e) {
           host
         });
       }
-      renderInflight();
       recordPrompt(e, host);
     }
 
@@ -1543,7 +1554,7 @@ function applyActivity(e) {
 
     activityRows.unshift({ t: e.t, host, message: e.message || "" });
     if (activityRows.length > MAX_ACTIVITY) activityRows.length = MAX_ACTIVITY;
-    renderActivity();
+    dirty.activity = true;
 }
 
 // syncPromptCap adopts the largest prompt-history capacity any node reports,
@@ -1607,9 +1618,24 @@ document.addEventListener("keydown", ev => {
 
 wirePowerChart();
 connectStream();
-// In-flight ages must tick even when no events arrive — but not while halted,
-// since a running counter is exactly the movement halt exists to stop.
-setInterval(() => { if (!halted) renderInflight(); }, 200);
+
+// The drain tick: the one place activity-driven repaints happen.
+//
+// Five repaints a second is far below what a stream under load asks for and far
+// above what a reader can follow, which is the whole point — a burst of events
+// paints once, with every one of them already folded in. The cost of a repaint
+// is set by the list, not by the burst: the prompt list is a thousand rows, so
+// painting it per event made the page stop painting at all.
+//
+// Halt stops the tick outright — a running counter is exactly the movement halt
+// exists to stop — and loses nothing, since halted events queue as raw events
+// and drain through applyActivity on resume, setting these flags again.
+setInterval(() => {
+  if (halted) return;
+  if (dirty.prompts) { dirty.prompts = false; renderPrompts(); }
+  if (dirty.activity) { dirty.activity = false; renderActivity(); }
+  renderInflight();
+}, 200);
 </script>
 </body>
 </html>

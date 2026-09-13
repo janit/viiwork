@@ -1,5 +1,73 @@
 # Changelog
 
+## v2.2.0
+
+**Three engines, and the fleet now runs all three at once.** llama.cpp on
+gb0-gb4, vLLM on plexie, FreeToken on grizzly and yeti — one binary per machine,
+one mesh, one OpenAI-compatible API, and a request goes to a free slot wherever
+one exists no matter which engine answers. The entries below under
+`v2.2.0-beta1`, `-beta2` and `-beta3` are kept because they say why each part is
+the way it is.
+
+**beta1 said this becomes v2.2.0 when a real model runs on the hardware it is
+meant for.** It has. FreeToken serves DeepSeek-V4-Flash on RTX 5090s — the
+Blackwell path beta1 listed as untouched — and a 60-minute fleet soak put 104
+slots across 7 models and all three engines through 0.1x to 4x of capacity.
+
+### What the soak found
+
+Fleet-wide on beta3: 10 nodes, 7 models, 104 slots, six phases from warm to 4x
+and back to half.
+
+- **Backpressure is well formed.** 15,591 over-capacity requests — 5,115 served,
+  10,471 refused, every refusal a 429 carrying `Retry-After`. No 503s, because
+  the models were always *served*, just full; zero dropped connections and zero
+  timeouts under load.
+- **Admission control protects throughput.** Served counts were effectively
+  identical at 2x and 4x, so doubling the offered load changed only how much was
+  shed. `busy` stayed pinned at 104/104 throughout — a fleet in congestion
+  collapse would show it falling.
+- **Queue depth is predictable.** It tracked in-flight minus slots to within two
+  requests: 106 observed against 104 predicted at 2x, 313 against 312 at 4x.
+- **Recovery is complete.** 314 queued back to 0, TTFB to 1.08x of the baseline,
+  nothing stranded — so the refusal mark, where a refused forward marks that
+  (member, model) full until a report received *after* the refusal, holds at
+  fleet scale.
+- **A quarter of the traffic was addressed by alias** rather than by real name,
+  exercising beta3's per-request resolution on the origin node, with zero
+  transport failures.
+- **One finding, and its shape is warm-up rather than overload.** Five requests
+  exceeded a 180 s client timeout, all on `Ornith-1.5-35B-A3B`, all early and
+  all under light load; a 35B MoE at 262144 context on gfx906 pages in slowly,
+  and the model got faster as the run went on. Nothing after t+767 s, including
+  under 4x. Worth knowing before anyone sets a shorter client timeout.
+
+### Since beta3
+
+- **The mesh dashboard stopped painting under load; it now paints on a clock.**
+  `/v1/mesh/stream` replays the local event ring and every member's, so opening
+  `/mesh` against a fleet under soak delivered some 15,700 events back to back —
+  and the page rendered once per event, each one rebuilding the thousand-row
+  prompt list, the activity feed and the in-flight list from scratch. Measured
+  in a browser against the live fleet: **2 frames in 30 seconds**, single tasks
+  blocking the main thread for **57 s**, and the page so far behind its own
+  stream that it showed 78 in-flight rows against the 2 actually running.
+
+  Repaints are coalesced onto the 200 ms tick that already existed for in-flight
+  ages, so a burst paints once with every event of it folded in. Same
+  measurement after: **1,705 frames**, worst gap **0.5 s**, **1.3 s** blocking,
+  and the in-flight list correct. Nothing is dropped — events fold into the same
+  maps under the same caps, and only repaints that would have drawn the same
+  rows are merged. `web/pages_test.go` fails if a renderer is ever called from a
+  per-event handler again.
+
+  A viewer's browser was the whole of it: nodes, routing and the API never saw
+  this.
+
+### Not in this release
+
+- `scripts/deploy.sh` still drives v1.x layouts and has not been converted.
+
 ## v2.2.0-beta3
 
 **`/v1/fleet/capacity?model=` resolves aliases.** beta2 matched the query as an
