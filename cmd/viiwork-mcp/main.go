@@ -27,6 +27,12 @@ import (
 	"github.com/janit/viiwork/v2/meshapi"
 )
 
+// version is stamped at build time: -ldflags "-X main.version=...". It is
+// reported to the client as the MCP server's version, so it must be the
+// build's and not a literal — a hardcoded "1.0.0" survived into viiwork 2
+// and told every assistant the wrong thing.
+var version = "dev"
+
 var viiworkURL string
 
 // JSON-RPC 2.0
@@ -186,7 +192,7 @@ func handle(req rpcRequest) *rpcResponse {
 	case "initialize":
 		return success(req.ID, initResult{
 			ProtocolVersion: "2024-11-05",
-			ServerInfo:      serverInfo{Name: "viiwork-mcp", Version: "1.0.0"},
+			ServerInfo:      serverInfo{Name: "viiwork-mcp", Version: version},
 			Capabilities:    capabilities{Tools: &struct{}{}},
 		})
 

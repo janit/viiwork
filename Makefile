@@ -7,8 +7,10 @@ VERSION ?= $(shell ./scripts/version.sh)
 build:
 	go build -ldflags "-X main.version=$(VERSION)" -o bin/viiwork ./cmd/viiwork
 
+# Version-stamped like the node: the MCP server reports this string to the
+# assistant in its initialize response.
 mcp:
-	go build -o bin/viiwork-mcp ./cmd/viiwork-mcp
+	go build -ldflags "-X main.version=$(VERSION)" -o bin/viiwork-mcp ./cmd/viiwork-mcp
 
 # The acceptance checker. Version-stamped like the node because `viiwork-accept
 # --version` is what a conversion report records.
@@ -25,7 +27,7 @@ test:
 		go test ./... -v; \
 	else \
 		echo "go not found on host, running tests in container (--cpus=$(TEST_CPUS))..."; \
-		docker run --rm --cpus=$(TEST_CPUS) -v $(CURDIR):/src -w /src -e GOFLAGS=-buildvcs=false golang:1.27.0 go test ./... -v; \
+		docker run --rm --cpus=$(TEST_CPUS) -v $(CURDIR):/src -w /src -e GOFLAGS=-buildvcs=false golang:1.27.1 go test ./... -v; \
 	fi
 
 clean:
