@@ -5,6 +5,8 @@ package config
 
 import (
 	"fmt"
+	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -20,17 +22,10 @@ const (
 	EnforceOutgoing = "outgoing"
 	EnforceNone     = "none"
 
-	EngineLlamaCpp  = "llamacpp"
-	EngineVLLM      = "vllm"
-	EngineFreeToken = "freetoken"
-
 	VendorAuto   = "auto"
 	VendorNVIDIA = "nvidia"
 	VendorAMD    = "amd"
 	VendorNone   = "none"
-
-	SplitLayer = "layer"
-	SplitRow   = "row"
 )
 
 // Duration is a time.Duration written as a Go duration string ("60s").
@@ -178,29 +173,64 @@ type Model struct {
 	StartupTimeout Duration          `yaml:"startup_timeout"`
 	Args           []string          `yaml:"args"`
 	Env            map[string]string `yaml:"env"`
-	LlamaCpp       *LlamaCppOptions  `yaml:"llamacpp"`
-	VLLM           *VLLMOptions      `yaml:"vllm"`
-	FreeToken      *FreeTokenOptions `yaml:"freetoken"`
+	// Options collects every key this struct does not define, which is how a
+	// model carries its engine's own configuration block. Exactly one is
+	// allowed and it must be named for the model's engine; Parse rejects
+	// anything else, so a typo is still an error that names the key. The
+	// engine decodes its own block (engine.DecodeOptions) and config never
+	// looks inside — which is what keeps the list of engines that exist out of
+	// this package.
+	Options map[string]yaml.Node `yaml:",inline"`
 }
 
-type LlamaCppOptions struct {
-	Binary       string    `yaml:"binary"`
-	SplitMode    string    `yaml:"split_mode"`
-	SplitWeights []float64 `yaml:"split_weights"`
-	MainGPU      int       `yaml:"main_gpu"`
-	Threads      int       `yaml:"threads"`
+// EngineBlock is this model's engine configuration block, or a zero Node when
+// the operator wrote none. Parse guarantees any block present is named for
+// this model's engine.
+func (m Model) EngineBlock() yaml.Node {
+	if n, ok := m.Options[m.Engine]; ok {
+		return n
+	}
+	return yaml.Node{}
 }
 
-type VLLMOptions struct {
-	Binary               string  `yaml:"binary"`
-	GPUMemoryUtilization float64 `yaml:"gpu_memory_utilization"`
+// Equal reports whether two models are the same configuration.
+//
+// This cannot be reflect.DeepEqual, and the reason is a trap worth stating: an
+// engine block is a yaml.Node, which carries the Line and Column it was written
+// at. Two parses of the same model at different places in a file are therefore
+// not DeepEqual, and a supervisor diffing on that would restart a live backend
+// because an unrelated model above it gained a line. Compare the block by what
+// it says instead of where it was said.
+func (m Model) Equal(o Model) bool {
+	a, b := m, o
+	a.Options, b.Options = nil, nil
+	if !reflect.DeepEqual(a, b) {
+		return false
+	}
+	return blockText(m.Options) == blockText(o.Options)
 }
 
-type FreeTokenOptions struct {
-	Binary          string  `yaml:"binary"`
-	MemoryRatio     float64 `yaml:"memory_ratio"`
-	MoEBackend      string  `yaml:"moe_backend"`
-	KVReserveTokens int     `yaml:"kv_reserve_tokens"`
+// blockText renders an options map to a stable string, keys in sorted order.
+func blockText(opts map[string]yaml.Node) string {
+	if len(opts) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(opts))
+	for k := range opts {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var sb strings.Builder
+	for _, k := range keys {
+		node := opts[k]
+		sb.WriteString(k)
+		sb.WriteByte(':')
+		if b, err := yaml.Marshal(&node); err == nil {
+			sb.Write(b)
+		}
+		sb.WriteByte('\n')
+	}
+	return sb.String()
 }
 
 // Backends is how many backend processes the model runs: one per

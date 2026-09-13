@@ -1,94 +1,85 @@
 # Builds
 
-viiwork ships in two parallel builds living in the same repo. Both run the same Go server, the same routing, the same dashboards, the same API. They differ only in the llama.cpp binary that the server spawns under the hood.
+viiwork is one Go binary that supervises inference engines. An image is that
+binary dropped into a base that carries an engine's runtime — viiwork compiles
+against none of them, because it only ever spawns and supervises, so **pinning
+the base image is how the inference stack gets pinned.**
 
-| | Stable foundation | Experimental track |
-|---|---|---|
-| **Image tag** | `viiwork:latest` (a.k.a. `viiwork`) | `viiwork:gfx906` |
-| **Dockerfile** | `Dockerfile` | `Dockerfile.gfx906` |
-| **Make target** | `make docker` (alias: `make docker-stable`) | `make docker-gfx906` (alias: `make docker-experimental`) |
-| **llama.cpp source** | Upstream `ggml-org/llama.cpp` @ pinned release tag | Local fork tree at `$GFX906_FORK` (default `~/gfx906-work/llama.cpp-gfx906`) |
-| **Build dependencies** | Just the repo + Docker | Repo + Docker + the local fork tree (built separately) |
-| **Production status** | Default, ships everywhere | Bake-in track, opt-in per node |
-| **setup-node.sh choice** | Option 1 (default) | Option 2 |
+One image per engine, all under `docker/`, each named for what it carries.
 
-## Stable foundation — `viiwork:latest`
+| Image | Dockerfile | Engine | Make target |
+|---|---|---|---|
+| `viiwork:latest` (a.k.a. `viiwork`) | `docker/Dockerfile.rocm` | `llamacpp` on ROCm / gfx906 | `make docker-rocm` (aliases: `make docker`, `make docker-stable`) |
+| — | `docker/Dockerfile.vllm` | `vllm` | `make docker-vllm` — **arrives in v2.2.0** |
+| — | `docker/Dockerfile.freetoken` | `freetoken` | `make docker-freetoken` — **arrives in v2.2.0** |
 
-The default. Standard upstream llama.cpp from `ggml-org/llama.cpp`, built from the repo's `Dockerfile`. Pinned to a specific release tag (currently `b10437`, which carries Qwen3.5/3.6/3.8 hybrid DeltaNet support and MTP speculative decoding) and patched for the gfx906 FP8 header incompatibility. The pin must stay at or above `b10430` — the Qwen3.8 quants were cut with it, and the older `b9222` rejects that arch at load time. This is the build every viiwork node has run since day one and what every new node should start on unless there's a reason to do otherwise.
+`make docker` builds the ROCm image. That is deliberate rather than historical:
+Radeon VII is the core of this fleet, and the unqualified target pointing at it
+is right. What was wrong before v2.1.0 was the *name* — a root `Dockerfile`
+that silently meant "llama.cpp for gfx906" as though no other kind existed.
 
-Build: `make docker` or `docker compose up -d` (compose's `build:` directive triggers the build automatically the first time).
+## `docker/Dockerfile.rocm`
 
-## Experimental track — `viiwork:gfx906`
+Standard upstream llama.cpp from `ggml-org/llama.cpp`, pinned to a release tag
+(currently `b10437`, which carries Qwen3.5/3.6/3.8 hybrid DeltaNet support and
+MTP speculative decoding) and patched for the gfx906 FP8 header
+incompatibility. Built on `rocm/dev-ubuntu-24.04:6.2.4-complete` — the last
+ROCm with reliable gfx906 support.
 
-A gfx906-specialized fork of llama.cpp with non-HIP backends, unused model architectures, unused quant formats, half the HIP MMQ instances, the grammar parser, and several sampler strategies removed. The fork lives in its own repo (`llama.cpp-gfx906`) on the dev machine, not in this tree.
+**The pin must stay at or above `b10430`:** the Qwen3.8 quants were cut with it,
+and the older `b9222` rejects that architecture at load time with "unknown model
+architecture" rather than anything self-explanatory.
 
-What it has shown so far:
+Build: `make docker` (or `docker compose up -d`, whose `build:` directive
+triggers it the first time).
 
-| Measurement | Result | Source |
-|---|---|---|
-| Single-GPU bench parity vs upstream | -0.07 % (within noise) | `gfx906-work/results/20260408T085054Z-cutover-viiwork-gfx906/` |
-| 4 h sustained A/B vs upstream, concurrency 10 | **+3.0 %** sustained tok/s, 0 failures over 5455 vs 5298 requests | milestone tag `milestone/gfx906-fork-4h-soak-2026-04-09` |
-| RSS drift over 4 h | Bounded — both builds reach steady state in ~5 min and oscillate inside a ~2 GiB band, no upward trend | same milestone |
-| VRAM drift over 4 h | -2 MiB / +0 MiB | same milestone |
-| Binary size | -73 % lines in `llama-model.cpp`, -28 % in `llama-sampler.cpp`, ~370 source files removed | commit `49f51d5` |
+## Test images
 
-What it's still missing before promotion:
+`docker/test/` holds one-off images that pin an unmerged llama.cpp PR for a
+model bring-up — `Dockerfile.qwen-test`, `Dockerfile.granite-test`,
+`Dockerfile.k2-test`. Same-week architectures sometimes need an *unmerged*
+llama.cpp rather than a current one; pin the PR head in a dedicated test
+Dockerfile rather than tracking `master`, and re-pin to a release tag once it
+merges. They are not part of any release.
 
-- **24 h formal soak** under production load to formally clear the spec's `≤5% RSS drift` exit gate. The 4 h A/B soak (bounded RSS, flat VRAM) and the 6 h extreme stress test (4,979 reqs, 0 failures across stable+fork, replica+tensor-split) both showed stable memory — this is likely a formality, not a risk. TODO: run and record.
-- **Phase 3 kernel work — PAUSED at hard-stop.** Profile-guided kernel selection showed conservative headroom of only +9 pp (below the +15 % spec floor) after PMC corrections. `mul_mat_vec_q` is at 12 % of HBM peak bandwidth; R-mode (row tensor parallelism) is demoted. The failed experiment images are preserved (`viiwork:gfx906-mmq64-experiment-2026-04-09`, `viiwork:gfx906-hipgraphs-experiment-2026-04-09`). TODO: decide whether to pursue a different kernel angle or accept that the strip-down is the entire win.
-- Canary deploy on one production node alongside the cluster.
+## The gfx906 fork track is retired
 
-Build: `make docker-gfx906` (or the alias `make docker-experimental`). Requires the fork tree at `$GFX906_FORK`. Override with `make docker-gfx906 GFX906_FORK=/path/to/llama.cpp-gfx906` if you keep the fork somewhere else.
+Until v2.1.0 this file described a second first-class build: `viiwork:gfx906`,
+a gfx906-specialised fork of llama.cpp with unused architectures, quant formats
+and backends stripped out. It was **retired on 2026-08-30** and removed from
+this repo in v2.1.0.
 
-## When to use which
+It is worth saying why, because the numbers were good: a 4 h A/B soak measured
+**+3.0 % sustained tok/s** with bounded RSS and flat VRAM over 5455 requests.
+What killed it was not performance. The fork's base was ~2000 build tags behind,
+and the architecture prune that produced the win is exactly what made it unable
+to load three of the fleet's five models. No host ran it, and the published repo
+advertised a build track that no outside reader could build, because
+`Dockerfile.gfx906` needed a `--build-context` pointing at a fork tree that was
+never cloned.
 
-- **New node, fresh setup:** stable. Pick option 1 in `setup-node.sh` (or just press Enter — it's the default).
-- **Existing production node:** stable. Don't switch unless you're explicitly canarying the experimental build, and only after you've talked to whoever owns that node.
-- **Dev / test / one-off bench rig:** either. The experimental build is +3 % sustained throughput and the same memory profile in the soak, so for non-customer-facing work the experimental build is fine and arguably preferable.
-- **Canary:** one node on experimental, the rest on stable, watch metrics for 48 h. The `scripts/switch-node-build.sh` helper flips a single node between tracks in place without re-running full setup.
+The full record — measurements, the phase-2 kernel hard-stop, what was salvaged
+— is kept with the project's internal notes rather than here.
 
-## Switching a running node between tracks
-
-```bash
-./scripts/switch-node-build.sh
-```
-
-Prompts you for the target build, edits `docker-compose.yaml` in place, and restarts the stack. Bails if the target image doesn't exist locally and tells you how to obtain it.
-
-## Image distribution
-
-The stable image is built from this repo and any node can build it directly. The experimental image is built from a separate fork tree that doesn't live in this repo, so for nodes without that tree the image has to be transferred:
-
-```bash
-# On a node that has built it:
-docker save viiwork:gfx906 | ssh OTHER_NODE 'docker load'
-
-# Or via a registry once the fork has a published image:
-docker pull <registry>/viiwork:gfx906
-```
-
-A registry-pushed experimental image is on the to-do list but not yet set up.
-
-## Rollback
-
-Switching back to stable is symmetric:
-
-```bash
-./scripts/switch-node-build.sh   # pick option 1
-```
-
-Or manually: edit the `image:` line in `docker-compose.yaml` from `viiwork:gfx906` back to `viiwork`, restore the `build: .` line, then `docker compose up -d`. Stable rebuilds from the repo's `Dockerfile` so no cross-node transfer is needed.
+Two things still reference the retired image and are left as historical
+benchmarking apparatus rather than swept up: `configs/docker-compose.gfx906.yaml`
+and the A/B arms in `bench-harness/run_feature_soak.sh` and
+`run_overnight_soak.sh`. They need an image this repo no longer builds.
 
 ## Repo conventions
 
-- The two `Dockerfile`s live at the repo root. Both tracks are first-class citizens.
-- `docker-compose.yaml` is the active per-node compose file at the repo root (gitignored; copy it from the example below — `setup-node.sh` still writes v1 layouts and stops rather than running).
-- `configs/docker-compose.v2.example.yaml` is the stable-track example, and the one the README's Quick Start copies. It is a whole v2 node: host networking, `pid: host` for the on-GPU check, the state directory and the stop grace a clean drain needs.
-- `configs/docker-compose.gfx906.yaml` is the experimental-track example.
-- `configs/docker-compose.soak-{prod,fork}.yaml` are the dedicated A/B soak compose files used by `bench-harness/run_overnight_soak.sh`. Not for normal use.
-- All benchmark/experiment compose + viiwork configs live under `configs/`; see `scripts/deploy.sh` for an interactive picker.
+- **Every Dockerfile lives under `docker/`**, with test images under
+  `docker/test/`. Nothing builds from the repo root: `docker build .` with no
+  `-f` will not find a Dockerfile, and `make docker` is the documented path.
+- `docker-compose.yaml` is the active per-node compose file at the repo root
+  (gitignored; copy it from the example below).
+- `configs/docker-compose.v2.example.yaml` is the example the README's Quick
+  Start copies. It is a whole v2 node: host networking, `pid: host` for the
+  on-GPU check, the state directory, and the stop grace a clean drain needs.
+- All benchmark and experiment compose files and viiwork configs live under
+  `configs/`; see `scripts/deploy.sh` for an interactive picker.
 
 ## See also
 
-- `bench-harness/README.md` — the harness that produced the milestone numbers above
-- Tag `milestone/gfx906-fork-4h-soak-2026-04-09` — committed proof of the 4 h A/B result
+- `docs/adding-an-engine.md` — how an engine and its image get added
+- `bench-harness/README.md` — the harness that produced the numbers above

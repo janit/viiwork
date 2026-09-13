@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/base64"
 	"fmt"
+	"github.com/janit/viiwork/v2/internal/engine"
 	"net/netip"
 	"os"
 	"strings"
@@ -232,23 +233,25 @@ func (c *Config) validateModels() error {
 		}
 		names[m.Name] = i
 
-		switch m.Engine {
-		case EngineLlamaCpp, EngineVLLM, EngineFreeToken:
-		default:
-			return fmt.Errorf("%s.engine %q must be one of: llamacpp, vllm, freetoken", p, m.Engine)
+		eng, ok := engine.Lookup(m.Engine)
+		if !ok {
+			// An empty registry is a build wiring fault, not an operator's
+			// mistake, and "must be one of: " with nothing after it would send
+			// them looking in the wrong place.
+			if names := engine.Names(); len(names) > 0 {
+				return fmt.Errorf("%s.engine %q must be one of: %s", p, m.Engine, strings.Join(names, ", "))
+			}
+			return fmt.Errorf("%s.engine %q: this binary registers no engines (an engine package must be blank-imported)", p, m.Engine)
 		}
 		if strings.TrimSpace(m.Path) == "" {
 			return fmt.Errorf("%s.path is required", p)
-		}
-		if err := validateEngineBlocks(p, m); err != nil {
-			return err
 		}
 
 		if m.GPUsPerBackend < 1 {
 			return fmt.Errorf("%s.gpus_per_backend must be >= 1, got %d", p, m.GPUsPerBackend)
 		}
-		if len(m.GPUs) == 0 && m.Engine != EngineLlamaCpp {
-			return fmt.Errorf("%s.gpus is required for engine %s (only llamacpp can run on CPU)", p, m.Engine)
+		if len(m.GPUs) == 0 && !runsOnCPU(eng) {
+			return fmt.Errorf("%s.gpus is required for engine %s (it cannot run on CPU)", p, m.Engine)
 		}
 		for _, g := range m.GPUs {
 			if g < 0 {
@@ -275,76 +278,40 @@ func (c *Config) validateModels() error {
 		if m.StartupTimeout.Duration < 0 {
 			return fmt.Errorf("%s.startup_timeout must be >= 0", p)
 		}
-		if err := validateEngineOptions(p, m); err != nil {
-			return err
+		if v, ok := eng.(engine.OptionsValidator); ok {
+			if err := v.ValidateOptions(p, ModelSpec(*m)); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
 }
 
-// validateEngineBlocks rejects an options block written for a different
-// engine than the model runs.
-func validateEngineBlocks(p string, m *Model) error {
-	blocks := []struct {
-		engine string
-		set    bool
-	}{
-		{EngineLlamaCpp, m.LlamaCpp != nil},
-		{EngineVLLM, m.VLLM != nil},
-		{EngineFreeToken, m.FreeToken != nil},
-	}
-	for _, b := range blocks {
-		if b.set && b.engine != m.Engine {
-			return fmt.Errorf("%s.%s is only allowed when engine is %s (engine is %s)", p, b.engine, b.engine, m.Engine)
-		}
-	}
-	return nil
+// runsOnCPU reports whether an engine has declared it can serve with no GPUs.
+// Not implementing engine.CPURunner means it cannot, which is the safe default
+// for an engine whose author did not think about it.
+func runsOnCPU(e engine.Engine) bool {
+	c, ok := e.(engine.CPURunner)
+	return ok && c.RunsOnCPU()
 }
 
-func validateEngineOptions(p string, m *Model) error {
-	switch m.Engine {
-	case EngineLlamaCpp:
-		o := m.LlamaCpp
-		if o == nil {
-			return nil // only a hand-built Config; Parse always fills it
-		}
-		if o.SplitMode != SplitLayer && o.SplitMode != SplitRow {
-			return fmt.Errorf("%s.llamacpp.split_mode %q must be layer or row", p, o.SplitMode)
-		}
-		if len(o.SplitWeights) > 0 {
-			if m.GPUsPerBackend < 2 {
-				return fmt.Errorf("%s.llamacpp.split_weights needs gpus_per_backend >= 2", p)
-			}
-			if len(o.SplitWeights) != m.GPUsPerBackend {
-				return fmt.Errorf("%s.llamacpp.split_weights has %d entries, gpus_per_backend is %d", p, len(o.SplitWeights), m.GPUsPerBackend)
-			}
-		}
-		if o.MainGPU < 0 || o.MainGPU >= m.GPUsPerBackend {
-			return fmt.Errorf("%s.llamacpp.main_gpu %d must be 0..%d", p, o.MainGPU, m.GPUsPerBackend-1)
-		}
-		if o.Threads < 0 {
-			return fmt.Errorf("%s.llamacpp.threads must be >= 0 (0 = auto)", p)
-		}
-	case EngineVLLM:
-		if o := m.VLLM; o != nil && (o.GPUMemoryUtilization <= 0 || o.GPUMemoryUtilization > 1) {
-			return fmt.Errorf("%s.vllm.gpu_memory_utilization %v must be in (0, 1]", p, o.GPUMemoryUtilization)
-		}
-	case EngineFreeToken:
-		o := m.FreeToken
-		if o == nil {
-			return nil
-		}
-		if o.MemoryRatio <= 0 || o.MemoryRatio > 1 {
-			return fmt.Errorf("%s.freetoken.memory_ratio %v must be in (0, 1]", p, o.MemoryRatio)
-		}
-		if strings.TrimSpace(o.MoEBackend) == "" {
-			return fmt.Errorf("%s.freetoken.moe_backend must not be empty", p)
-		}
-		if o.KVReserveTokens < 0 {
-			return fmt.Errorf("%s.freetoken.kv_reserve_tokens must be >= 0", p)
-		}
+// ModelSpec builds the engine.Spec for a model's FIRST backend, which is what
+// an engine validates its options against: Spec.GPUs is one backend's cards,
+// so a rule about how many cards a backend has (llama.cpp's split weights, an
+// engine that binds exactly one) reads the same here as at launch. Port and
+// Vendor are zero — nothing has been assigned yet, and no options rule may
+// depend on them.
+func ModelSpec(m Model) engine.Spec {
+	return engine.Spec{
+		Name:     m.Name,
+		Path:     m.Path,
+		GPUs:     m.BackendGPUs(0),
+		Context:  m.Context,
+		Parallel: m.Parallel,
+		Backends: m.Backends(),
+		Args:     m.Args,
+		Options:  m.EngineBlock(),
 	}
-	return nil
 }
 
 // validatePowerControl fails startup on a power-control block that would not do

@@ -19,9 +19,20 @@ mesh:
   open: false
   seeds: []                  # optional "ip:7946" of any member, e.g. a gateway host
 
+# Every key above `models:` is the node's. Inside a model, `engine:` names the
+# engine AND the optional block below it that belongs to that engine: write
+# `llamacpp:` under `engine: llamacpp` and nothing else — a block for another
+# engine, or a misspelled one, is rejected by name at startup.
+#
+# Keep an engine block small. Its long tail of tuning flags belongs in `args:`,
+# which is appended last so an operator's flag always wins; a block key exists
+# only where the NODE decides the value or publishes it to the mesh.
+#
+# v2.1.0 ships `llamacpp`. `vllm` and `freetoken` arrive in v2.2.0, and adding
+# another is one package and one blank import: see docs/adding-an-engine.md.
 models:
   - name: Qwen3.8-27B        # the served model id
-    engine: llamacpp         # llamacpp | vllm | freetoken
+    engine: llamacpp         # names the engine and the llamacpp: block below
     path: /models/Qwen3.8-27B-UD-Q4_K_XL.gguf
     gpus: [0, 1]
     gpus_per_backend: 2      # one backend split across both cards
@@ -30,6 +41,9 @@ models:
     startup_timeout: 45m     # split models load slowly; the default is 10m
     args: ["--spec-type", "draft-mtp", "--spec-draft-n-max", "1",
            "--chat-template-kwargs", '{"enable_thinking": false}']
+    llamacpp:                # optional; these are the defaults
+      binary: llama-server
+      split_mode: layer      # layer | row
   - name: granite-4.2-8b
     engine: llamacpp
     path: /models/granite-4.2-8b-Q8_0.gguf

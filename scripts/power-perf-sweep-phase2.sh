@@ -34,9 +34,10 @@
 set -euo pipefail
 
 GPU="${GPU:-3}"
-IMAGE="${IMAGE:-viiwork:gfx906}"
+IMAGE="${IMAGE:-viiwork}"
 MODEL_FILE="${MODEL_FILE:-gemma-4-26B-A4B-it-UD-Q3_K_XL.gguf}"
-MODELS_DIR="${MODELS_DIR:-/home/janit/viiwork-private/models}"
+REPO_DIR="${REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+MODELS_DIR="${MODELS_DIR:-${REPO_DIR}/models}"
 PROMPT_FILE="${PROMPT_FILE:-/tmp/rocprof-prompts/helsinki.txt}"
 N_PREDICT="${N_PREDICT:-50}"
 RUNS="${RUNS:-2}"

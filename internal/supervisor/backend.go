@@ -37,9 +37,15 @@ type Backend struct {
 
 	inFlight atomic.Int64
 
-	mu         sync.Mutex
-	proc       *Process
-	port       int
+	mu   sync.Mutex
+	proc *Process
+	port int
+	// spec is the Spec this backend's process was launched with. Load is given
+	// the same one, so an engine that cannot observe its own slot count or
+	// context has the node's intent to fall back on without keeping state of
+	// its own — and without the port-keyed map that would misreport as soon as
+	// a port is reassigned.
+	spec       engine.Spec
 	launchedAt time.Time
 	ladder     *Ladder
 	phase      string
@@ -168,10 +174,19 @@ func (b *Backend) launch() error {
 		return fmt.Errorf("%s: taking a loopback port: %w", b.id, err)
 	}
 	b.applyPowerLimit()
-	cmd, err := b.eng.Command(engine.Spec{Model: b.model, GPUs: slices.Clone(b.gpus), Port: port, Vendor: b.deps.Vendor})
+	// One builder for the config-to-Spec mapping, shared with validation, so an
+	// engine validates its options against the same shape it is launched with.
+	spec := config.ModelSpec(b.model)
+	spec.GPUs = slices.Clone(b.gpus)
+	spec.Port = port
+	spec.Vendor = b.deps.Vendor
+	cmd, err := b.eng.Command(spec)
 	if err != nil {
 		return fmt.Errorf("%w: %w", errCommand, err)
 	}
+	b.mu.Lock()
+	b.spec = spec
+	b.mu.Unlock()
 	env := backendEnv(b.deps.Environ(), b.deps.Vendor, b.gpus, cmd.Env, b.model.Env)
 	proc, err := StartProcess(cmd.Path, cmd.Args, env, b.out)
 	if err != nil {

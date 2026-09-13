@@ -20,7 +20,7 @@ import (
 
 // The llamacpp engine reports token progress. Only this test imports it:
 // supervisor code stays engine-blind.
-var _ TokenProgressReader = llamacpp.New()
+var _ engine.TokenProgressReader = llamacpp.New()
 
 // fakeModel is a models[] entry on the fake engine; name must be unique per
 // test because the fake engine's call log is keyed by it. Building it forgets

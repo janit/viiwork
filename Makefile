@@ -1,4 +1,4 @@
-.PHONY: build mcp accept test clean docker docker-stable docker-gfx906 docker-experimental up down
+.PHONY: build mcp accept test clean docker docker-stable docker-rocm up down
 
 # scripts/version.sh, not `git describe` inline: the private repo carries no
 # tags, so describe reports the last one it can still see. See that script.
@@ -34,38 +34,25 @@ clean:
 	rm -rf bin/
 
 # === Docker builds ===
-# viiwork ships in two parallel images that share the Go server but
-# differ in the llama.cpp binary they spawn. See BUILDS.md for the
-# full comparison and rollout guidance.
+# One image per engine, under docker/. See BUILDS.md.
 #
-#   docker / docker-stable           -> viiwork:latest  (upstream llama.cpp)
-#   docker-gfx906 / docker-experimental -> viiwork:gfx906 (stripped fork)
+#   docker-rocm (alias: docker, docker-stable) -> viiwork:latest
 #
-# The two pairs are aliases so the Makefile reads symmetrically with
-# the language used in BUILDS.md and scripts/setup-node.sh, while
-# keeping the original target names working for older docs and habits.
-
-# Stable foundation: standard upstream llama.cpp from the default Dockerfile.
+# One image per engine, all under docker/, named for what they carry rather
+# than left implied: Dockerfile.rocm is llama.cpp built for ROCm/gfx906, which
+# is the engine the reference fleet runs and the one v2.1.0 ships. The vLLM and
+# FreeToken images arrive in v2.2.0 as docker-vllm and docker-freetoken.
+#
 # VERSION must be passed through: the Dockerfile defaults ARG VERSION to "dev",
 # so without this the image reports "dev" from /v1/cluster and /v1/status no
 # matter what the tree is tagged — which is worst precisely on a release build,
-# where the tag is the whole point. scripts/update.sh and the gfx906 target
-# already do this; this target was the odd one out.
-docker docker-stable:
-	docker build --build-arg VERSION=$(VERSION) -t viiwork .
-
-# Experimental track: gfx906-stripped fork build. Requires the local fork
-# tree at $(GFX906_FORK) and uses BuildKit's --build-context to pull it
-# into the build without bloating the main viiwork build context.
-GFX906_FORK ?= $(HOME)/gfx906-work/llama.cpp-gfx906
-docker-gfx906 docker-experimental:
-	@test -d "$(GFX906_FORK)/.git" || (echo "fork tree not found at $(GFX906_FORK)" >&2; exit 2)
-	DOCKER_BUILDKIT=1 docker build \
-	    -t viiwork:gfx906 \
-	    -f Dockerfile.gfx906 \
-	    --build-context fork=$(GFX906_FORK) \
-	    --build-arg VERSION=$(VERSION)-gfx906 \
-	    .
+# where the tag is the whole point.
+#
+# docker and docker-stable stay as aliases: scripts and habits use them, and
+# Radeon VII is the core build, so the unqualified name pointing at it is
+# right rather than merely convenient.
+docker docker-stable docker-rocm:
+	docker build --build-arg VERSION=$(VERSION) -f docker/Dockerfile.rocm -t viiwork .
 
 up:
 	docker compose up -d

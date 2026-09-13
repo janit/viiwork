@@ -68,7 +68,7 @@ func callsInOrder(names ...string) []fakeCall {
 	defer fakeLog.mu.Unlock()
 	var out []fakeCall
 	for _, c := range fakeLog.calls {
-		if slices.Contains(names, c.Spec.Model.Name) {
+		if slices.Contains(names, c.Spec.Name) {
 			out = append(out, c)
 		}
 	}
@@ -94,7 +94,7 @@ func TestSupervisorT1LoadOrder(t *testing.T) {
 		t.Fatalf("calls = %d, want 4", len(calls))
 	}
 	for i, c := range calls {
-		id := c.Spec.Model.Name + "/" + map[int]string{0: "0", 1: "1", 2: "0", 3: "1"}[c.Spec.GPUs[0]]
+		id := c.Spec.Name + "/" + map[int]string{0: "0", 1: "1", 2: "0", 3: "1"}[c.Spec.GPUs[0]]
 		if id != want[i] {
 			t.Errorf("launch %d = %s, want %s", i, id, want[i])
 		}

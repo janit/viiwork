@@ -10,7 +10,7 @@ import (
 	"github.com/janit/viiwork/v2/internal/engine"
 )
 
-var qwen = config.Model{Name: "Qwen3.8-27B", Engine: config.EngineLlamaCpp, Context: 49152, Parallel: 2}
+var qwen = config.Model{Name: "Qwen3.8-27B", Engine: "llamacpp", Context: 49152, Parallel: 2}
 
 func healthyView(id string, slots, busy, inFlight int, ctx int64) backendView {
 	return backendView{

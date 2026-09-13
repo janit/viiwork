@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // testSecret is standard base64 of 32 zero bytes.
@@ -19,7 +21,7 @@ func envOf(kv map[string]string) func(string) (string, bool) {
 func validConfig() *Config {
 	c := Defaults()
 	c.Mesh.Open = true
-	c.Models = []Model{{Name: "granite-4.2-8b", Engine: EngineLlamaCpp, Path: "/models/granite.gguf", GPUs: []int{2}, Context: 16384}}
+	c.Models = []Model{{Name: "granite-4.2-8b", Engine: testEngineCPU, Path: "/models/granite.gguf", GPUs: []int{2}, Context: 16384}}
 	applyModelDefaults(&c.Models[0])
 	return &c
 }
@@ -27,6 +29,19 @@ func validConfig() *Config {
 func engineModel(engine, name string, gpus ...int) Model {
 	m := Model{Name: name, Engine: engine, Path: "/models/" + name, GPUs: gpus, Context: 8192}
 	applyModelDefaults(&m)
+	return m
+}
+
+// engineBlockModel is engineModel carrying the engine's own configuration
+// block, written as an operator would write it.
+func engineBlockModel(engine, name, block string, gpus ...int) Model {
+	m := engineModel(engine, name, gpus...)
+	var n yaml.Node
+	if err := yaml.Unmarshal([]byte(block), &n); err != nil {
+		panic(err)
+	}
+	// Unmarshal gives a document node; the mapping is its only child.
+	m.Options = map[string]yaml.Node{engine: *n.Content[0]}
 	return m
 }
 
@@ -83,42 +98,30 @@ func TestValidate(t *testing.T) {
 
 		// models
 		{name: "zero-model super peer", mutate: func(c *Config) { c.Models = nil }},
-		{name: "duplicate model name", mutate: func(c *Config) { c.Models = append(c.Models, engineModel(EngineLlamaCpp, "granite-4.2-8b", 3)) }, wantErr: "models[1].name \"granite-4.2-8b\" is already used by models[0]"},
+		{name: "duplicate model name", mutate: func(c *Config) { c.Models = append(c.Models, engineModel(testEngineCPU, "granite-4.2-8b", 3)) }, wantErr: "models[1].name \"granite-4.2-8b\" is already used by models[0]"},
 		{name: "whitespace in name", mutate: func(c *Config) { c.Models[0].Name = "granite 8b" }, wantErr: "no whitespace"},
 		{name: "unknown engine", mutate: func(c *Config) { c.Models[0].Engine = "tgi" }, wantErr: "models[0].engine"},
 		{name: "missing path", mutate: func(c *Config) { c.Models[0].Path = "" }, wantErr: "models[0].path"},
-		{name: "gpu shared across models", mutate: func(c *Config) { c.Models = append(c.Models, engineModel(EngineVLLM, "other", 2)) }, wantErr: "models[1].gpus: GPU 2 is already used by models[0] (granite-4.2-8b)"},
+		{name: "gpu shared across models", mutate: func(c *Config) { c.Models = append(c.Models, engineModel(testEngineGPU, "other", 2)) }, wantErr: "models[1].gpus: GPU 2 is already used by models[0] (granite-4.2-8b)"},
 		{name: "gpu listed twice", mutate: func(c *Config) { c.Models[0].GPUs = []int{2, 2} }, wantErr: "lists GPU 2 twice"},
 		{name: "negative gpu", mutate: func(c *Config) { c.Models[0].GPUs = []int{-1} }, wantErr: "is not a GPU index"},
 		{name: "gpus not divisible", mutate: func(c *Config) { c.Models[0].GPUs = []int{0, 1, 2}; c.Models[0].GPUsPerBackend = 2 }, wantErr: "not divisible"},
 		{name: "llamacpp on cpu", mutate: func(c *Config) { c.Models[0].GPUs = nil }},
-		{name: "vllm without gpus", mutate: func(c *Config) { c.Models = []Model{engineModel(EngineVLLM, "v")} }, wantErr: "only llamacpp can run on CPU"},
-		{name: "block for another engine", mutate: func(c *Config) { c.Models[0].VLLM = &VLLMOptions{GPUMemoryUtilization: 0.9} }, wantErr: "models[0].vllm is only allowed when engine is vllm"},
+		{name: "gpu-only engine without gpus", mutate: func(c *Config) { c.Models = []Model{engineModel(testEngineGPU, "v")} }, wantErr: "it cannot run on CPU"},
 		{name: "zero context", mutate: func(c *Config) { c.Models[0].Context = 0 }, wantErr: "models[0].context"},
 		{name: "zero parallel", mutate: func(c *Config) { c.Models[0].Parallel = 0 }, wantErr: "models[0].parallel"},
-		{name: "split weights on one gpu", mutate: func(c *Config) { c.Models[0].LlamaCpp.SplitWeights = []float64{1} }, wantErr: "needs gpus_per_backend >= 2"},
-		{name: "split weights length", mutate: func(c *Config) {
-			c.Models[0].GPUs = []int{0, 1}
-			c.Models[0].GPUsPerBackend = 2
-			c.Models[0].LlamaCpp.SplitWeights = []float64{1, 1, 1}
-		}, wantErr: "has 3 entries"},
-		{name: "split weights valid", mutate: func(c *Config) {
-			c.Models[0].GPUs = []int{0, 1}
-			c.Models[0].GPUsPerBackend = 2
-			c.Models[0].LlamaCpp.SplitWeights = []float64{1.16, 1.0}
+		// An engine's own option rules are the engine's; this package only has
+		// to carry the block and let the error through with the field named.
+		// The rules themselves are tested where they live, in the engine.
+		{name: "engine rejects its own options", mutate: func(c *Config) {
+			c.Models = []Model{engineBlockModel(testEnginePick, "p", "knob: 2\n", 0)}
+		}, wantErr: "models[0].picky.knob 2 must be <= 1"},
+		{name: "engine accepts its own options", mutate: func(c *Config) {
+			c.Models = []Model{engineBlockModel(testEnginePick, "p", "knob: 0.5\n", 0)}
 		}},
-		{name: "bad split mode", mutate: func(c *Config) { c.Models[0].LlamaCpp.SplitMode = "tensor" }, wantErr: "split_mode"},
-		{name: "main gpu out of range", mutate: func(c *Config) { c.Models[0].LlamaCpp.MainGPU = 1 }, wantErr: "main_gpu 1 must be 0..0"},
-		{name: "vllm utilization above 1", mutate: func(c *Config) {
-			m := engineModel(EngineVLLM, "v", 0)
-			m.VLLM.GPUMemoryUtilization = 1.5
-			c.Models = []Model{m}
-		}, wantErr: "gpu_memory_utilization"},
-		{name: "freetoken memory ratio above 1", mutate: func(c *Config) {
-			m := engineModel(EngineFreeToken, "f", 0)
-			m.FreeToken.MemoryRatio = 2
-			c.Models = []Model{m}
-		}, wantErr: "memory_ratio"},
+		{name: "engine rejects an unknown key in its block", mutate: func(c *Config) {
+			c.Models = []Model{engineBlockModel(testEnginePick, "p", "knobb: 1\n", 0)}
+		}, wantErr: "unknown key knobb"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

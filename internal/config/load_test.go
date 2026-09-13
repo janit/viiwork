@@ -52,24 +52,44 @@ func TestParseFullExample(t *testing.T) {
 	}
 
 	q := cfg.Models[0]
-	if q.Name != "Qwen3.8-27B" || q.Engine != EngineLlamaCpp || q.GPUsPerBackend != 2 || q.Context != 49152 || q.Parallel != 2 {
+	if q.Name != "Qwen3.8-27B" || q.Engine != testEngineCPU || q.GPUsPerBackend != 2 || q.Context != 49152 || q.Parallel != 2 {
 		t.Errorf("models[0] = %+v", q)
 	}
-	if q.LlamaCpp == nil || q.LlamaCpp.Binary != "llama-server" || q.LlamaCpp.SplitMode != SplitLayer || len(q.LlamaCpp.SplitWeights) != 2 {
-		t.Errorf("models[0].llamacpp = %+v", q.LlamaCpp)
+	var lc struct {
+		SplitMode    string    `yaml:"split_mode"`
+		SplitWeights []float64 `yaml:"split_weights"`
+	}
+	if b := q.EngineBlock(); b.IsZero() {
+		t.Error("models[0].llamacpp block was not captured")
+	} else if err := b.Decode(&lc); err != nil {
+		t.Errorf("decoding models[0].llamacpp: %v", err)
+	} else if lc.SplitMode != "layer" || len(lc.SplitWeights) != 2 {
+		t.Errorf("models[0].llamacpp = %+v", lc)
 	}
 	if q.Backends() != 1 || !equalInts(q.BackendGPUs(0), []int{0, 1}) {
 		t.Errorf("models[0] backends=%d gpus=%v", q.Backends(), q.BackendGPUs(0))
 	}
 
 	g := cfg.Models[1]
-	if g.Engine != EngineVLLM || g.VLLM == nil || g.VLLM.Binary != "vllm" || g.VLLM.GPUMemoryUtilization != 0.85 || g.LlamaCpp != nil {
-		t.Errorf("models[1] = %+v vllm=%+v", g, g.VLLM)
+	var vl struct {
+		Util float64 `yaml:"gpu_memory_utilization"`
+	}
+	if g.Engine != testEngineGPU || len(g.Options) != 1 {
+		t.Errorf("models[1] = %+v options=%v", g, g.Options)
+	}
+	gb := g.EngineBlock()
+	if err := gb.Decode(&vl); err != nil || vl.Util != 0.85 {
+		t.Errorf("models[1].vllm = %+v (%v)", vl, err)
 	}
 
 	d := cfg.Models[2]
-	if d.Engine != EngineFreeToken || d.FreeToken == nil || d.FreeToken.MoEBackend != "auto" || d.FreeToken.MemoryRatio != 0.9 || d.FreeToken.KVReserveTokens != 32768 {
-		t.Errorf("models[2].freetoken = %+v", d.FreeToken)
+	var ft struct {
+		MemoryRatio float64 `yaml:"memory_ratio"`
+		KVReserve   int     `yaml:"kv_reserve_tokens"`
+	}
+	db := d.EngineBlock()
+	if err := db.Decode(&ft); err != nil || ft.MemoryRatio != 0.9 || ft.KVReserve != 32768 {
+		t.Errorf("models[2].freetoken = %+v (%v)", ft, err)
 	}
 	if d.StartupTimeout.Duration != 30*time.Minute || d.Env["HOME"] != "/home/janit" || d.Parallel != 4 {
 		t.Errorf("models[2] = %+v", d)
@@ -105,7 +125,6 @@ func TestParseAppliesDefaults(t *testing.T) {
 		{"activity.event_history", cfg.Activity.EventHistory, 2000},
 		{"models[0].gpus_per_backend", cfg.Models[0].GPUsPerBackend, 1},
 		{"models[0].parallel", cfg.Models[0].Parallel, 1},
-		{"models[0].llamacpp.binary", cfg.Models[0].LlamaCpp.Binary, "llama-server"},
 	}
 	for _, c := range checks {
 		if c.got != c.want {
@@ -196,4 +215,39 @@ func equalInts(a, b []int) bool {
 		}
 	}
 	return true
+}
+
+// A model may carry one block, named for its own engine. Anything else is an
+// unknown key — which is what kept a typo an error when Model stopped having a
+// field per engine.
+func TestParseRejectsForeignAndUnknownModelKeys(t *testing.T) {
+	base := "models:\n  - name: m\n    engine: llamacpp\n    path: /m.gguf\n    gpus: [0]\n    context: 4096\n"
+	for _, tc := range []struct{ name, extra, want string }{
+		{"another engine's block", "    vllm:\n      gpu_memory_utilization: 0.9\n", `unknown key "vllm"`},
+		{"a typo", "    lamacpp:\n      binary: x\n", `unknown key "lamacpp"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]byte(base + tc.extra))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want %s", err, tc.want)
+			}
+			if err != nil && !strings.Contains(err.Error(), "models[0]") {
+				t.Errorf("err = %q, want the model named", err)
+			}
+		})
+	}
+}
+
+func TestParseKeepsOwnEngineBlock(t *testing.T) {
+	cfg, err := Parse([]byte("models:\n  - name: m\n    engine: llamacpp\n    path: /m.gguf\n    gpus: [0]\n    context: 4096\n    llamacpp:\n      threads: 6\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var o struct {
+		Threads int `yaml:"threads"`
+	}
+	blk := cfg.Models[0].EngineBlock()
+	if err := blk.Decode(&o); err != nil || o.Threads != 6 {
+		t.Fatalf("llamacpp block = %+v (%v)", o, err)
+	}
 }

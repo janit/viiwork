@@ -18,10 +18,10 @@
 #   3. Download model (~16.8 GB, one time):
 #        ./scripts/download-qwen36.sh
 #
-#   4. (Re)build test image -- Dockerfile.qwen-test pulls llama.cpp
+#   4. (Re)build test image -- docker/test/Dockerfile.qwen-test pulls llama.cpp
 #      master at build time, so rebuild if last built before Qwen3.6
 #      arch support landed upstream:
-#        docker build --no-cache -t viiwork:qwen-test -f Dockerfile.qwen-test .
+#        docker build --no-cache -t viiwork:qwen-test -f docker/test/Dockerfile.qwen-test .
 #
 # Run / tear down:
 #

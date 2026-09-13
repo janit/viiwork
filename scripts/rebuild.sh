@@ -28,7 +28,7 @@ docker network prune -f 2>/dev/null || true
 
 VERSION=$("$(dirname "$0")/version.sh")
 echo "==> Building viiwork (version: ${VERSION})..."
-docker build --build-arg VERSION="${VERSION}" -t viiwork .
+docker build --build-arg VERSION="${VERSION}" -f docker/Dockerfile.rocm -t viiwork .
 
 echo "==> Starting containers..."
 docker compose up -d

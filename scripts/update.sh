@@ -21,7 +21,7 @@ git pull --ff-only
 
 VERSION=$("$(dirname "$0")/version.sh")
 echo "==> Building Docker image (version: ${VERSION})..."
-docker build --no-cache --build-arg VERSION="${VERSION}" -t viiwork .
+docker build --no-cache --build-arg VERSION="${VERSION}" -f docker/Dockerfile.rocm -t viiwork .
 
 if [ "$NO_RESTART" = true ]; then
     echo "==> Image built. Skipping restart (--no-restart)."

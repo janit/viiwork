@@ -53,7 +53,7 @@ func fakeCallsFor(model string) []fakeCall {
 	defer fakeLog.mu.Unlock()
 	var out []fakeCall
 	for _, c := range fakeLog.calls {
-		if c.Spec.Model.Name == model {
+		if c.Spec.Name == model {
 			out = append(out, c)
 		}
 	}
@@ -64,7 +64,7 @@ func fakeCallsFor(model string) []fakeCall {
 func resetFakeCalls(model string) {
 	fakeLog.mu.Lock()
 	defer fakeLog.mu.Unlock()
-	fakeLog.calls = slices.DeleteFunc(fakeLog.calls, func(c fakeCall) bool { return c.Spec.Model.Name == model })
+	fakeLog.calls = slices.DeleteFunc(fakeLog.calls, func(c fakeCall) bool { return c.Spec.Name == model })
 }
 
 func fakeArgs(args []string) map[string]string {
@@ -88,7 +88,7 @@ func (f *fakeEngine) Command(s engine.Spec) (engine.Command, error) {
 	fakeLog.mu.Lock()
 	first := true
 	for _, c := range fakeLog.calls {
-		if c.Spec.Model.Name == s.Model.Name {
+		if c.Spec.Name == s.Name {
 			first = false
 			break
 		}
@@ -96,7 +96,7 @@ func (f *fakeEngine) Command(s engine.Spec) (engine.Command, error) {
 	fakeLog.calls = append(fakeLog.calls, fakeCall{Spec: s, Port: s.Port, At: time.Now()})
 	fakeLog.mu.Unlock()
 
-	kv := fakeArgs(s.Model.Args)
+	kv := fakeArgs(s.Args)
 	if _, ok := kv["command_error"]; ok {
 		return engine.Command{}, errors.New("fake: command_error requested")
 	}
@@ -169,22 +169,22 @@ func (f *fakeEngine) readLoad(ctx context.Context, addr string) (fakeLoadBody, e
 	return body, err
 }
 
-func (f *fakeEngine) Load(ctx context.Context, addr string) (engine.Load, error) {
+func (f *fakeEngine) Load(ctx context.Context, _ engine.Spec, addr string) (engine.Load, error) {
 	b, err := f.readLoad(ctx, addr)
 	return engine.Load{Slots: b.Slots, Busy: b.Busy}, err
 }
 
-// fakeProgressEngine also reports token progress (TokenProgressReader).
+// fakeProgressEngine also reports token progress (engine.TokenProgressReader).
 type fakeProgressEngine struct{ fakeEngine }
 
-func (f *fakeProgressEngine) LoadProgress(ctx context.Context, addr string) (engine.Load, int64, int64, error) {
+func (f *fakeProgressEngine) LoadProgress(ctx context.Context, _ engine.Spec, addr string) (engine.Load, int64, int64, error) {
 	b, err := f.readLoad(ctx, addr)
 	return engine.Load{Slots: b.Slots, Busy: b.Busy}, b.Decoded, b.Remain, err
 }
 
 var (
-	_ engine.Engine       = (*fakeEngine)(nil)
-	_ TokenProgressReader = (*fakeProgressEngine)(nil)
+	_ engine.Engine              = (*fakeEngine)(nil)
+	_ engine.TokenProgressReader = (*fakeProgressEngine)(nil)
 )
 
 func init() {

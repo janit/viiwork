@@ -78,12 +78,12 @@ ls -lh "$GGUF" | tee -a "$REPORT"
 section "Step 4: ensure viiwork:qwen-test image present"
 if ! docker image inspect viiwork:qwen-test >/dev/null 2>&1; then
     log "Image missing; building (can take 10+ min)..."
-    docker build -t viiwork:qwen-test -f Dockerfile.qwen-test . 2>&1 \
+    docker build -t viiwork:qwen-test -f docker/test/Dockerfile.qwen-test . 2>&1 \
         | tee -a "$REPORT" | tail -20
     docker image inspect viiwork:qwen-test >/dev/null 2>&1 || die "docker build failed"
 else
     log "Image present. NOTE: if last built before Qwen3.6 arch support landed"
-    log "upstream, rebuild with: docker build --no-cache -t viiwork:qwen-test -f Dockerfile.qwen-test ."
+    log "upstream, rebuild with: docker build --no-cache -t viiwork:qwen-test -f docker/test/Dockerfile.qwen-test ."
 fi
 docker image inspect --format '{{.Id}} {{.Size}} bytes' viiwork:qwen-test | tee -a "$REPORT"
 

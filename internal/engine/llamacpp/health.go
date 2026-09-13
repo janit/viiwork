@@ -72,8 +72,8 @@ type slotEntry struct {
 }
 
 // Load reads occupancy from /slots.
-func (e *Engine) Load(ctx context.Context, addr string) (engine.Load, error) {
-	l, _, _, err := e.LoadProgress(ctx, addr)
+func (e *Engine) Load(ctx context.Context, s engine.Spec, addr string) (engine.Load, error) {
+	l, _, _, err := e.LoadProgress(ctx, s, addr)
 	return l, err
 }
 
@@ -81,7 +81,11 @@ func (e *Engine) Load(ctx context.Context, addr string) (engine.Load, error) {
 // Progress sums next_token[0] over processing slots only: an idle slot can
 // still carry the next_token of its last request, which is not work in flight
 // (v1 ReadSlots). /slots reports no queue, so Waiting is 0.
-func (e *Engine) LoadProgress(ctx context.Context, addr string) (load engine.Load, decoded, remain int64, err error) {
+// llama.cpp reports both Slots and CtxPerSlot itself, so the Spec is unused
+// here: what /slots says is what the backend will serve, and a disagreement
+// with the configured parallel or context is exactly what the node should
+// publish rather than hide.
+func (e *Engine) LoadProgress(ctx context.Context, _ engine.Spec, addr string) (load engine.Load, decoded, remain int64, err error) {
 	status, body, err := e.get(ctx, addr, "/slots")
 	if err != nil {
 		return engine.Load{}, 0, 0, err

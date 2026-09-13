@@ -1,13 +1,11 @@
 package supervisor
 
 import (
-	"context"
 	"io"
 	"os"
 	"time"
 
 	"github.com/janit/viiwork/v2/internal/config"
-	"github.com/janit/viiwork/v2/internal/engine"
 	"github.com/janit/viiwork/v2/internal/gpu"
 )
 
@@ -19,14 +17,6 @@ type Events interface {
 type discardEvents struct{}
 
 func (discardEvents) Emit(string, int, string, ...any) {}
-
-// TokenProgressReader is optionally implemented by an engine that can report
-// decode progress along with occupancy. The supervisor finds it by type
-// assertion (Decision 8), because C2's engine.Load is frozen and has no
-// progress fields.
-type TokenProgressReader interface {
-	LoadProgress(ctx context.Context, addr string) (load engine.Load, decoded, remain int64, err error)
-}
 
 // Timing holds the supervisor's internal intervals. Production uses
 // DefaultTiming; tests shorten them to milliseconds.
