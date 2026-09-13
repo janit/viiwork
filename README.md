@@ -2,6 +2,36 @@
 
 LLM inference for a fleet of machines, built originally for AMD Radeon VII GPUs. One viiwork node per machine runs all of that machine's models (llama-server processes pinned to their GPUs) behind one OpenAI-compatible API. Nodes find each other and form a mesh on their own: any node is an entry point, and a request goes to a free slot wherever one exists.
 
+## viiwork 2.0 is a breaking release
+
+**A v1 fleet cannot be upgraded one machine at a time.** The mesh protocol
+changed: v2 nodes gossip their membership on port 7946 instead of polling a
+written list of peers over HTTP, so **a v1 node and a v2 node never see each
+other**. Convert a mesh together, or run the two as separate meshes until the
+last machine is across.
+
+The rest, roughly in the order you meet it:
+
+- **The config is a different file, and a v1 one is refused at startup** rather
+  than guessed at. One file per machine, listing every model on it, replaces
+  one instance file per model.
+- **One process per machine, and two fixed ports on every machine**: 8086 for
+  the API and every dashboard, 7946 for gossip. Per-model ports and
+  `server.mesh_port` are gone.
+- **`models[].context` is the context of one slot.** v1's `model.context_size`
+  was llama.cpp's total, divided across slots — carrying the old number over
+  multiplies VRAM use by `parallel`.
+- **The Go module path is `github.com/janit/viiwork/v2`**, and `meshapi`'s wire
+  types moved with the protocol. Importers pin the major version.
+- **Gone:** `peers` (discovery is automatic), `balancer` (routing follows free
+  slots), and `--section.key` command-line overrides — the config file is the
+  only input.
+
+[docs/migrating-to-v2.md](docs/migrating-to-v2.md) maps every key, works a real
+machine through the change and covers rollback; `viiwork-accept config`
+validates the new file while v1 is still serving. viiwork 1.x remains at tag
+[`v1.8.1`](https://github.com/janit/viiwork/releases/tag/v1.8.1).
+
 ![viiwork mesh dashboard](viiwork-v150.webp)
 
 ## Background
@@ -841,7 +871,7 @@ go test -v -run TestName ./internal/package     # single test
 go test -bench=. -benchmem ./internal/proxy ./internal/route   # hot-path benchmarks
 ```
 
-Requires Go 1.27.0 (pinned in `go.mod` and the Dockerfiles). Dependencies are
+Requires Go 1.27.1 (pinned in `go.mod` and the Dockerfiles). Dependencies are
 `gopkg.in/yaml.v3`, `hashicorp/memberlist` (membership) and `hashicorp/mdns`
 (LAN discovery); everything else is stdlib, deliberately.
 

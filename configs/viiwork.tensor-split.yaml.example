@@ -1,4 +1,19 @@
-# viiwork tensor-split mode example.
+# viiwork tensor-split mode example — VIIWORK 1.x FORMAT, kept for reference.
+#
+# A viiwork 2 node refuses this file. The mode itself is unchanged and is now
+# ordinary configuration: set `gpus_per_backend` to the group size in the
+# machine's one viiwork.yaml. See "Tensor-Split Mode" in README.md, or
+# docs/migrating-to-v2.md to convert an existing v1 instance.
+#
+#   models:
+#     - name: gpt-oss-120b
+#       path: /models/gpt-oss-120b-MXFP4_MOE.gguf
+#       gpus: [4, 5, 6, 7]
+#       gpus_per_backend: 2        # was gpus.tensor_split.group_size
+#       llamacpp:
+#         split_mode: layer        # was gpus.tensor_split.mode
+#
+# The trade-offs described below still apply.
 #
 # Use this when you want to run a single model that's TOO BIG for one GPU,
 # split layer-wise across multiple GPUs. The viiwork process spawns ONE

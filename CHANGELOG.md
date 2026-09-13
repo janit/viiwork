@@ -1,5 +1,67 @@
 # Changelog
 
+## v2.0.0
+
+**viiwork 2.0.** One process per machine supervising every model on it, a mesh
+that forms itself, and routing that follows free slots. The two betas put it in
+front of a converted machine serving production traffic and of a second
+implementation building against its contracts; what they found is fixed, and
+this is that code called finished.
+
+**This is a breaking release, and the break is the mesh protocol.** v2 nodes
+gossip their membership on 7946 rather than polling a written list of peers
+over HTTP, so a v1 node and a v2 node never see each other — a fleet converts
+together, or runs as two meshes until the last machine is across. A v1
+`viiwork.yaml` is refused at startup rather than guessed at, the Go module path
+is `github.com/janit/viiwork/v2`, and `meshapi`'s wire types moved with the
+protocol. `docs/migrating-to-v2.md` maps every key and covers rollback;
+`viiwork-accept config` validates the new file while v1 is still serving. The
+entries below under `v2.0.0-beta2`, `-beta1`, `-rc.2`, `-rc.1` and `-alpha.1`
+are kept because they say why each part is the way it is.
+
+### Since beta2
+
+- **Dependencies are current.** The three direct dependencies —
+  `hashicorp/memberlist` v0.6.0, `hashicorp/mdns` v1.0.7 and `gopkg.in/yaml.v3`
+  v3.0.1 — were already at their latest releases. The indirect graph was not:
+  `golang.org/x/net` moved v0.55.0 → v0.59.0, which clears GO-2026-5942 (a
+  panic parsing a malformed SVCB or HTTPS DNS record). Nothing in viiwork calls
+  it, but `mdns` is fed records off the LAN, so shipping a 2.0.0 with a known
+  advisory in the graph was not worth the argument. `golang-lru` v0.5.0 →
+  v1.0.2, `miekg/dns` v1.1.73, `hashicorp/go-metrics` v0.6.1, `x/sync`, `x/sys`
+  likewise; `x/mod` and `x/tools` left the graph entirely. `armon/go-metrics`
+  stays at v0.4.1 because later versions renamed the module path — v0.4.1 is
+  the last release under the old one. `govulncheck` is clean.
+- **The Go toolchain pin is 1.27.1** in `go.mod` and every Dockerfile, up from
+  1.27.0 — fixes to the runtime, the compiler and `net/http`.
+- **`viiwork-mcp` reported its version as `1.0.0`.** The string in the MCP
+  `initialize` response was a literal, not the build stamp, so every assistant
+  that connected to a viiwork cluster was told 1.0.0 — through the whole of
+  viiwork 1.x and into 2.0. It is `main.version` now, `make mcp` stamps it like
+  the node and the acceptance checker, and a test pins that it comes from the
+  variable. It was the only hardcoded version left in the tree; every other
+  surface — `/v1/status`, `/v1/cluster`, both dashboards, `viiwork-accept
+  --version`, the image build args — already flowed from `scripts/version.sh`.
+- **The README says what v2 breaks, above the fold.** A reader arriving at the
+  repository met a feature tour and found out about the protocol change nine
+  sections in, under Scripts.
+- **`docker-compose.yaml.example` is gone from the repository root.** It was a
+  v1 node — port 8080, bridged networking, no `pid: host`, no
+  `stop_grace_period` — and `BUILDS.md` called it the stable-track example, so
+  the one file a reader would copy was the one that produced a node that could
+  not gossip, could not verify its GPUs and was killed mid-drain on stop.
+  `configs/docker-compose.v2.example.yaml` is the single answer, which is what
+  the README's Quick Start already copied.
+- **`configs/viiwork.tensor-split.yaml.example` says it is v1 in its first
+  line**, with the `gpus_per_backend` form beside it. It is the only remaining
+  `.example` in a v1 vocabulary, and its own text invited comparison with the
+  root example, which is v2.
+
+### Not in this release
+
+- `llamacpp` is the only engine. The vLLM and FreeToken engines land in v2.1.0.
+- `scripts/setup-node.sh` and `deploy.sh` still write and drive v1 layouts.
+
 ## v2.0.0-beta2
 
 Room in the mesh dashboard's backends table, which has to fit a whole fleet on

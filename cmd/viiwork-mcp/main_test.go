@@ -163,3 +163,25 @@ func mustResult(t *testing.T, r *rpcResponse) []byte {
 	}
 	return b
 }
+
+func TestInitializeReportsTheBuildVersion(t *testing.T) {
+	// serverInfo.version told every assistant "1.0.0" for the whole of viiwork
+	// 1.x and into 2.0, because it was a literal rather than the build stamp.
+	// The value here is whatever -ldflags set (the default "dev" under `go
+	// test`); what this pins is that it comes from the variable at all.
+	saved := version
+	version = "v9.9.9-test"
+	defer func() { version = saved }()
+
+	r := handle(req(t, "initialize", ""))
+	if r == nil || r.Error != nil {
+		t.Fatalf("initialize: %+v", r)
+	}
+	res, ok := r.Result.(initResult)
+	if !ok {
+		t.Fatalf("initialize result is %T, want initResult", r.Result)
+	}
+	if res.ServerInfo.Version != "v9.9.9-test" {
+		t.Errorf("serverInfo.version = %q, want the build stamp %q", res.ServerInfo.Version, "v9.9.9-test")
+	}
+}
