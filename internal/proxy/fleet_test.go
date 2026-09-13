@@ -211,3 +211,130 @@ func TestFleetModelsAreOrderedByName(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// ?model= filtering, and the alias resolution it does first.
+//
+// An alias is a name for capacity, so it has to name capacity here too: a
+// consumer configured with the alias we recommend must not be told the fleet
+// cannot serve it. The four rows below are Resolver's whole contract; the
+// resolver itself is tested in internal/alias.
+
+// fleetModels is a two-model fleet view to filter.
+func fleetModels() []meshapi.FleetModel {
+	return []meshapi.FleetModel{
+		{Name: "gemma-4-31B-it", Slots: 12},
+		{Name: "translategemma-27b-it", Slots: 36},
+	}
+}
+
+// names is the filtered result, for comparing without host detail.
+func names(models []meshapi.FleetModel) []string {
+	out := []string{}
+	for _, m := range models {
+		out = append(out, m.Name)
+	}
+	return out
+}
+
+func TestFilterModelResolvesALiveAlias(t *testing.T) {
+	resolve := func(requested string) (string, string, error) {
+		if requested == "stable-translate" {
+			return "translategemma-27b-it", "stable-translate", nil
+		}
+		return requested, "", nil
+	}
+
+	got, from := filterModel(fleetModels(), "stable-translate", resolve)
+
+	if len(got) != 1 || got[0].Name != "translategemma-27b-it" {
+		t.Errorf("filtered to %v, want the alias target", names(got))
+	}
+	if from != "stable-translate" {
+		t.Errorf("resolved_from = %q, want the alias that was asked for", from)
+	}
+}
+
+// The unserved alias: Resolve says 503, and the endpoint must not. Empty is
+// already this endpoint's word for "no capacity for that model", and a 503
+// reads to a consumer as "the platform is down".
+func TestFilterModelSwallowsAnUnresolvableAlias(t *testing.T) {
+	resolve := func(requested string) (string, string, error) {
+		return "", "", &ResolveError{Status: 503, Message: "no node serves it"}
+	}
+
+	got, from := filterModel(fleetModels(), "stable-prose-hq", resolve)
+
+	if len(got) != 0 {
+		t.Errorf("filtered to %v, want an empty list", names(got))
+	}
+	if from != "" {
+		t.Errorf("resolved_from = %q, want empty: nothing was resolved", from)
+	}
+}
+
+// A real name, an unknown name and a deleted alias all resolve to themselves.
+func TestFilterModelLeavesARealNameAlone(t *testing.T) {
+	identity := func(requested string) (string, string, error) { return requested, "", nil }
+
+	got, from := filterModel(fleetModels(), "gemma-4-31B-it", identity)
+	if len(got) != 1 || got[0].Name != "gemma-4-31B-it" {
+		t.Errorf("filtered to %v, want the real model", names(got))
+	}
+	if from != "" {
+		t.Errorf("resolved_from = %q, want empty for a real name", from)
+	}
+
+	none, from := filterModel(fleetModels(), "nope", identity)
+	if len(none) != 0 {
+		t.Errorf("unknown name gave %v, want an empty list", names(none))
+	}
+	if from != "" {
+		t.Errorf("resolved_from = %q, want empty for an unknown name", from)
+	}
+}
+
+// Shadowing: the resolver already answers "the real model wins" by returning
+// the requested name, so the fleet view must agree with the inference path.
+func TestFilterModelPrefersTheRealModelOverAnAliasOfTheSameName(t *testing.T) {
+	shadowing := func(requested string) (string, string, error) { return requested, "", nil }
+
+	got, from := filterModel(fleetModels(), "gemma-4-31B-it", shadowing)
+
+	if len(got) != 1 || got[0].Name != "gemma-4-31B-it" {
+		t.Errorf("filtered to %v, want the real model to win", names(got))
+	}
+	if from != "" {
+		t.Errorf("resolved_from = %q, want empty: the real model was not reached through an alias", from)
+	}
+}
+
+// Deps says "nil = identity" and this path must honour it, or a node built
+// without an alias store would filter on nothing.
+func TestFilterModelTreatsANilResolverAsIdentity(t *testing.T) {
+	got, from := filterModel(fleetModels(), "translategemma-27b-it", nil)
+
+	if len(got) != 1 || got[0].Name != "translategemma-27b-it" {
+		t.Errorf("filtered to %v, want the named model", names(got))
+	}
+	if from != "" {
+		t.Errorf("resolved_from = %q, want empty", from)
+	}
+}
+
+// No ?model= at all: the whole fleet, and no resolution attempted.
+func TestFilterModelWithoutAQueryReturnsEverything(t *testing.T) {
+	resolve := func(requested string) (string, string, error) {
+		t.Errorf("resolver called for an absent ?model=, with %q", requested)
+		return requested, "", nil
+	}
+
+	got, from := filterModel(fleetModels(), "", resolve)
+
+	if len(got) != 2 {
+		t.Errorf("filtered to %v, want both models untouched", names(got))
+	}
+	if from != "" {
+		t.Errorf("resolved_from = %q, want empty", from)
+	}
+}

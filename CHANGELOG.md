@@ -1,5 +1,43 @@
 # Changelog
 
+## v2.2.0-beta3
+
+**`/v1/fleet/capacity?model=` resolves aliases.** beta2 matched the query as an
+exact string, and capacity reports carry real model names only — aliases are a
+router concept, resolved on the inference path and never reaching this one. So
+`?model=stable-translate` returned an empty `models[]` for a live alias every
+node serves.
+
+Not cosmetic. An empty `models[]` is the documented signal for "the fleet
+cannot serve this", and it sits in the fallback table in
+`docs/consuming-fleet-capacity.md`. A consumer whose model is an alias — which
+is the configuration we recommend, because it is the whole point of aliases —
+fell back to its hardcoded constant forever, silently, with no error anywhere:
+the pre-endpoint behaviour, while believing it was fleet-sized. Found against a
+live beta2 fleet while wiring up the first consumer.
+
+The filter now asks the resolver the handler already holds. Resolve is identity
+for a real, unknown or shadowed name, so the inference path's rules hold here
+unchanged — a real model of the same name still wins.
+
+**An alias nothing serves is `200` with an empty list, not `503`.** On the
+inference path the 503 is right: the caller asked for work to be done and it
+cannot be. A capacity query is a different question, and this endpoint has
+already answered it — zero capacity is exactly what the empty list says. A 503
+would read to a consumer as "the platform is down" and trip the same branch as
+an unreachable node, over a normal operating state.
+
+**New: `resolved_from`.** The response reports the real model in `name` and
+echoes the alias that was asked for in `resolved_from`, present only when
+resolution actually rewrote the query. The alias never goes in `name` — that
+would make two nodes disagree about a model's name depending on how it was
+asked for. Inference already reports the real model for an aliased request, so
+this is one rule rather than two.
+
+Additive to C4. Against a beta2 node an alias lands in the existing "model
+absent from `models[]`" fallback row rather than erroring — degraded, not
+broken, but silent, so log which branch was taken.
+
 ## v2.2.0-beta2
 
 **`/v1/fleet/capacity`** — one node's view of what the whole mesh can serve,

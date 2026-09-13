@@ -10,6 +10,7 @@ package node
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -163,5 +164,61 @@ func TestFleetCapacityModelFilter(t *testing.T) {
 	}
 	if len(none.Models) != 0 {
 		t.Errorf("unknown model gave %+v, want empty", none.Models)
+	}
+}
+
+// An alias is an acceptable ?model= value, because an alias is the model name
+// we tell consumers to configure. internal/proxy tests the filter's four rows;
+// this proves the handler actually asks the resolver — a refactor that drops
+// Deps.Resolve from the fleet path fails here.
+func TestFleetCapacityResolvesAnAlias(t *testing.T) {
+	net := meshtest.NewNetwork()
+	tn := startNode(t, net, "A", []fakeModel{{name: "m"}, {name: "n"}}, "", seeded(net, "A"))
+
+	req, _ := http.NewRequest(http.MethodPut, tn.url(meshapi.AliasPath("stable")), strings.NewReader(`{"target":"m"}`))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("PUT alias: %d", resp.StatusCode)
+	}
+
+	until(t, 5*time.Second, "the fleet view resolves the alias", func() bool {
+		var got meshapi.FleetCapacityResponse
+		if getJSON(t, tn.url(meshapi.PathFleetCapacity+"?model=stable"), &got) != http.StatusOK {
+			return false
+		}
+		if len(got.Models) != 1 || got.Models[0].Name != "m" {
+			return false
+		}
+		// The alias is echoed, never put in Name: two nodes must not disagree
+		// about a model's name depending on how it was asked for.
+		if got.ResolvedFrom != "stable" {
+			t.Fatalf("resolved_from = %q, want stable", got.ResolvedFrom)
+		}
+		return true
+	})
+
+	// An alias nobody serves is zero capacity, not an outage: empty list, 200.
+	req2, _ := http.NewRequest(http.MethodPut, tn.url(meshapi.AliasPath("dangling")), strings.NewReader(`{"target":"gone","force":true}`))
+	resp3, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp3.Body.Close()
+	if resp3.StatusCode != http.StatusOK {
+		t.Fatalf("PUT dangling alias: %d", resp3.StatusCode)
+	}
+	var dangling meshapi.FleetCapacityResponse
+	if code := getJSON(t, tn.url(meshapi.PathFleetCapacity+"?model=dangling"), &dangling); code != http.StatusOK {
+		t.Fatalf("dangling alias status %d, want 200: no capacity is an answer, not a failure", code)
+	}
+	if len(dangling.Models) != 0 {
+		t.Errorf("dangling alias gave %+v, want empty", dangling.Models)
+	}
+	if dangling.ResolvedFrom != "" {
+		t.Errorf("resolved_from = %q, want empty: nothing was resolved", dangling.ResolvedFrom)
 	}
 }

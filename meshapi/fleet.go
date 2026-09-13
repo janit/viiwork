@@ -22,6 +22,15 @@ type FleetCapacityResponse struct {
 	// stops counting. Published so a consumer can interpret AgeMS itself.
 	StaleAfterS float64      `json:"stale_after_s"`
 	Models      []FleetModel `json:"models"`
+	// ResolvedFrom is the alias the `model` query named, when it was one.
+	// Present only when resolution actually rewrote the query.
+	//
+	// The alias never goes in FleetModel.Name: that would make two nodes
+	// disagree about a model's name depending on how it was asked for. This
+	// matches inference, where a request through an alias reports the real
+	// model in the response body — one rule instead of two — and makes the
+	// behaviour self-describing in a curl.
+	ResolvedFrom string `json:"resolved_from,omitempty"`
 }
 
 // FleetModel aggregates one model across every host that serves it.

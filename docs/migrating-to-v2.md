@@ -141,6 +141,37 @@ with `gpus_per_backend: 1` is three single-card backends of one model, and
 anything else is refused at startup by name. In v1 this was a property of how
 you happened to write `devices`; in v2 it is validated.
 
+### The systemd unit is part of the config, and the table above does not cover it
+
+A v1 instance's behaviour was not all in its YAML. The units also carried
+`Environment=` lines, and those are not config keys, so nothing in the mapping
+tables points at them. Read the unit alongside the file:
+
+```bash
+systemctl cat viiwork-<instance>.service | grep Environment=
+```
+
+| v1 unit `Environment=` | v2 |
+| --- | --- |
+| `LD_LIBRARY_PATH=...` | `models[].env`, and often **required** |
+| `CUDA_VISIBLE_DEVICES`, `CUDA_DEVICE_ORDER` | **do not carry.** viiwork sets both itself from `models[].gpus`; a hand-set value fights the node's own pinning |
+| `HSA_OVERRIDE_GFX_VERSION` (ROCm hosts) | `models[].env`, or the image already sets it |
+| `HF_TOKEN` and similar | `models[].env` |
+
+`LD_LIBRARY_PATH` is the one that bites. A `llama-server` built in place rather
+than installed as a package keeps its shared objects beside the binary, and
+without the variable the backend dies the moment it execs:
+
+```
+llama-server: error while loading shared libraries:
+libllama-server-impl.so: cannot open shared object file
+```
+
+The node reports that as a backend that will not start, which reads as a broken
+build rather than a missing variable. `viiwork-accept config` cannot catch it
+either — the binary and the weights both exist, and the failure only appears at
+exec.
+
 ### What one process now means for both
 
 v1 ran **one process per model**: three models on a machine meant three config

@@ -36,19 +36,50 @@ func (h *Handler) handleFleetCapacity(w http.ResponseWriter, r *http.Request) {
 	// A consumer that wants one model should not have to parse the fleet. An
 	// unknown name yields an empty list rather than 404: "no capacity for that
 	// model" is an answer, not a failure.
-	if want := r.URL.Query().Get("model"); want != "" {
-		kept := out.Models[:0]
-		for _, m := range out.Models {
-			if m.Name == want {
-				kept = append(kept, m)
-			}
-		}
-		out.Models = kept
-	}
+	out.Models, out.ResolvedFrom = filterModel(out.Models, r.URL.Query().Get("model"), h.d.Resolve)
 	if out.Models == nil {
 		out.Models = []meshapi.FleetModel{}
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// filterModel narrows the fleet view to one model, resolving an alias to the
+// real name first, and reports the alias it resolved through ("" when it did
+// not resolve one). want "" returns models untouched; resolve may be nil.
+//
+// An alias is a name for capacity, so it has to name capacity here too: the
+// configuration we recommend to consumers is an alias, and an empty models[]
+// is the documented signal for "the fleet cannot serve this". Without this the
+// recommended config falls back to its own constant forever, silently.
+//
+// Resolve is identity for a real, unknown or shadowed name, so this only ever
+// rewrites want when it really is a live alias with a served target.
+//
+// A ResolveError — a live alias nothing serves — is deliberately SWALLOWED
+// rather than propagated. On the inference path a 503 is correct: the caller
+// asked for work to be done and it cannot be. A capacity query is a different
+// question, and this endpoint has already answered it; an alias whose target
+// nobody serves has exactly zero capacity, which the empty list already says.
+// A 503 would read as "the platform is down" and trip a consumer's outage
+// branch over a normal operating state. Keeping the original want is what
+// implements that: it matches nothing, and the list comes back empty.
+func filterModel(models []meshapi.FleetModel, want string, resolve Resolver) ([]meshapi.FleetModel, string) {
+	if want == "" {
+		return models, ""
+	}
+	var from string
+	if resolve != nil {
+		if real, alias, err := resolve(want); err == nil && real != "" {
+			want, from = real, alias
+		}
+	}
+	kept := models[:0]
+	for _, m := range models {
+		if m.Name == want {
+			kept = append(kept, m)
+		}
+	}
+	return kept, from
 }
 
 // fleetAcc accumulates one model while walking hosts.
