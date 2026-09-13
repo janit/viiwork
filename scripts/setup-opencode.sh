@@ -78,7 +78,7 @@ cat > opencode.json <<EOF
   "provider": {
     "viiwork": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "Viiwork",
+      "name": "viiwork",
       "options": {
         "baseURL": "${host}/v1",
         "apiKey": "not-needed"
