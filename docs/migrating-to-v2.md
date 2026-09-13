@@ -81,6 +81,78 @@ lists one twice.
 `llamacpp.*` keys sit inside the model entry they apply to, for example
 `models[0].llamacpp.threads`.
 
+### From `viiwork-nvidia` (vLLM)
+
+A v1 vLLM node and a v2 node **do not see each other.** They are separate
+programs with separate protocols: v1 polled a written list of peers over HTTP,
+v2 gossips membership on 7946. A fleet converts together, or runs as two meshes
+until the last machine is across — the same rule as for llama.cpp nodes.
+
+| `viiwork-nvidia.yaml` (v1) | v2 |
+| --- | --- |
+| `server.host`, `server.port` (9601) | `api.host`, `api.port` (8086 on every machine) |
+| `server.mesh_port` | removed; `/mesh` is served on `api.port` |
+| `model.name`, `model.path` | `models[].name`, `models[].path`, one entry per v1 instance |
+| `gpus.devices` | `models[].gpus`, same host indices |
+| `gpus.tensor_parallel_size` | `models[].gpus_per_backend` |
+| `gpus.base_port` | removed; backends take loopback ports |
+| `vllm.binary` | `models[].vllm.binary` |
+| `vllm.max_model_len` | `models[].context` — **now required, and per slot** |
+| `vllm.max_num_seqs` | `models[].parallel` |
+| `vllm.gpu_memory_utilization` | `models[].vllm.gpu_memory_utilization` |
+| `vllm.startup_timeout` | `models[].startup_timeout` |
+| `vllm.shutdown_grace` | `health.respawn_grace`, node-wide |
+| `vllm.extra_args` | `models[].args` |
+| `peers.*`, `balancer.*` | removed; gossip membership and routing by free slots |
+
+Two of those are not renames and will bite:
+
+- **`max_model_len` was optional and is now required.** v1 let you omit it and
+  take the checkpoint's own limit. v2's `context` is mandatory and is **per
+  slot**, and it is what the node publishes to the mesh. A backend serving more
+  than the node advertises makes ctx a lie on every dashboard, so the flag is
+  always generated from this number.
+- **`tensor_parallel_size` becomes `gpus_per_backend`, and the arithmetic is the
+  same**: `gpus.devices: [0,1,2,3]` with `tensor_parallel_size: 2` becomes
+  `gpus: [0,1,2,3]` with `gpus_per_backend: 2` — two backends of two cards.
+
+### From `viiwork-freetoken`
+
+| `viiwork-freetoken.yaml` (v1) | v2 |
+| --- | --- |
+| `server.host`, `server.port` (9801) | `api.host`, `api.port` (8086) |
+| `server.mesh_port` | removed; `/mesh` is served on `api.port` |
+| `model.name`, `model.path` | `models[].name`, `models[].path` |
+| `gpus.devices` | `models[].gpus`, with `gpus_per_backend: 1` |
+| `gpus.base_port` | removed; backends take loopback ports |
+| `freetoken.binary` | `models[].freetoken.binary` |
+| `freetoken.max_seq_len` | `models[].context` — **now required, and per slot** |
+| `freetoken.max_running_requests` | `models[].parallel` |
+| `freetoken.memory_ratio` | `models[].freetoken.memory_ratio` |
+| `freetoken.moe_backend` | `models[].freetoken.moe_backend` |
+| `freetoken.startup_timeout` | `models[].startup_timeout` |
+| `freetoken.shutdown_grace` | `health.respawn_grace`, node-wide |
+| `freetoken.extra_args` | `models[].args` |
+| `peers.*`, `balancer.*` | removed; gossip membership and routing by free slots |
+
+**One card per process, which v2 states rather than implies.** The engine
+rejects more than one card, so `gpus_per_backend` must be 1 — `gpus: [0,1,2]`
+with `gpus_per_backend: 1` is three single-card backends of one model, and
+anything else is refused at startup by name. In v1 this was a property of how
+you happened to write `devices`; in v2 it is validated.
+
+### What one process now means for both
+
+v1 ran **one process per model**: three models on a machine meant three config
+files, three ports and three units. v2 runs **one process per machine** serving
+every model on it, so those three files become three entries under `models:` in
+one file, and the machine has one API port and one unit. The conversion is
+mechanical, and `viiwork-accept config` will check the result before v1 stops:
+
+```bash
+viiwork-accept config --file /etc/viiwork/viiwork.yaml
+```
+
 ## 4. A worked example
 
 A machine ran two v1 instances. The first served a 27B model on a pair of cards:

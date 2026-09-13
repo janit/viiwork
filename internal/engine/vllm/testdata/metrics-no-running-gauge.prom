@@ -1,0 +1,8 @@
+# A build that publishes no running-sequence gauge at all: the gauge was
+# renamed, or this is a vLLM whose metrics surface moved. Decision 3 says Load
+# returns an error here rather than a zero, because a zero would freeze "idle"
+# into the mesh for a saturated backend.
+# TYPE vllm:generation_tokens_total counter
+vllm:generation_tokens_total{model_name="m"} 918273.0
+vllm:e2e_request_latency_seconds_bucket{le="0.5"} 12.0
+vllm:num_requests_running_bucket{le="1"} 99.0

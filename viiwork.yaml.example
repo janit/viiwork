@@ -28,8 +28,10 @@ mesh:
 # which is appended last so an operator's flag always wins; a block key exists
 # only where the NODE decides the value or publishes it to the mesh.
 #
-# v2.1.0 ships `llamacpp`. `vllm` and `freetoken` arrive in v2.2.0, and adding
-# another is one package and one blank import: see docs/adding-an-engine.md.
+# v2.2.0 ships `llamacpp`, `vllm` and `freetoken`. Adding another is one package
+# and one blank import: see docs/adding-an-engine.md. An engine is named for the
+# engine, never for a GPU vendor — vLLM already has a ROCm build and FreeToken
+# may grow one.
 models:
   - name: Qwen3.8-27B        # the served model id
     engine: llamacpp         # names the engine and the llamacpp: block below
@@ -50,6 +52,61 @@ models:
     gpus: [2]
     context: 16384
     parallel: 2
+
+  # The two models below are alternatives to the llamacpp ones above, not
+  # additions: they claim the same cards, and a GPU may belong to one model
+  # only. Uncommenting one as it stands is refused at startup with
+  # "GPU 0 is already used by models[0]" — give it free cards, or remove the
+  # model holding them.
+
+  # vLLM. Needs GPUs — it does not run on CPU, and a config without `gpus:` is
+  # refused at startup rather than started as a backend that would never load.
+  # One backend is split across its cards: --tensor-parallel-size is simply how
+  # many it was given, so `gpus_per_backend` is the split.
+  #
+  # `context` and `parallel` become --max-model-len and --max-num-seqs, always,
+  # from the node's own numbers. v1 let a zero mean "take the checkpoint's
+  # limit"; a backend serving more than the node advertises makes ctx a lie on
+  # every dashboard.
+  # - name: Qwen3.8-27B-fp8
+  #   engine: vllm
+  #   path: /models/Qwen3.8-27B-FP8
+  #   gpus: [0, 1]
+  #   gpus_per_backend: 2      # one backend, tensor-parallel across both
+  #   context: 16384           # -> --max-model-len
+  #   parallel: 8              # -> --max-num-seqs
+  #   startup_timeout: 45m     # profiling, KV allocation and CUDA graph capture
+  #                            # happen before it answers anything; the engine
+  #                            # default is 20m, which is the single-card figure
+  #   args: ["--enable-prefix-caching", "--kv-cache-dtype", "fp8"]
+  #   vllm:                    # optional; these are the defaults
+  #     binary: vllm
+  #     gpu_memory_utilization: 0.90
+
+  # FreeToken. One card per process — the engine rejects more than one, so
+  # `gpus_per_backend` must be 1 and three cards means three backends.
+  # - name: DSV4-Flash
+  #   engine: freetoken
+  #   path: /models/DSV4-Flash-NVFP4
+  #   gpus: [0, 1, 2]
+  #   gpus_per_backend: 1      # three single-card backends
+  #   context: 32768           # -> --max-seq-len-override
+  #   parallel: 4              # -> --max-running-requests
+  #   startup_timeout: 45m
+  #   args: ["--attention-backend", "flashinfer"]
+  #   freetoken:               # optional; these are the defaults
+  #     binary: ft
+  #     memory_ratio: 0.90
+  #     moe_backend: auto      # auto | fused | offload | cpu | hybrid
+  #     # KV-cache token floor, reserved before --moe-cache-auto fills MoE
+  #     # experts. It does NOTHING on its own: viiwork never generates
+  #     # --moe-cache-auto, so this only bites if you add that flag to `args:`.
+  #     #
+  #     # If you do, set this to at least context x parallel. That expert cache
+  #     # is MoE-priority and will take VRAM the KV cache needs; below that
+  #     # floor the backend serves less context than the node publishes to the
+  #     # mesh, which is the one number a dashboard must not be wrong about.
+  #     kv_reserve_tokens: 0
 
 power:
   source: none               # auto | dcmi | sdr | sensor:<NAME> | none

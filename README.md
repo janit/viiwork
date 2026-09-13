@@ -765,11 +765,16 @@ For models above the single-GPU ceiling. Layer-mode tensor split costs roughly 2
 viiwork supervises inference engines; an engine is named in a model's
 `engine:` key, and the block below it belongs to that engine.
 
-| Engine | What it drives | Status |
-|---|---|---|
-| `llamacpp` | `llama-server`, the reference implementation | ships in v2.1.0 |
-| `vllm` | `vllm serve` | arrives in v2.2.0 |
-| `freetoken` | `ft serve` | arrives in v2.2.0 |
+| Engine | What it drives | Shape | Readiness |
+|---|---|---|---|
+| `llamacpp` | `llama-server`, the reference implementation | runs on CPU or GPU | `/health`, slots from `/slots` |
+| `vllm` | `vllm serve` | one backend tensor-parallel across its cards | `/health` 200, occupancy from `/metrics` |
+| `freetoken` | `ft serve` | **one card per process** | the `/health` *body*, occupancy from `/v1/stats` |
+
+All three can run on one node at once, each model's backends pinned to their own
+cards. FreeToken's readiness is the one worth knowing about: it answers
+`/health` with 200 in *every* lifecycle state, including while loading, so the
+status code alone would advertise a backend that 503s every request.
 
 Engines are named for the engine, never for a GPU vendor: FreeToken runs on
 CUDA today and may add others, vLLM already has a ROCm build, and nothing in
@@ -791,8 +796,15 @@ pinned.
 | Image | Dockerfile | Engine | Make target |
 |---|---|---|---|
 | `viiwork:latest` | `docker/Dockerfile.rocm` | `llamacpp` on ROCm / gfx906 | `make docker-rocm` (aliases `make docker`, `make docker-stable`) |
-| — | `docker/Dockerfile.vllm` | `vllm` | **arrives in v2.2.0** |
-| — | `docker/Dockerfile.freetoken` | `freetoken` | **arrives in v2.2.0** |
+| `viiwork-vllm:latest` | `docker/Dockerfile.vllm` | `vllm` | `make docker-vllm` |
+| `viiwork-freetoken:latest` | `docker/Dockerfile.freetoken` | `freetoken` | `make docker-freetoken` |
+
+The two NVIDIA images contain no `nvidia-smi` and no `libcuda` on purpose: the
+container runtime injects them from the host, so they always match the running
+driver. Grant GPUs through **CDI** (`--device nvidia.com/gpu=all`, after
+`nvidia-ctk cdi generate`) rather than `nvidia-ctk runtime configure`, which
+restarts the Docker daemon and bounces every other container on the machine.
+See [BUILDS.md](BUILDS.md).
 
 `make docker` builds the ROCm image: Radeon VII is the core of this fleet and
 the unqualified target pointing at it is right. The gfx906 *fork* track, a

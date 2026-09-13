@@ -1,5 +1,92 @@
 # Changelog
 
+## v2.2.0-beta1
+
+**A beta, and the reason is the scale of what has been served.** Both engines
+have now run for real: on teddy, one node served `vllm serve` and `ft serve`
+backends side by side, each on its own A4000, both reaching healthy and
+answering requests, with the node joined to the fleet's secured mesh and both
+models visible from gb1. What has NOT happened is a production checkpoint — the
+smoke test ran Qwen2.5-0.5B, and A4000 is Ampere, so NVFP4 and FreeToken's
+arch-specific kernel cache remain unexercised. This becomes v2.2.0 when a real
+model runs on the hardware it is meant for.
+
+**The vLLM and FreeToken engines ship in the binary.** viiwork now serves three
+engines from one process: llama.cpp on ROCm, vLLM, and FreeToken. A node can run
+all three at once, each model's backends pinned to their own cards, and the mesh
+does not care which engine answers — a request goes to a free slot wherever one
+exists.
+
+**This is the real review of v2.1.0's contract, and the contract held.** Adding
+these two engines touched the two engine packages and three blank imports, and
+nothing else. `internal/config`, `internal/supervisor`, `internal/node`,
+`internal/route` and `internal/proxy` are untouched by both. That was the
+v2.1.0 claim, and it is now tested rather than asserted.
+
+**Engines are named for the engine, never for a GPU vendor.** FreeToken runs on
+CUDA today and may add AMD or Intel; vLLM already has a ROCm build. Nothing here
+— package, config key, image name or prose — pairs an engine with a vendor, and
+`Spec.Vendor` stays informational rather than a gate.
+
+- **`internal/engine/vllm`** — `vllm serve` backends, ready when `/health`
+  answers 200, occupancy scraped from the Prometheus text at `/metrics`. Counts
+  are summed across data-parallel engines because the backend's load is the
+  total; KV-cache occupancy takes the maximum, because it is a pressure signal
+  and the engine closest to preemption is the one that makes the backend slow.
+  A build that publishes no running-sequence gauge makes `Load` return an error
+  rather than a zero: a zero would freeze "idle" into the mesh for a busy
+  backend, while an error degrades visibly to the node's own in-flight count.
+- **`internal/engine/freetoken`** — `ft serve` backends, one card per process,
+  occupancy from `/v1/stats`. **Its readiness rule is the one to read twice:**
+  FreeToken answers `/health` with 200 in *every* lifecycle state, including the
+  minutes a frontier MoE model spends loading and any window a live cache
+  rebuild takes it out of service. Both 503 every generation request. A probe
+  that stopped at the status code would advertise the backend to the mesh and
+  have every routed request come back 503, so the body is the rule and the
+  reported phase reaches `/v1/status`.
+- **Two images**, `docker/Dockerfile.vllm` and `docker/Dockerfile.freetoken`,
+  with `make docker-vllm` and `make docker-freetoken`. The vLLM image drops the
+  binary into vLLM's published image and clears its entrypoint, which otherwise
+  launches an API server and never runs `CMD`. The FreeToken image installs the
+  engine into its own virtualenv on a **devel** CUDA base, because the engine
+  JIT-compiles kernels and needs `nvcc` at run time, not only at build time.
+- **Compose examples for both**, which grant GPUs through CDI rather than the
+  NVIDIA runtime. `nvidia-ctk runtime configure` restarts the Docker daemon and
+  so bounces every other container on the machine; a generated
+  `/etc/cdi/nvidia.yaml` does not. Neither image contains `nvidia-smi` or
+  `libcuda` on purpose: the container runtime injects them from the host, so
+  they always match the running driver.
+
+### What was tested, and on what
+
+The engines were written clean-room against the v2.1.0 documentation by someone
+who did not read the foundation implementation — which is how three defects in
+that documentation were found and fixed before this release rather than after.
+
+Verified on **teddy** (3× RTX A4000, driver 595.91.07, CUDA 13.3, Docker 29.1.3):
+
+- Both images build; `vllm 0.11.2+cu129` and `ft 0.1.2` run inside them; GPUs
+  and `nvidia-smi` reach a container through CDI.
+- **One node, both engines, live.** `vllm serve` on GPU 0 and `ft serve` on
+  GPU 1, each reaching healthy with 4 slots at 8192 ctx, each answering a real
+  completion through `/v1/chat/completions`.
+- **FreeToken's readiness rule proved itself on contact.** During warmup the
+  engine answered `/health` with HTTP **200** and `{"status":"loading",
+  "phase":"warmup"}`, and the node correctly published zero slots for it. A
+  probe that stopped at the status code would have advertised that backend and
+  had every routed request come back 503.
+- **The mesh spans three versions.** teddy on v2.2.0-beta1 joined the secured
+  mesh alongside gb0 on v2.1.0 and gb1-gb4 on v2.0.0; gb1 sees both of teddy's
+  models, their slots, their health and their request counters. C3, C4 and C5
+  hold across all three at once.
+- The full suite, the integration suites and `-race` are green. The node tests
+  additionally run all three engines against fakes that assert the command line
+  each engine generates, so the flags are exercised without a GPU.
+
+**Still unproven: a production checkpoint.** The smoke test ran Qwen2.5-0.5B.
+A4000 is Ampere, so the NVFP4 path and FreeToken's arch-specific kernel cache —
+both Blackwell concerns — are untouched, and nothing here measures throughput.
+
 ## v2.1.2
 
 - `scripts/setup-opencode.sh` writes the provider's display name in lower case,

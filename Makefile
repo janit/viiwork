@@ -1,4 +1,4 @@
-.PHONY: build mcp accept test clean docker docker-stable docker-rocm up down
+.PHONY: build mcp accept test clean docker docker-stable docker-rocm docker-vllm docker-freetoken up down
 
 # scripts/version.sh, not `git describe` inline: the private repo carries no
 # tags, so describe reports the last one it can still see. See that script.
@@ -37,11 +37,19 @@ clean:
 # One image per engine, under docker/. See BUILDS.md.
 #
 #   docker-rocm (alias: docker, docker-stable) -> viiwork:latest
+#   docker-vllm                                 -> viiwork-vllm:latest
+#   docker-freetoken                            -> viiwork-freetoken:latest
 #
-# One image per engine, all under docker/, named for what they carry rather
-# than left implied: Dockerfile.rocm is llama.cpp built for ROCm/gfx906, which
-# is the engine the reference fleet runs and the one v2.1.0 ships. The vLLM and
-# FreeToken images arrive in v2.2.0 as docker-vllm and docker-freetoken.
+# One image per engine, all under docker/, named for the ENGINE rather than for
+# a GPU vendor: Dockerfile.rocm is llama.cpp built for ROCm/gfx906, which is the
+# engine the reference fleet runs. vLLM already has a ROCm build and FreeToken
+# may add one, so a second accelerator backend is a sibling base image, never a
+# fork.
+#
+# The two v2.2.0 images are not peers in cost. docker-vllm drops the binary into
+# vLLM's published image and takes about a minute; docker-freetoken installs the
+# engine, torch and its CUDA wheels into a devel CUDA base and is several GB.
+# Build that one off-peak.
 #
 # VERSION must be passed through: the Dockerfile defaults ARG VERSION to "dev",
 # so without this the image reports "dev" from /v1/cluster and /v1/status no
@@ -53,6 +61,12 @@ clean:
 # right rather than merely convenient.
 docker docker-stable docker-rocm:
 	docker build --build-arg VERSION=$(VERSION) -f docker/Dockerfile.rocm -t viiwork .
+
+docker-vllm:
+	docker build --build-arg VERSION=$(VERSION) -f docker/Dockerfile.vllm -t viiwork-vllm .
+
+docker-freetoken:
+	docker build --build-arg VERSION=$(VERSION) -f docker/Dockerfile.freetoken -t viiwork-freetoken .
 
 up:
 	docker compose up -d

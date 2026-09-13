@@ -22,7 +22,9 @@ import (
 	"github.com/janit/viiwork/v2/internal/alias"
 	"github.com/janit/viiwork/v2/internal/config"
 	"github.com/janit/viiwork/v2/internal/cost"
-	_ "github.com/janit/viiwork/v2/internal/engine/llamacpp" // registers the llama.cpp engine
+	_ "github.com/janit/viiwork/v2/internal/engine/freetoken" // registers the FreeToken engine
+	_ "github.com/janit/viiwork/v2/internal/engine/llamacpp"  // registers the llama.cpp engine
+	_ "github.com/janit/viiwork/v2/internal/engine/vllm"      // registers the vLLM engine
 	"github.com/janit/viiwork/v2/internal/gpu"
 	"github.com/janit/viiwork/v2/internal/pipeline"
 	"github.com/janit/viiwork/v2/internal/power"

@@ -31,8 +31,15 @@ import (
 //	FAKE_HOLD=<duration>         a non-streaming completion waits this long
 
 func TestMain(m *testing.M) {
-	if os.Getenv("NODE_HELPER") == "llama-server" {
+	switch os.Getenv("NODE_HELPER") {
+	case "llama-server":
 		serveFakeLlamaServer()
+		os.Exit(0)
+	case "vllm":
+		serveFakeVLLM()
+		os.Exit(0)
+	case "ft":
+		serveFakeFreeToken()
 		os.Exit(0)
 	}
 	os.Exit(m.Run())
@@ -164,6 +171,16 @@ func (m fakeModel) yaml() string {
 // probing, fast health checks, and the given models. extra is appended as
 // top-level YAML.
 func nodeConfig(name, stateDir string, models []fakeModel, extra string) string {
+	rendered := make([]string, len(models))
+	for i, m := range models {
+		rendered[i] = m.yaml()
+	}
+	return nodeConfigYAML(name, stateDir, rendered, extra)
+}
+
+// nodeConfigYAML is nodeConfig over already-rendered models[] entries, so a
+// test can mix engines in one config.
+func nodeConfigYAML(name, stateDir string, models []string, extra string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "node:\n  name: %s\n  state_dir: %q\n", name, stateDir)
 	b.WriteString("api:\n  host: 127.0.0.1\n  port: 18086\n")
@@ -175,7 +192,7 @@ func nodeConfig(name, stateDir string, models []fakeModel, extra string) string 
 	if len(models) > 0 {
 		b.WriteString("models:\n")
 		for _, m := range models {
-			b.WriteString(m.yaml())
+			b.WriteString(m)
 		}
 	}
 	b.WriteString(extra)

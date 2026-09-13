@@ -1,0 +1,14 @@
+# Shape of vLLM's /metrics under the V1 engine, trimmed. Real output carries
+# dozens of histograms around these gauges.
+# Carried verbatim from viiwork-nvidia internal/vllm/metrics_test.go (v1Metrics).
+# HELP vllm:num_requests_running Number of requests in model execution batches.
+# TYPE vllm:num_requests_running gauge
+vllm:num_requests_running{engine="0",model_name="Qwen/Qwen3-32B"} 7.0
+# HELP vllm:num_requests_waiting Number of requests waiting to be processed.
+# TYPE vllm:num_requests_waiting gauge
+vllm:num_requests_waiting{engine="0",model_name="Qwen/Qwen3-32B"} 2.0
+# TYPE vllm:kv_cache_usage_perc gauge
+vllm:kv_cache_usage_perc{engine="0",model_name="Qwen/Qwen3-32B"} 0.62
+# TYPE vllm:generation_tokens_total counter
+vllm:generation_tokens_total{engine="0",model_name="Qwen/Qwen3-32B"} 918273.0
+vllm:e2e_request_latency_seconds_bucket{le="0.5",engine="0"} 12.0

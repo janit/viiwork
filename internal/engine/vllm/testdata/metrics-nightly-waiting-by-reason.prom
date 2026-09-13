@@ -1,0 +1,10 @@
+# Captured from vLLM 0.28.1rc1.dev628+g2a02f6efe (a nightly after v0.29.0) with
+# four requests running. That build added a per-reason breakdown of the waiting
+# queue beside the gauge we read. It must not be summed into the total, or every
+# waiting request would count once per reason.
+# Carried verbatim from viiwork-nvidia internal/vllm/metrics_test.go.
+vllm:num_requests_running{engine="0",model_name="qwen3-0.6b"} 4.0
+vllm:num_requests_waiting{engine="0",model_name="qwen3-0.6b"} 1.0
+vllm:num_requests_waiting_by_reason{engine="0",model_name="qwen3-0.6b",reason="capacity"} 1.0
+vllm:num_requests_waiting_by_reason{engine="0",model_name="qwen3-0.6b",reason="deferred"} 0.0
+vllm:kv_cache_usage_perc{engine="0",model_name="qwen3-0.6b"} 0.04853149049787964

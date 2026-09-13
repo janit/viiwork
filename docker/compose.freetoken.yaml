@@ -1,0 +1,120 @@
+# viiwork 2 on FreeToken: one node per machine, every FreeToken model on it.
+#
+# Copy beside the machine's viiwork.yaml and start it with
+#   docker compose -f compose.freetoken.yaml up -d
+# Reload the model list after editing viiwork.yaml:
+#   docker kill -s HUP viiwork
+#
+# The two cache volumes below are not optional in practice. Without them every
+# container start recompiles CUDA kernels and re-downloads weights.
+
+services:
+  viiwork:
+    image: viiwork-freetoken:latest
+    container_name: viiwork
+    restart: unless-stopped
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.freetoken
+      args:
+        VERSION: dev
+        # Pin the toolkit the kernels are JIT-compiled against. Must be a
+        # *devel* image — see the Dockerfile.
+        CUDA_TAG: 13.3.1-devel-ubuntu24.04
+        # Where the engine comes from: pypi for a tagged release, nightly for
+        # upstream's latest build of main, which some model families need
+        # because releases are rare. See the Dockerfile.
+        FREETOKEN_CHANNEL: pypi
+        # pypi: pin the release. Empty takes the latest, which means a rebuild
+        # can change the inference stack under you.
+        FREETOKEN_VERSION: ""
+        # nightly: fail the build unless nightly is built from this commit. It
+        # guards a rebuild rather than reproducing one — nightly keeps only its
+        # latest build — so keep the image, not the args.
+        FREETOKEN_COMMIT: ""
+
+    # Gossip binds the machine's tailnet (or LAN) address on 7946 and the API
+    # listens on 8086. Members dial each other's real addresses, which a
+    # bridged container does not have.
+    network_mode: host
+
+    # The engine's inter-process channels and, on an offload MoE backend, the
+    # host-memory staging for expert weights.
+    ipc: host
+
+    # The on-GPU check matches backend processes against the host PIDs that
+    # nvidia-smi reports.
+    pid: host
+
+    # GPU access, which also injects nvidia-smi and libcuda from the host —
+    # they are deliberately not in the image, so that they always match the
+    # running driver. See compose.vllm.yaml for the cdi/nvidia choice; cdi
+    # needs no Docker daemon restart:
+    #   sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: cdi
+              capabilities: [gpu]
+              device_ids: ["nvidia.com/gpu=all"]
+
+    volumes:
+      # Weights. A local directory rather than the HF cache is the usual shape
+      # here: the models this engine runs are hundreds of gigabytes, and
+      # `ft checkpoint` writes its FTW fast-load form beside them.
+      - /models:/models:ro
+      - ./viiwork.yaml:/etc/viiwork/viiwork.yaml:ro
+      # node.state_dir. The alias table lives here and must survive recreating
+      # the container. A host directory rather than a named volume, which any
+      # `docker volume prune` deletes while the node is stopped.
+      - /var/lib/viiwork:/var/lib/viiwork
+      # Model cache, for the HF-repo-id form of models[].path.
+      - ${HOME}/.cache/huggingface:/root/.cache/huggingface
+      # FreeToken's own cache: JIT-compiled CUDA kernels and the `ft bench bw`
+      # bandwidth profile. Without this volume every container start recompiles
+      # the kernels it does not find prebuilt, and the profile that makes
+      # moe_backend: auto pick `hybrid` is lost on each restart.
+      #
+      # The image ships upstream's prebuilt kernel cache where one is published
+      # for the installed release (see the Dockerfile), which shortens that
+      # compile — it does not remove it, so keep the volume.
+      - ${HOME}/.cache/freetoken:/root/.cache/freetoken
+      # On a tailnet the node learns its address and finds other machines
+      # through tailscaled's local API. The directory, not the socket file: a
+      # mounted file keeps its old inode when tailscaled restarts.
+      - /var/run/tailscale:/var/run/tailscale:ro
+
+    environment:
+      # Only needed for gated or private models.
+      - HF_TOKEN=${HF_TOKEN:-}
+
+    # A secured mesh's secret: VIIWORK_MESH_SECRET=<base64 of exactly 32 bytes>,
+    # the same on every machine, in a file readable by root and the operators'
+    # group (mode 0640). An open mesh has no such file and sets mesh.open: true
+    # in viiwork.yaml instead.
+    env_file:
+      - path: /etc/viiwork/mesh.env
+        required: false
+
+    # The Docker default of 64 MB is far too small for the expert staging an
+    # offload MoE backend does, and shows up as a hang at load time.
+    shm_size: "16gb"
+
+    # A clean stop leaves the mesh, lets in-flight requests finish for
+    # health.respawn_grace (60 s by default) and stops the backends (up to
+    # 10 s): about 75 s. Docker's default of 10 s would kill the node mid-drain.
+    stop_grace_period: 90s
+
+    healthcheck:
+      # The node's /health reports 503 until a backend is actually serving, not
+      # merely listening, which is what makes this meaningful during
+      # FreeToken's multi-minute startup.
+      test: ["CMD", "curl", "-fsS", "http://localhost:8086/health"]
+      interval: 30s
+      timeout: 5s
+      # Generous: weights, cache pools, CUDA graphs and then filling a GPU
+      # expert cache from host memory. Keep this at or above the model's
+      # startup_timeout.
+      start_period: 20m
+      retries: 3

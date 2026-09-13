@@ -1,0 +1,10 @@
+# Under data parallelism one metric has a series per engine. Counts are the
+# backend's total; cache pressure is the worst engine, since that is the one
+# that will make the backend slow.
+# Carried from viiwork-nvidia internal/vllm/metrics_test.go.
+vllm:num_requests_running{engine="0"} 3.0
+vllm:num_requests_running{engine="1"} 4.0
+vllm:num_requests_waiting{engine="0"} 1.0
+vllm:num_requests_waiting{engine="1"} 2.0
+vllm:kv_cache_usage_perc{engine="0"} 0.20
+vllm:kv_cache_usage_perc{engine="1"} 0.80

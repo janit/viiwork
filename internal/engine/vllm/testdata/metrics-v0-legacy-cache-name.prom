@@ -1,0 +1,7 @@
+# The V0 engine spelled the KV gauge differently: gpu_cache_usage_perc where V1
+# publishes kv_cache_usage_perc. A node must work against whichever vLLM the
+# operator installed.
+# Carried from viiwork-nvidia internal/vllm/metrics_test.go.
+vllm:num_requests_running{model_name="m"} 3.0
+vllm:num_requests_waiting{model_name="m"} 0.0
+vllm:gpu_cache_usage_perc{model_name="m"} 0.41

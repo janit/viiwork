@@ -92,12 +92,23 @@ type testNode struct {
 // startNode loads cfgYAML, builds the node and runs it until the test ends.
 func startNode(t *testing.T, net *meshtest.Network, name string, models []fakeModel, extra string, tune func(*testNode) func(*mesh.Options)) *testNode {
 	t.Helper()
+	rendered := make([]string, len(models))
+	for i, m := range models {
+		rendered[i] = m.yaml()
+	}
+	return startNodeYAML(t, net, name, rendered, extra, tune)
+}
+
+// startNodeYAML is startNode over already-rendered models[] entries, so a test
+// can start a node serving several engines at once.
+func startNodeYAML(t *testing.T, net *meshtest.Network, name string, models []string, extra string, tune func(*testNode) func(*mesh.Options)) *testNode {
+	t.Helper()
 	dir := t.TempDir()
 	tn := &testNode{cfgPath: filepath.Join(dir, "viiwork.yaml"), stateDir: filepath.Join(dir, "state"), log: &syncBuffer{}}
 	if err := os.MkdirAll(tn.stateDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeFile(t, tn.cfgPath, nodeConfig(name, tn.stateDir, models, extra))
+	writeFile(t, tn.cfgPath, nodeConfigYAML(name, tn.stateDir, models, extra))
 	cfg, err := config.Load(tn.cfgPath, noEnv)
 	if err != nil {
 		t.Fatal(err)

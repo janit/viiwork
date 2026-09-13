@@ -489,7 +489,8 @@ cold start.
 - [ ] `engine.Register(New())` from `init`
 - [ ] `enginetest.Run` passes
 - [ ] Golden command-line tests, and `httptest` tests over captured `testdata/`
-- [ ] Blank import in `internal/node/node.go` and `cmd/viiwork-accept`
+- [ ] Blank import in `internal/node/node.go`, `cmd/viiwork-accept/main.go`
+      and `internal/accept/engines_test.go`
 - [ ] `docker/Dockerfile.<name>` and a compose example, if the runtime needs one
 - [ ] A model block in `viiwork.yaml.example` and a row in README's engine table
 - [ ] `gofmt`, `go vet`, `go test ./...` clean
@@ -498,41 +499,83 @@ If any step forced an edit to `internal/config`, `internal/supervisor` or
 `internal/proxy`, write down what and why — that is a finding about the
 contract, and the contract is what gets fixed.
 
-## Writing against this before it ships
+## What two ports taught
 
-The API above lands in **v2.1.0**. To write an engine in parallel:
+The vLLM and FreeToken engines were written clean-room against this document by
+someone who did not read `internal/engine`, then landed in v2.2.0. **Neither
+needed an edit outside its own package** — the contract held — but the exercise
+corrected several things, and these are the ones that cost the most time.
 
-**Guaranteed not to move** — write against these freely:
+**An `Engine` is a singleton. Keep no per-backend state in it.** One instance is
+registered from `init` and shared by every model on the node. Both engines
+initially kept a map from backend address to the `Spec` `Command` was called
+with, because an early draft of `Load` had no `Spec`. That map was wrong four
+ways: nothing removed an entry, so a reload leaked one; the supervisor
+reassigns a port after a failed bind, so a later model could be handed a port an
+earlier one used and the map would answer with the wrong model's `Parallel` and
+`Context`; it made `Load` silently depend on `Command` having run first in the
+same process; and it put mutable state on what should be a stateless strategy
+object. `Load` now receives its `Spec`, and none of that is needed. If you find
+yourself remembering something between calls, check whether the argument you
+want is already on its way.
 
-- The five `Engine` methods, their names and their signatures.
-- `Spec`'s field names and meanings, `Command`, `Probe`, `Load`.
-- `Register` / `Lookup` / `Names`, and registration from `init`.
-- The four capability interfaces and their semantics.
-- The rule that an engine's YAML block is named for the engine and owned by it.
-- Everything in "What the node already does".
+**`Spec.GPUs` at config-validation time is ONE BACKEND's cards**, not the
+model's whole `gpus:` list — `config.ModelSpec` passes `BackendGPUs(0)`. This
+matters if your engine has a rule about how many cards it can take.
+FreeToken's is "exactly one per process", expressed as `len(s.GPUs) > 1`,
+and it is correct precisely because of that. Read it as the whole list and the
+ordinary `gpus: [0,1,2]` with `gpus_per_backend: 1` — three single-card
+backends, the shape that engine wants — would be rejected on day one.
 
-**May still move**, so keep it at arm's length:
+**The status code is often not the readiness rule.** vLLM answers `/health` only
+when it is ready, so there its code *is* the rule. FreeToken answers 200 in
+every lifecycle state, including the minutes a frontier MoE model spends loading
+and any window a cache rebuild takes it out of service — both of which 503 every
+generation request. Porting vLLM's probe to it would advertise the backend to
+the mesh and have every routed request come back 503. Read your engine's
+readiness endpoint in each state before deciding what "ready" means, and report
+the phase you find so `/v1/status` can show it.
 
-- `DecodeOptions`'s exact error string. Depend on it returning an error, not on
-  its wording.
-- `enginetest.Case`'s fields, which have not been exercised by a second engine
-  yet. Keep your cases in one function so they are cheap to reshape.
-- Whether `Spec` gains a field. It can only gain one — nothing is being removed
-  — so a struct literal with field names will keep compiling. It has already
-  gained `Backends` since this document was first written, for exactly that
-  reason: llama.cpp's thread tuning needed it on contact with the code.
+**Absent is not zero, in `Load` as on the wire.** A vLLM build that publishes no
+running-sequence gauge makes `Load` return an error. That is not pedantry: a
+zero would freeze "idle" into the mesh for a busy backend, while an error
+degrades visibly to the node's own in-flight count within `routing.stale_after`.
 
-**To compile today**, copy the declarations in "The API" into a local stub
-package and build against that. The real packages now exist on the `v2.1`
-branch, so once you can pull it, delete the stub and change the import path;
-nothing else should change. One field did move while this was being built —
-`Spec` gained `Backends` — and it is in the listing above.
+**`DecodeOptions` error lines: look the key up in the original node.** Rebasing
+with `Options.Line - 1` works for a flat block and breaks on a nested or
+multi-document one. The real implementation does the lookup; do not reinvent
+the offset.
 
-**For the vLLM engine specifically**, the decisions are already made and written
-down in the project's internal v2.2 plan — ask for them before starting, because
-several are counter-intuitive. The short version: always pass
-`--max-model-len` and `--max-num-seqs` from `Spec.Context` and `Spec.Parallel`;
-return an error from `Load` when the running gauge is absent rather than zero;
-`CtxPerSlot` is `Spec.Context` with no round trip to the engine; do not implement
-`TokenProgressReader`; default startup timeout 20 minutes; set nothing about
-devices in `Command.Env`.
+**Your `DefaultStartupTimeout` is the single-card figure.** vLLM's is 20
+minutes, which is right for one card and short for a tensor-parallel backend
+that must also shard the checkpoint. `viiwork-accept` flags a multi-card backend
+whose timeout is under 45 minutes, and the fix is `models[].startup_timeout` in
+the operator's file rather than a bigger default — the engine cannot see the
+split from `DefaultStartupTimeout()`, which takes no `Spec`.
+
+**A flag that is real can still do nothing.** FreeToken accepts
+`--kv-reserve-tokens`, but it is a floor consulted only by `--moe-cache-auto`,
+which viiwork never generates. Shipping the key was right; documenting it as
+inert unless the operator adds that flag to `args:` was the part that had to be
+got right. Check what a flag *interacts with*, not only that the binary accepts
+it.
+
+**Blank imports are three places, not two.** `internal/node/node.go` and
+`cmd/viiwork-accept/main.go` register the engine for the binaries;
+`internal/accept/engines_test.go` is the test-side mirror, and acceptance
+validates configs for engines it has not registered as though they did not
+exist.
+
+**An engine's run-time toolchain is your problem, not the node's.** FreeToken
+JIT-compiles CUDA kernels on first use and shells out to `ninja` and `nvcc` by
+name. The node passes `models[].env` to the backend and nothing else, so on a
+native install those must be on the child's PATH or the backend starts its API
+server and then dies — which reads as a crash on first load rather than as a
+missing dependency. If your engine compiles anything at run time, say so in its
+package documentation and in the image, because the failure is not
+self-explanatory.
+
+**One Dockerfile trap.** An `ARG` written after the first `FROM` is scoped to
+that stage. If your runtime stage's `FROM` interpolates a version ARG, declare
+it before any stage or it expands to empty and the build fails with `invalid
+reference format`.

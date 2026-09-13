@@ -1,0 +1,185 @@
+# viiwork on FreeToken.
+#
+# Named for the engine, not for a GPU vendor. FreeToken runs on CUDA today and
+# may add AMD or Intel; a second accelerator backend later is a sibling base
+# image here, not a fork of this file.
+#
+# The Go binary is built in the pinned toolchain image and dropped into a CUDA
+# image with FreeToken installed into a virtualenv. Nothing here is compiled
+# against CUDA — viiwork only ever spawns and supervises `ft serve` — so the
+# inference stack is entirely what the ARGs below pin.
+#
+# Read this before building, because it differs from the vLLM image in ways
+# that cost time and disk:
+#
+#   * There is no official FreeToken image to start from, so the engine is
+#     installed here. That makes the build slow (torch and its CUDA wheels) and
+#     the image large — several gigabytes.
+#   * It must be a *devel* CUDA image, not a runtime one. FreeToken JIT-compiles
+#     its kernels on first use and needs nvcc on PATH at RUN TIME, not just at
+#     build time. A runtime image passes docker build and then fails on the
+#     first request. The kernel-cache wheel below shortens that compile; it does
+#     not remove it, because a kernel absent from the cache still falls back to
+#     nvcc.
+#   * The JIT cache and the model cache belong on volumes. Without them every
+#     container start recompiles kernels and re-downloads weights — see
+#     docker/compose.freetoken.yaml.
+#
+# Most FreeToken deployments are not containers at all: the engine is an
+# edge-native runtime that expects host RAM, a fast PCIe link and a persistent
+# kernel cache, and running it natively beside a systemd unit for the node is
+# the simpler path. The image exists for fleets that are already containerised.
+
+# CUDA 13 is FreeToken's floor (driver r580+). Pinning the tag is how you pin
+# the toolkit the kernels are compiled against.
+ARG CUDA_TAG=13.3.1-devel-ubuntu24.04
+# Where the engine comes from: pypi for a tagged release, nightly for upstream's
+# latest build of main. See the install step below.
+ARG FREETOKEN_CHANNEL=pypi
+# pypi only: the release to install. Empty takes the latest.
+ARG FREETOKEN_VERSION=
+# nightly only: fail the build unless nightly is built from this commit.
+ARG FREETOKEN_COMMIT=
+# Set to 0 to skip the prebuilt kernel cache and JIT everything on first use.
+ARG KERNEL_CACHE=1
+
+FROM golang:1.27.1 AS go-build
+WORKDIR /src
+
+# Dependencies first, so a source-only change does not re-download them.
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+ARG VERSION=dev
+# CGO off: the binary is pure stdlib plus yaml, and a static one drops cleanly
+# into any runtime image regardless of its libc.
+RUN CGO_ENABLED=0 go build -buildvcs=false \
+      -ldflags "-X main.version=${VERSION}" \
+      -o /viiwork ./cmd/viiwork
+
+FROM nvidia/cuda:${CUDA_TAG}
+ARG FREETOKEN_CHANNEL
+ARG FREETOKEN_VERSION
+ARG FREETOKEN_COMMIT
+ARG KERNEL_CACHE
+
+ENV DEBIAN_FRONTEND=noninteractive
+# ipmitool is for power.source: ipmi; the rest is what the virtualenv needs.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3 python3-venv python3-dev ca-certificates ipmitool \
+    && rm -rf /var/lib/apt/lists/*
+
+# The engine, from one of two channels.
+#
+#   * pypi: a tagged release. The stable choice, and a dated one: upstream tags
+#     rarely, and some model families this node serves are newer than the
+#     latest release.
+#   * nightly: upstream's latest build of main, published to a rolling GitHub
+#     release beside a manifest that names the runtime wheel, the kernel-cache
+#     wheel built with it, and both their sha256. scripts/fetch-engine.py
+#     resolves and verifies that pair before pip sees it.
+#
+# Nightly cannot be pinned the way a release can. Each publish deletes the
+# previous wheels before uploading the next, so a commit nightly has moved past
+# is gone. FREETOKEN_COMMIT therefore makes a rebuild fail when the engine has
+# changed, rather than reproduce the old one. The image is the durable
+# artefact — keep it, not the build args — and /opt/freetoken/engine.json
+# records the pair it holds.
+#
+# Its own virtualenv, on PATH, so `ft` resolves the way freetoken.Options's
+# default binary name expects.
+ENV VIRTUAL_ENV=/opt/freetoken
+ENV PATH="$VIRTUAL_ENV/bin:/usr/local/cuda/bin:$PATH"
+COPY scripts/fetch-engine.py /tmp/fetch-engine.py
+RUN python3 -m venv "$VIRTUAL_ENV" \
+    && pip install --no-cache-dir --upgrade pip \
+    && case "$FREETOKEN_CHANNEL" in \
+         pypi) \
+           if [ -n "$FREETOKEN_COMMIT" ]; then \
+             echo "FREETOKEN_COMMIT applies to the nightly channel; a release is pinned with FREETOKEN_VERSION" >&2; exit 1; \
+           fi; \
+           pip install --no-cache-dir "freetoken[accel]${FREETOKEN_VERSION:+==${FREETOKEN_VERSION}}" ;; \
+         nightly) \
+           if [ -n "$FREETOKEN_VERSION" ]; then \
+             echo "FREETOKEN_VERSION applies to the pypi channel; nightly takes FREETOKEN_COMMIT" >&2; exit 1; \
+           fi; \
+           python3 /tmp/fetch-engine.py /tmp/engine \
+           && cp /tmp/engine/engine.json "$VIRTUAL_ENV/engine.json" \
+           && pip install --no-cache-dir "freetoken[accel] @ file://$(ls /tmp/engine/runtime/*.whl)" ;; \
+         *) \
+           echo "FREETOKEN_CHANNEL must be pypi or nightly, not '$FREETOKEN_CHANNEL'" >&2; exit 1 ;; \
+       esac \
+    && ft --version
+
+# Prebuilt CUDA kernels, when the installed engine has a cache that matches.
+#
+# FreeToken compiles its kernels with nvcc on first use. On a fresh machine that
+# is minutes added to a start that is already long, and it is why this image
+# carries a devel CUDA base. Upstream publishes a companion wheel of prebuilt
+# .so files — freetoken-kernel-cache — whose default arch list covers sm_80
+# through sm_120, so consumer Blackwell included.
+#
+# It is NOT on PyPI: it exists only as a GitHub release asset, and
+# `freetoken[accel]` (which is just [fi, sgl]) does not pull it. Three things
+# shape the rest:
+#
+#   * The cache must match the runtime, and FreeToken RAISES on a mismatch
+#     rather than falling back to nvcc. A wrong wheel is therefore worse than no
+#     wheel — it takes the engine down.
+#   * Its +cuXYZ suffix must match the CUDA major that *torch* was built for,
+#     not the CUDA_TAG above, and torch is whatever pip resolved. Asking torch
+#     is exact; a build whose torch is a different CUDA generation skips the
+#     cache.
+#   * No cache for an engine is the ordinary case, not an error. The build
+#     continues and the engine JITs as before.
+#
+# How "match" is decided is where the channels differ. A PyPI release carries no
+# build stamp, so its cache is found by a URL built from the installed release
+# number, and the engine's guard compares release numbers. A nightly pair is
+# stamped with its commit — 0.1.2+g<sha> and 0.1.2+cu130.g<sha> — and comes from
+# the manifest that names the two together, so the guard compares the stamps.
+# Neither protects a plain source build of main, which reports 0.1.2 with no
+# stamp and would accept the release's cache without a word. This image never
+# makes one.
+RUN if [ "$KERNEL_CACHE" = "0" ]; then \
+      echo "kernel cache: skipped (KERNEL_CACHE=0); kernels will JIT-compile on first use"; \
+    elif [ "$FREETOKEN_CHANNEL" = "nightly" ]; then \
+      want="$(python -c 'import json; print(json.load(open("/tmp/engine/engine.json"))["cuda"][2:-1])')"; \
+      have="$(python -c 'import torch; print((torch.version.cuda or "").split(".")[0])')"; \
+      if [ "$want" = "$have" ]; then \
+        pip install --no-cache-dir /tmp/engine/kernel-cache/*.whl \
+        && echo "kernel cache: $(ls /tmp/engine/kernel-cache)"; \
+      else \
+        echo "kernel cache: nightly's is built for CUDA ${want}, torch for CUDA ${have:-none}; kernels will JIT-compile on first use"; \
+      fi; \
+    else \
+      ver="$(python -c 'import freetoken.version as v; print(v.__version__)')"; \
+      cu="$(python -c 'import torch; c=(torch.version.cuda or "").split("."); print("".join(c[:2]))')"; \
+      whl="freetoken_kernel_cache-${ver}%2Bcu${cu}-py3-none-linux_x86_64.whl"; \
+      url="https://github.com/FlashML-org/FreeToken/releases/download/v${ver}/${whl}"; \
+      if pip install --no-cache-dir "$url"; then \
+        echo "kernel cache: freetoken-kernel-cache ${ver}+cu${cu}"; \
+      else \
+        echo "kernel cache: no wheel for freetoken ${ver}+cu${cu}; kernels will JIT-compile on first use"; \
+      fi; \
+    fi \
+    && rm -rf /tmp/engine /tmp/fetch-engine.py
+
+# nvidia-smi comes from the NVIDIA container runtime rather than the image, so
+# GPU telemetry requires the container to be started with GPU access (see
+# docker/compose.freetoken.yaml). Without it the node still serves — it just
+# reports no GPUs.
+COPY --from=go-build /viiwork /usr/local/bin/viiwork
+
+# The entrypoint is NOT cleared here, unlike Dockerfile.vllm, and the difference
+# is not an oversight. nvidia/cuda's /opt/nvidia/nvidia_entrypoint.sh prints a
+# banner and ends in `exec "$@"`, so viiwork replaces it as PID 1 and receives
+# SIGTERM directly — which is what the whole shutdown order depends on: leave
+# the mesh, cancel the streams, drain for health.respawn_grace, stop the
+# backends. A wrapper that did not exec would swallow that signal and the node
+# would be killed mid-drain. vLLM's entrypoint, by contrast, launches an API
+# server and never runs CMD at all, so it has to go.
+
+EXPOSE 8086/tcp 7946/tcp 7946/udp
+CMD ["viiwork", "--config", "/etc/viiwork/viiwork.yaml"]

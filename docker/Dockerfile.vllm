@@ -1,0 +1,60 @@
+# viiwork on vLLM.
+#
+# Named for the engine, not for a GPU vendor. vLLM has a ROCm build as well as
+# a CUDA one, so a second accelerator backend later is a sibling base image
+# here, not a fork of this file.
+#
+# The image is vLLM's own, with the viiwork binary dropped in. Nothing is
+# rebuilt: vLLM's published image already carries the matched torch, CUDA and
+# kernel wheels, and rebuilding that stack is how you end up with a torch that
+# does not match the driver.
+
+# Declared before the first FROM so that it is in the GLOBAL scope and the
+# runtime stage's FROM can read it. An ARG written after a FROM belongs to that
+# stage only, and a later FROM would expand it to empty.
+ARG VLLM_VERSION=v0.11.2
+
+# Stage 1: Build viiwork.
+FROM golang:1.27.1 AS go-build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ARG VERSION=dev
+# CGO off so the binary runs on whatever libc the vLLM image happens to carry.
+RUN CGO_ENABLED=0 go build -ldflags "-X main.version=${VERSION}" -o /viiwork ./cmd/viiwork
+
+# Stage 2: Runtime — vLLM's published image.
+FROM vllm/vllm-openai:${VLLM_VERSION}
+
+# ENTRYPOINT MUST BE CLEARED. vllm/vllm-openai sets
+# ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"], so the
+# image starts one vLLM server and nothing else. viiwork is the process that
+# runs here; it starts `vllm serve` itself, once per backend, with the flags
+# the engine builds. Leaving the entrypoint in place makes CMD below read as
+# arguments to that server, and the container comes up serving nothing viiwork
+# knows about.
+ENTRYPOINT []
+
+# ipmitool is for power.source: ipmi. Nothing else is added: every CUDA
+# component is already in the base image.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ipmitool \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=go-build /viiwork /usr/local/bin/
+
+# NO nvidia-smi HERE, DELIBERATELY. The container runtime injects the driver
+# utilities — nvidia-smi, libcuda, the device nodes — from the host, so they
+# always match the running kernel driver. A copy baked into the image would be
+# whatever version was current on build day and would silently disagree with
+# the host after the next driver update. internal/gpu shells out to nvidia-smi
+# and finds the injected one.
+#
+# This is also why the container needs GPUs granted explicitly:
+#   CDI (no daemon restart):  --device nvidia.com/gpu=all
+#   nvidia runtime:           --gpus all
+# See docker/compose.vllm.yaml.
+
+EXPOSE 8086/tcp 7946/tcp 7946/udp
+CMD ["viiwork", "--config", "/etc/viiwork/viiwork.yaml"]

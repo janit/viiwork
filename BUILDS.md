@@ -10,8 +10,12 @@ One image per engine, all under `docker/`, each named for what it carries.
 | Image | Dockerfile | Engine | Make target |
 |---|---|---|---|
 | `viiwork:latest` (a.k.a. `viiwork`) | `docker/Dockerfile.rocm` | `llamacpp` on ROCm / gfx906 | `make docker-rocm` (aliases: `make docker`, `make docker-stable`) |
-| — | `docker/Dockerfile.vllm` | `vllm` | `make docker-vllm` — **arrives in v2.2.0** |
-| — | `docker/Dockerfile.freetoken` | `freetoken` | `make docker-freetoken` — **arrives in v2.2.0** |
+| `viiwork-vllm:latest` | `docker/Dockerfile.vllm` | `vllm` | `make docker-vllm` |
+| `viiwork-freetoken:latest` | `docker/Dockerfile.freetoken` | `freetoken` | `make docker-freetoken` |
+
+**Named for the engine, never for a GPU vendor.** vLLM already has a ROCm build
+and FreeToken may add AMD or Intel, so a second accelerator backend is a sibling
+base image, not a fork — and `Spec.Vendor` is informational rather than a gate.
 
 `make docker` builds the ROCm image. That is deliberate rather than historical:
 Radeon VII is the core of this fleet, and the unqualified target pointing at it
@@ -32,6 +36,117 @@ architecture" rather than anything self-explanatory.
 
 Build: `make docker` (or `docker compose up -d`, whose `build:` directive
 triggers it the first time).
+
+## `docker/Dockerfile.vllm`
+
+The binary dropped into vLLM's own published image, `vllm/vllm-openai`, pinned
+by `VLLM_VERSION` (currently `v0.11.2`). Nothing is rebuilt: that image already
+carries a matched torch, CUDA and kernel set, and rebuilding the stack is how
+you end up with a torch that disagrees with the driver.
+
+Two things about it are load bearing:
+
+- **`ENTRYPOINT []`.** The base image sets an entrypoint that launches one vLLM
+  API server. viiwork is the process that runs here, and it starts `vllm serve`
+  itself, once per backend, with the flags the engine builds. Leave the
+  entrypoint in place and `CMD` reads as arguments to that server instead.
+- **`ARG VLLM_VERSION` is declared before the first `FROM`.** An `ARG` written
+  after a `FROM` belongs to that stage only, and the runtime stage's `FROM`
+  would expand it to empty and fail with `invalid reference format`.
+
+Build: `make docker-vllm`. About a minute once the base image is pulled; the
+base is roughly 25 GB.
+
+## `docker/Dockerfile.freetoken`
+
+Carried from `viiwork-freetoken`. There is no official FreeToken image, so the
+engine is installed here into its own virtualenv on `PATH` — which is why the
+build is slow (torch and its CUDA wheels) and the image is several GB.
+
+- **It must be a *devel* CUDA base, not a runtime one.** FreeToken JIT-compiles
+  its kernels on first use and needs `nvcc` on `PATH` **at run time**. A runtime
+  base passes `docker build` and then fails on the first request.
+- **The prebuilt kernel cache is best effort.** Upstream publishes a companion
+  wheel whose `+cuXYZ` suffix must match the CUDA that *torch* was built for —
+  not `CUDA_TAG`. The engine raises on a mismatch rather than falling back, so a
+  wrong wheel is worse than none; no wheel is the ordinary case and the build
+  continues.
+- **`FREETOKEN_CHANNEL`** is `pypi` (a tagged release) or `nightly` (upstream's
+  latest build of main, resolved and sha256-verified by
+  `scripts/fetch-engine.py`). Nightly cannot be pinned — each publish deletes
+  the previous wheels — so `FREETOKEN_COMMIT` makes a rebuild *fail* when the
+  engine has moved rather than reproduce the old one. **Keep the image, not the
+  build args**; `/opt/freetoken/engine.json` records the pair it holds.
+
+Build: `make docker-freetoken`, off-peak.
+
+## Running either engine natively
+
+Neither engine has to be in a container — `models[].vllm.binary` and
+`models[].freetoken.binary` take an absolute path, so a virtualenv per engine
+works and is the simpler shape for a FreeToken host. Two things bite, both
+found bringing this up on teddy:
+
+- **Python must be older than 3.14.** vLLM 0.11.2 requires `>=3.10,<3.14`, and a
+  host whose `python3` is 3.14 cannot install it at all — pip reports only that
+  no version satisfies the requirement, without saying why. `uv python install
+  3.12` and `uv venv --python 3.12` is the quickest fix and touches no system
+  package. Give each engine its own venv: they pull different torch builds.
+- **FreeToken needs `ninja` and `nvcc` on the BACKEND's PATH**, not just yours.
+  It shells out to both by name to JIT-compile kernels, and without them the
+  backend dies with `FileNotFoundError: [Errno 2] No such file or directory:
+  'ninja'` after the API server has already started — so the failure looks like
+  a crash on first load rather than a missing dependency. viiwork passes
+  `models[].env` to the child, so:
+
+  ```yaml
+  env:
+    PATH: /opt/engines/freetoken/bin:/usr/local/cuda/bin:/usr/local/bin:/usr/bin:/bin
+  ```
+
+  This is the host-side twin of why `docker/Dockerfile.freetoken` needs a
+  *devel* CUDA base: the toolchain is a run-time dependency, not a build-time
+  one.
+
+## GPU access for the two NVIDIA images
+
+Neither image contains `nvidia-smi` or `libcuda`, deliberately: the container
+runtime injects them from the host so they always match the running driver. A
+copy baked in would be whatever was current on build day.
+
+So the container must be granted GPUs explicitly. Two ways, and the choice
+matters on a busy machine:
+
+| | Needs | Restarts the Docker daemon |
+|---|---|---|
+| **CDI** | `nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml` | no |
+| nvidia runtime | `nvidia-ctk runtime configure --runtime=docker` | **yes** — bounces every container on the host |
+
+CDI is the better default. Docker 25+ reads `/etc/cdi` and `/var/run/cdi`
+natively; `docker info` lists them under "CDI spec directories". Then:
+
+```bash
+docker run --rm --device nvidia.com/gpu=all viiwork-vllm nvidia-smi
+```
+
+`docker/compose.vllm.yaml` and `docker/compose.freetoken.yaml` use the compose
+spelling of the same thing, which needs `capabilities` alongside `device_ids`:
+
+```yaml
+deploy:
+  resources:
+    reservations:
+      devices:
+        - driver: cdi
+          capabilities: [gpu]
+          device_ids: ["nvidia.com/gpu=all"]
+```
+
+Both compose files also set `ipc: host` — required for vLLM tensor parallelism,
+whose shards talk over shared memory — and mount `node.state_dir` as a host
+directory so the alias table survives recreating the container. The FreeToken
+one additionally mounts the JIT kernel cache and the model cache: without those
+two volumes every container start recompiles kernels and re-downloads weights.
 
 ## Test images
 
