@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Download Granite 4.1-8B Q4_K_M GGUF for the bring-up test.
+# Download Granite 4.2-8B Q4_K_M GGUF for the bring-up test.
 #
-# Source: mradermacher/granite-4.1-8b-GGUF
+# Source: ibm-granite/granite-4.2-8b-GGUF
 # Size:   ~5 GB
-# Target: ./models/granite-4.1-8b.Q4_K_M.gguf
+# Target: ./models/granite-4.2-8b-Q4_K_M.gguf
 set -euo pipefail
 
-REPO="mradermacher/granite-4.1-8b-GGUF"
-FILE="granite-4.1-8b.Q4_K_M.gguf"
+REPO="ibm-granite/granite-4.2-8b-GGUF"
+FILE="granite-4.2-8b-Q4_K_M.gguf"
 DEST_DIR="$(cd "$(dirname "$0")/.." && pwd)/models"
 
 mkdir -p "$DEST_DIR"

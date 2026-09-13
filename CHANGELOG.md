@@ -1,5 +1,32 @@
 # Changelog
 
+## v2.1.1
+
+Documentation and sample configs only; no code changes.
+
+- **Granite 4.1 becomes Granite 4.2 everywhere it is a recommendation or a
+  sample.** The reference fleet has run 4.2 for a while and the 4.1 references
+  were stale: the README model table and quick-start config, the migration
+  guide's worked examples, and the `configs/granite-*` bench and test configs.
+- **The download scripts are renamed and re-pointed**:
+  `scripts/download-granite42-8b.sh` and `-30b.sh` fetch
+  `ibm-granite/granite-4.2-{8b,30b}-GGUF`, the vendor's own repositories, rather
+  than the third-party 4.1 mirrors they used to. Both repository names and both
+  `Q4_K_M` filenames were checked against the Hugging Face API rather than
+  guessed, because a wrong name here is a download that 404s.
+
+- **The README now says what the reference fleet actually runs**, read from
+  `/v1/capacity` rather than remembered: five models, their spread across hosts
+  and their context per slot. The table below it stays what it was — an
+  evaluation catalogue of everything benchmarked, deployed or not — which is why
+  the two had drifted apart. `translategemma-27b-it` and `Ornith-1.5-35B-A3B`
+  are in service and were documented nowhere; Laguna-XS-2.1 was labelled
+  "deployed on the reference host" and is served by no host.
+
+Past CHANGELOG entries keep their 4.1 references: they describe what shipped at
+the time, and a changelog that rewrites its own history to match a later rename
+is worse than one that reads slightly dated.
+
 ## v2.1.0
 
 **The engine plugin foundation.** Adding an inference engine to viiwork is now

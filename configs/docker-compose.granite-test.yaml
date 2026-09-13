@@ -1,4 +1,4 @@
-# Granite 4.1-8B bring-up test compose.
+# Granite 4.2-8B bring-up test compose.
 #
 # Prereqs:
 #   1. Stop production viiwork (HSA single-container constraint):
@@ -6,7 +6,7 @@
 #   2. Confirm GPU 9 is free:
 #        rocm-smi --showpids
 #   3. Download model (~5 GB, one time):
-#        ./scripts/download-granite41-8b.sh
+#        ./scripts/download-granite42-8b.sh
 #   4. Build test image (~10 min, one time):
 #        docker build -t viiwork:granite-test -f docker/test/Dockerfile.granite-test .
 #
@@ -16,7 +16,7 @@
 #   Probe:  curl -s http://localhost:8095/v1/models | jq
 #   Test:   curl -s http://localhost:8095/v1/chat/completions \
 #             -H 'Content-Type: application/json' \
-#             -d '{"model":"granite-4.1-8b.Q4_K_M",
+#             -d '{"model":"granite-4.2-8b.Q4_K_M",
 #                  "messages":[{"role":"user","content":"hello"}]}'
 #   Down:   docker compose -f configs/docker-compose.granite-test.yaml down
 #
