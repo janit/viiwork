@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.1.2
+
+- `scripts/setup-opencode.sh` writes the provider's display name in lower case,
+  so a generated `opencode.json` groups its models under `viiwork`.
+
 ## v2.1.1
 
 Documentation and sample configs only; no code changes.
