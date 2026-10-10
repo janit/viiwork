@@ -67,8 +67,8 @@ func options(path string, s engine.Spec) (Options, error) {
 		// the program the server runs. It has to be one the operator wrote.
 		return opts, fmt.Errorf("%s.path is required for engine %s: Strata's JSON config (source: is not supported)", path, name)
 	}
-	if s.Parallel != 1 {
-		return opts, fmt.Errorf("%s.parallel must be 1 for engine %s: Strata v0.1.40.1 reports one slot on /slots whatever its \"parallel\" says, so the node could not publish the rest (got %d)", path, name, s.Parallel)
+	if s.Parallel < 1 || s.Parallel > parallelMax {
+		return opts, fmt.Errorf("%s.parallel must be between 1 and %d for engine %s: the engine's batch window holds %d requests (got %d)", path, parallelMax, name, parallelMax, s.Parallel)
 	}
 	for _, flag := range []string{"--config", "--api-key"} {
 		if slices.ContainsFunc(s.Args, func(a string) bool { return a == flag || strings.HasPrefix(a, flag+"=") }) {

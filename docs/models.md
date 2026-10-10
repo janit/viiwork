@@ -167,8 +167,15 @@ models:
   names the key: `model_name` (or an alias) with `name`, `--max-context` with
   `context`, and `lazy_load`, `idle_unload_s` and `api_key` off. See
   [configuration.md](configuration.md#models).
-- **`parallel` must be 1.** Strata v0.1.40.1 reports one slot whatever its own
-  `parallel` says, so the node refuses more. Capacity comes from more backends.
+- **`parallel` is 1 to 8, and the JSON's `"parallel"` must say the same.**
+  Each slot is a conversation of the full `context`, and every slot takes VRAM
+  that the expert cache would otherwise hold, so a second slot can cost more
+  speed than it gains; upstream's `docs/BATCHING.md` has the numbers. The
+  engine runs fewer slots than asked when they do not fit and says so only in
+  its log; the node publishes the count `/slots` lists, so look at
+  `/v1/status` after a load. A request that is alone decodes on the engine's
+  faster single path, and a second one moves both into batch slots. Needs
+  Strata v0.1.41: an older build lists one slot whatever the file says.
 - **Preparing the model is upstream's job.** The pack, the GGUF shards and the
   MTP layer come from Strata's own `setup.py`; viiwork does not fetch or build
   them. Images and their traps are in [BUILDS.md](../BUILDS.md).
@@ -191,7 +198,7 @@ models:
   Radeon VIIs and does not prevent it; `warmup: 0s` turns it off.
 - **`saving a checkpoint part failed` on Radeon VIIs is fixed in the
   `viiwork-strata` image from Strata v0.1.40.1** (the gfx906 patch,
-  [BUILDS.md](../BUILDS.md)). It was the first long prompt after a load, on a
+  [BUILDS.md](../BUILDS.md); upstream has the fix itself since v0.1.42). It was the first long prompt after a load, on a
   backend of more than one card: the engine saves a checkpoint every 16,384
   prompt tokens while another thread is still capturing its prompt graphs,
   and the ROCm runtime refuses that copy. An image built before that still

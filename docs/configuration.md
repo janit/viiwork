@@ -77,7 +77,7 @@ with the `models[]` entry:
 |---|---|
 | `model_name`, or one of `aliases` | `name` |
 | `--max-context` in `args` | `context` |
-| `parallel` | absent or 1, and the entry's `parallel` must be 1: Strata v0.1.40.1 reports one slot whatever its own `parallel` says |
+| `parallel` | the same number as the entry's `parallel` (absent is 1), from 1 to 8. Above 1 needs Strata v0.1.41, which lists its batch slots on `/slots`; an older build publishes one slot whatever the file says |
 | `lazy_load`, `idle_unload_s` | off — an unloaded server looks dead to the node |
 | `api_key` | not set — the node probes and forwards without a key, and the backend listens on loopback only |
 

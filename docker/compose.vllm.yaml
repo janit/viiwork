@@ -17,7 +17,7 @@ services:
         VERSION: dev
         # The inference stack is whatever this tag carries. Pin it: an
         # unpinned rebuild can change torch, CUDA and the kernels under you.
-        VLLM_VERSION: v0.30.0
+        VLLM_VERSION: v0.31.0
 
     # Gossip binds the machine's tailnet (or LAN) address on 7946 and the API
     # listens on 8086. Members dial each other's real addresses, which a

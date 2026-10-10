@@ -81,8 +81,17 @@ func (e *Engine) Load(ctx context.Context, s engine.Spec, addr string) (engine.L
 // LoadProgress is engine.TokenProgressReader.
 //
 // /slots is the part routing depends on. Anything wrong with it is an error,
-// never a zero. As of v0.1.40.1 it lists exactly one slot whatever the server's
-// "parallel" is, which is why this engine accepts only models[].parallel 1.
+// never a zero. From v0.1.41 it lists one entry per batch slot, each with the
+// engine's whole --max-context, and that count is what the node publishes: the
+// engine runs fewer slots than "parallel" asks for when they do not fit in
+// VRAM, and says so only in its log. Up to v0.1.40.1 it listed exactly one
+// slot whatever "parallel" was, so on such a build a model with parallel
+// above 1 publishes one slot.
+//
+// A request that runs alone is decoded outside the batch slots, so every
+// entry reads idle while it runs. Busy is then 0, and the node's own count of
+// requests in flight is what marks the slot taken (the supervisor publishes
+// the larger of the two).
 //
 // /status adds the server's own queue and the running request's token counts.
 // It is best effort: the heavier /metrics sometimes did not answer on gb3
@@ -114,7 +123,9 @@ func (e *Engine) LoadProgress(ctx context.Context, _ engine.Spec, addr string) (
 	if st.Queued != nil && *st.Queued > 0 {
 		load.Waiting = int(*st.Queued)
 	}
-	if g, m := st.Generated, st.MaxTokens; st.Busy && g != nil && m != nil && *g >= 0 && *m >= *g {
+	// /status counts one request. With more than one slot at work it
+	// describes none of them, and no progress is the honest answer.
+	if g, m := st.Generated, st.MaxTokens; load.Busy <= 1 && st.Busy && g != nil && m != nil && *g >= 0 && *m >= *g {
 		decoded, remain = int64(*g), int64(*m-*g)
 	}
 	return load, decoded, remain, nil

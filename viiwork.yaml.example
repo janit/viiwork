@@ -162,7 +162,7 @@ models:
   #   gpus: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
   #   gpus_per_backend: 5      # two backends of five cards
   #   context: 131072
-  #   parallel: 1              # must be 1: Strata v0.1.40.1 reports one slot
+  #   parallel: 1              # 1 to 8; above 1 needs Strata v0.1.41 and the same "parallel" in the JSON
   #   # Loads took 3.5 to 6 minutes on ten Radeon VIIs, well inside the
   #   # engine's 30m default; viiwork-accept asks 45m of any multi-card backend.
   #   startup_timeout: 45m

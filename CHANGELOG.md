@@ -1,5 +1,68 @@
 # Changelog
 
+## v2.9.1
+
+**Engine pins: Strata v0.1.42 and vLLM v0.31.0, and more than one slot per Strata backend.**
+
+- **Both Strata images build Strata v0.1.42** (`docker/pins.env`, commit
+  `61b3fb5d`). Since v0.1.40.1 upstream fixes a deadlock with more than one
+  request waiting on a slot, evicts old conversation-cache entries instead of
+  dropping a snapshot, and runs one pipeline group per GPU for batched
+  requests. `/slots`, the defaults the node assumes and the JSON keys it
+  checks are in v0.1.42 as in v0.1.41. **v0.1.42 has not yet served a model
+  under the node**, on gfx906 or on CUDA: what is measured below is v0.1.41.
+- **The gfx906 patch is down to one fix** (`docker/strata/gfx906-v0.1.42.patch`):
+  the two stream-priority aliases, whose one use upstream compiles out of a
+  HIP build, so the patch is probably no longer needed. The checkpoint copy
+  on a stream of the saving thread's own, the fix for `saving a checkpoint
+  part failed`, is upstream in v0.1.42, and the two compile fixes v0.1.40.1
+  needed are upstream since v0.1.41.
+- **On NVIDIA two new upstream defaults change answers slightly**, on a
+  backend of one GPU or a layer split whose experts do not all fit in VRAM
+  and that has one slot: missed experts ranked 7th or lower are skipped
+  (upstream measured 13 to 16% faster decoding), and on one GPU the PCIe
+  share is set from what the CPU measures in the first decode windows.
+  `"STRATA_ROUTE_TAIL_SKIP": "0"` and `"STRATA_PCIE_FRAC_DEFAULT": "old"` in
+  the JSON's `env` block restore v0.1.41's answers. Neither applies on AMD
+  or with `"parallel"` above 1.
+- **`"replicas"` in the Strata JSON is not checked.** Upstream's new opt-in
+  runs several engines on card groups behind one server; the node has not
+  been run against it, so leave it unset.
+- **Served at v0.1.41 on Radeon VIIs under the node**, five cards (four
+  Radeon VIIs and an Instinct MI60 in one layer split), IQ3_XXS at 262,144 context: loaded in
+  five minutes, a 76,087-token first prompt after the load read at 885 tokens
+  per second and answered correctly, the next turn reused the cache (2.3
+  seconds to the first token), a tool call and streamed reasoning, 34 to 42
+  tokens per second generated, no respawn.
+- **The CUDA image served at v0.1.41** on two RTX 4090 at 262,144 context: a
+  76,087-token prompt read at 6,482 tokens per second, about 200 tokens per
+  second generated, cache reuse and a tool call. **Build it with BuildKit,
+  on the machine that runs it** (`BUILDS.md`): Docker's legacy builder skips
+  the step that compiles the engine and reports success, and the engine is
+  now compiled for the building machine's CPU. On one NVIDIA GPU upstream
+  lets the CPU take part of a short prompt, which changes the last bits of
+  an answer; `"STRATA_PREFILL_CPU_SHARE": "0"` in the JSON's `env` block
+  turns it off.
+- **A Strata model can have more than one slot.** `models[].parallel` from 1
+  to 8, with the same `"parallel"` in the Strata JSON. v0.1.41 lists its
+  batch slots on `/slots` where earlier versions listed one whatever the
+  file said, and the node publishes the count it finds there: the engine
+  runs fewer slots than asked when they do not fit in VRAM. Each slot has the
+  model's full `context`. A request that runs alone is decoded outside the
+  slots, so the node's own count of requests in flight is what marks that
+  slot taken. On an older Strata such a model publishes one slot. Measured
+  with two slots on two RTX 4090: two requests at once generated 85 to 90
+  tokens per second each, against 120 to 200 for one alone, and a third
+  waited at the node. Two long prompts are still read one after the other,
+  and a slot's decoding pauses while another's prompt is read: on five
+  Radeon VIIs under agent traffic, two slots per backend dropped requests
+  to between 1 and 7 tokens per second, where one slot gave 16 to 40.
+- **vLLM v0.31.0** (`VLLM_VERSION`). The image's `vllm serve` still takes
+  every flag the node generates, and none is in upstream's list of removed
+  or renamed options. It has not served a model on a fleet host.
+- llama.cpp stays at b11371 and FreeToken at 0.1.3, which is still upstream's
+  latest.
+
 ## v2.9.0
 
 **A request can name the machines it would rather run on.**

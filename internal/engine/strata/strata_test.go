@@ -375,9 +375,10 @@ func TestSpecRules(t *testing.T) {
 		mutate  func(*engine.Spec)
 		wantErr string
 	}{
-		// v0.1.39's /slots reports one slot whatever "parallel" says, so a
-		// larger model would publish a fraction of what it was configured for.
-		{"parallel above 1", func(s *engine.Spec) { s.Parallel = 4 }, "models[3].parallel"},
+		// The engine's batch window holds eight rows; more is not a count
+		// the server will run, and less than one is no backend at all.
+		{"parallel above the batch window", func(s *engine.Spec) { s.Parallel = 9 }, "models[3].parallel"},
+		{"parallel 0", func(s *engine.Spec) { s.Parallel = 0 }, "models[3].parallel"},
 		// source: hands the path to the fetch step, and Strata's JSON names
 		// the program to run: it must be a file the operator wrote.
 		{"no path", func(s *engine.Spec) { s.Path = "" }, "models[3].path"},
@@ -434,5 +435,19 @@ func TestWarmUp(t *testing.T) {
 				t.Errorf("WarmUpOf = %s, want %s", got, tc.want)
 			}
 		})
+	}
+}
+
+// Since v0.1.41 /slots lists the batch slots, so the node can publish them:
+// a model entry and a file that agree on more than one slot give a command.
+func TestParallelAboveOne(t *testing.T) {
+	path := writeConfig(t, strings.Replace(goodConfig, `"port": 8080`, `"parallel": 2, "port": 8080`, 1))
+	s := spec(t, coderSpec(path), block)
+	s.Parallel = 2
+	if err := New().ValidateOptions("models[0]", s); err != nil {
+		t.Fatalf("ValidateOptions: %v", err)
+	}
+	if _, err := New().Command(s); err != nil {
+		t.Fatalf("Command: %v", err)
 	}
 }

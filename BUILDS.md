@@ -59,7 +59,7 @@ docker build --build-arg LLAMA_CPP_VERSION=<tag> -f docker/Dockerfile.rocm -t vi
 ## `docker/Dockerfile.vllm`
 
 The binary dropped into vLLM's own published image, `vllm/vllm-openai`, pinned
-by `VLLM_VERSION` (currently `v0.30.0`). Nothing is rebuilt: that image already
+by `VLLM_VERSION` (currently `v0.31.0`). Nothing is rebuilt: that image already
 carries a matched torch, CUDA and kernel set, and rebuilding the stack is how
 you end up with a torch that disagrees with the driver.
 
@@ -137,7 +137,7 @@ installed release resolves to the published
 ## `docker/Dockerfile.strata` and `docker/Dockerfile.strata-cuda`
 
 [Strata](https://github.com/Niko1221/Strata) at the tag `STRATA_VERSION` pins in
-`docker/pins.env` (currently `v0.1.40.1`), with `viiwork` added. Two files rather
+`docker/pins.env` (currently `v0.1.42`), with `viiwork` added. Two files rather
 than one with a build argument, because the engine is compiled differently for
 each accelerator. In both images the checkout is `/opt/strata`, which is what
 `models[].strata.dir` names.
@@ -149,20 +149,19 @@ each accelerator. In both images the checkout is `/opt/strata`, which is what
   upstream's own `docs/AMD_HIP.md` documents. AMD's ROCm no longer ships
   gfx906 libraries, so this image does not sit on the ROCm 6.2.4 base the
   llama.cpp image uses.
-- **Strata v0.1.40.1 does not compile for gfx906 as released, and compiled it
-  fails the first long prompt after a load.**
-  `docker/strata/gfx906-v0.1.40.1.patch` carries four fixes, all inside the
-  gfx906 build: `fused_gr_read_multi` became a `bool` function in v0.1.40 and
-  its gfx906-only branch (`STRATA_GR_SPLIT=1`, off by default) still returns
-  nothing; `vmm.cpp` compiles the CUDA driver API out for `STRATA_USE_HIP` but
-  not for `STRATA_HIP_GFX906`; two stream-priority names have no HIP alias;
-  and a checkpoint's state is copied on a stream of the saving thread's own.
-  The last is the cause of `saving a checkpoint part failed`: on the default
-  stream HIP refuses the copy while another thread captures its prompt graphs
-  (CUDA's thread-local capture mode lets it through), and the refusal
-  invalidates that capture too. The patch is named for the version and must
-  be re-cut when `STRATA_VERSION` changes. Not reported upstream as of
-  2026-10-07.
+- **`docker/strata/gfx906-v0.1.42.patch` carries one fix**, inside the gfx906
+  build: two stream-priority names have no HIP alias. Their one use
+  (`src/core/mtp.cpp`) is compiled out of a HIP build, so the patch is
+  probably no longer needed; it stays until a gfx906 build without it has
+  been seen to compile. The checkpoint copy the patch carried up to v0.1.41 is
+  upstream since v0.1.42: a checkpoint's state is copied on a stream of the
+  saving thread's own. That was the cause of `saving a checkpoint part
+  failed`: on the default stream HIP refuses the copy while another thread
+  captures its prompt graphs (CUDA's thread-local capture mode lets it
+  through), and the refusal invalidates that capture too. The two compile
+  fixes v0.1.40.1 also needed (`fused_gr.cu`, `vmm.cpp`) are upstream since
+  v0.1.41. The patch is named for the version and must be re-cut when
+  `STRATA_VERSION` changes.
 - The engine binary is `/opt/strata/build-906/strata`: the Strata JSON's `exe`.
 - The image has no group named `render`. Give the container the host's render
   group by number, as `docker/compose.strata.yaml` does (`RENDER_GID`); with
@@ -173,7 +172,12 @@ an image, so `make docker-strata-cuda` first builds upstream's image from the
 pinned tag (`strata-cuda:<version>`) and then drops `viiwork` into it — the same
 shape as `Dockerfile.vllm`. Python packages are in a venv there, so the model's
 block is `strata: {dir: /opt/strata, python: /opt/strata/.venv/bin/python}` and
-the JSON's `exe` is `/opt/strata/engine/strata`. It needs GPUs granted like the
+the JSON's `exe` is `/opt/strata/engine/strata`. **Build it with BuildKit, on
+the machine that will run it.** Upstream's Dockerfile compiles the engine in a
+heredoc `RUN`, which Docker's legacy builder (a host without the `buildx`
+plugin) skips without an error: the build succeeds and the image has no
+`/opt/strata/engine`. And since v0.1.41 the engine is compiled for the CPU
+that builds the image. It needs GPUs granted like the
 other two NVIDIA images (below). It has served under viiwork on three RTX A4000 at the model's full
 262,144-token context ([models.md](docs/models.md)).
 
@@ -198,7 +202,7 @@ Neither engine has to be in a container — `models[].vllm.binary` and
 works and is the simpler shape for a FreeToken host. Two things bite, both
 found bringing this up on teddy:
 
-- **Python must be older than 3.15.** vLLM 0.30.0 requires `>=3.10,<3.15` (0.11.2
+- **Python must be older than 3.15.** vLLM 0.31.0 requires `>=3.10,<3.15` (0.11.2
   required `<3.14`), and a host whose `python3` is newer cannot install it at all — pip reports only that
   no version satisfies the requirement, without saying why. `uv python install
   3.12` and `uv venv --python 3.12` is the quickest fix and touches no system

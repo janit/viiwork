@@ -2,6 +2,7 @@ package strata
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -119,6 +120,19 @@ func TestLoad(t *testing.T) {
 		// /metrics did this on gb3 during a request; /status is the lighter
 		// endpoint, and a stall there must cost the tick no more.
 		{"status hangs", file(t, "slots-busy.json"), "HANG", one(1), 0, 0},
+		// v0.1.41 with "parallel": 2, hand-written from the server's source:
+		// one entry per batch slot. A request alone runs outside the slots,
+		// so both read idle while /status says busy; the node's own count of
+		// requests in flight covers that one (supervisor: max of the two).
+		{"two slots idle", twoSlots(false, false), file(t, "status-idle.json"),
+			engine.Load{Slots: 2, CtxPerSlot: 262144}, 0, 0},
+		{"two slots, one busy", twoSlots(true, false), `{"busy": true, "queued": 0, "generated": 10, "max_tokens": 50}`,
+			engine.Load{Slots: 2, Busy: 1, CtxPerSlot: 262144}, 10, 40},
+		{"two slots, a request alone", twoSlots(false, false), `{"busy": true, "queued": 0, "generated": 10, "max_tokens": 50}`,
+			engine.Load{Slots: 2, CtxPerSlot: 262144}, 10, 40},
+		// /status counts one request; with two running it describes neither.
+		{"two slots, both busy", twoSlots(true, true), `{"busy": true, "queued": 1, "generated": 10, "max_tokens": 50}`,
+			engine.Load{Slots: 2, Busy: 2, Waiting: 1, CtxPerSlot: 262144}, 0, 0},
 		{"generated above max_tokens", file(t, "slots-busy.json"), `{"busy": true, "queued": 0, "generated": 300, "max_tokens": 200}`, one(1), 0, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -139,6 +153,11 @@ func TestLoad(t *testing.T) {
 			}
 		})
 	}
+}
+
+func twoSlots(first, second bool) string {
+	return fmt.Sprintf(`[{"id": 0, "n_ctx": 262144, "is_processing": %t, "n_prompt_tokens": 0},
+		{"id": 1, "n_ctx": 262144, "is_processing": %t, "n_prompt_tokens": 120}]`, first, second)
 }
 
 func TestLoadIsLoadProgressWithoutTheProgress(t *testing.T) {

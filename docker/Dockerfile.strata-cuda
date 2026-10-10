@@ -14,10 +14,12 @@
 #
 # Served under viiwork on three RTX A4000 at 262,144 context: v0.1.39 on
 # 2026-10-04 (built with CUDA_ARCHITECTURES=86 and BUILD_VISION=0), and
-# v0.1.40.1 on 2026-10-07 (a 200,244-token prompt read at 2,527 tok/s).
+# v0.1.40.1 on 2026-10-07 (a 200,244-token prompt read at 2,527 tok/s). v0.1.41
+# served on two RTX 4090 on 2026-10-09; build upstream's image with BuildKit
+# (BUILDS.md).
 # nvidia-smi is injected by the container runtime, as in Dockerfile.vllm.
 
-ARG STRATA_VERSION=v0.1.40.1
+ARG STRATA_VERSION=v0.1.42
 
 FROM golang:1.27.1 AS go-build
 WORKDIR /src

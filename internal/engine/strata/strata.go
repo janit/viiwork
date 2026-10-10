@@ -81,8 +81,8 @@ func (e *Engine) SeparatesReasoning() bool { return true }
 // it: on gfx906 a checkpoint's copy on the default stream is refused while
 // another thread captures its prompt graphs, which is a matter of the first
 // long prompt and not of time. docker/strata's gfx906 patch fixes it from
-// v0.1.40.1; a build without that patch still fails that way, with or without
-// this wait. Options that do not validate give no warm-up: Command is what
+// v0.1.40.1 and upstream has the fix since v0.1.42; an older build without
+// that patch still fails that way, with or without this wait. Options that do not validate give no warm-up: Command is what
 // refuses them.
 func (e *Engine) WarmUp(s engine.Spec) time.Duration {
 	opts, err := options("model", s)

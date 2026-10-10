@@ -12,7 +12,7 @@
 # Declared before the first FROM so that it is in the GLOBAL scope and the
 # runtime stage's FROM can read it. An ARG written after a FROM belongs to that
 # stage only, and a later FROM would expand it to empty.
-ARG VLLM_VERSION=v0.30.0
+ARG VLLM_VERSION=v0.31.0
 
 # Stage 1: Build viiwork.
 FROM golang:1.27.1 AS go-build
