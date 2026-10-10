@@ -50,6 +50,7 @@ var sentinel = []string{"--enginetest-sentinel", "1"}
 func Run(t *testing.T, e engine.Engine, cases ...Case) {
 	t.Helper()
 	t.Run("Name", func(t *testing.T) { checkName(t, e) })
+	t.Run("DisplayName", func(t *testing.T) { checkDisplayName(t, e) })
 	t.Run("DefaultStartupTimeout", func(t *testing.T) { checkStartupTimeout(t, e) })
 	t.Run("Probe", func(t *testing.T) { checkProbe(t, e) })
 	for _, c := range cases {
@@ -78,6 +79,24 @@ func checkName(t *testing.T, e engine.Engine) {
 	}
 	if got.Name() != name {
 		t.Errorf("Lookup(%q).Name() = %q: an engine must be registered under the name it reports", name, got.Name())
+	}
+}
+
+func checkDisplayName(t *testing.T, e engine.Engine) {
+	t.Helper()
+	d, ok := e.(engine.DisplayNamer)
+	if !ok {
+		t.Fatalf("%s declares no DisplayName: implement engine.DisplayNamer, or a dashboard shows the id %q as the engine's name", e.Name(), e.Name())
+	}
+	name := d.DisplayName()
+	if name == "" || name != strings.TrimSpace(name) || len(name) > 40 {
+		t.Errorf("DisplayName() = %q: it is 1 to 40 bytes with no space at either end", name)
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			t.Errorf("DisplayName() = %q: it has a control character, and it is shown as written", name)
+			break
+		}
 	}
 }
 

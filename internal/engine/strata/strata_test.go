@@ -451,3 +451,9 @@ func TestParallelAboveOne(t *testing.T) {
 		t.Fatalf("Command: %v", err)
 	}
 }
+
+func TestDisplayName(t *testing.T) {
+	if got := New().DisplayName(); got != "Strata" {
+		t.Errorf("DisplayName() = %q, want Strata", got)
+	}
+}

@@ -46,8 +46,17 @@ type GPUInfo struct {
 // RequestsTotal and TokensTotal are cumulative since the node started and are
 // counted on the node that executed each request.
 type ModelStatus struct {
-	Name          string          `json:"name"`
-	Engine        string          `json:"engine"`
+	Name   string `json:"name"`
+	Engine string `json:"engine"`
+	// EngineName (v2.9.2) is the engine's name for people ("llama.cpp" where
+	// Engine is "llamacpp"); Engine stays the stable id. Absent on an older
+	// node: show Engine instead.
+	EngineName string `json:"engine_name,omitempty"`
+	// EngineVersion (v2.9.2) is the version of the engine this node runs, in
+	// the engine's own spelling ("b11371", "0.31.0"). Absent when the engine
+	// reports none, when it could not be read, and until the node has read
+	// it. Absent is "cannot say".
+	EngineVersion string          `json:"engine_version,omitempty"`
 	Slots         int             `json:"slots"`
 	Busy          int             `json:"busy"`
 	Queued        int             `json:"queued"`

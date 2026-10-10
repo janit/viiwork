@@ -542,3 +542,9 @@ func argOf(args []string, flag string) string {
 	}
 	return args[i+1]
 }
+
+func TestDisplayName(t *testing.T) {
+	if got := New().DisplayName(); got != "FreeToken" {
+		t.Errorf("DisplayName() = %q, want FreeToken", got)
+	}
+}

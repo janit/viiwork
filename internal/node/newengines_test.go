@@ -103,6 +103,26 @@ func TestThreeEnginesOnOneNode(t *testing.T) {
 		}
 	}
 
+	// The status names each engine for people, beside the id.
+	sresp, err := http.Get(tn.url("/v1/status"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sresp.Body.Close()
+	var st meshapi.NodeStatus
+	if err := json.NewDecoder(sresp.Body).Decode(&st); err != nil {
+		t.Fatal(err)
+	}
+	wantName := map[string][2]string{"lc": {"llamacpp", "llama.cpp"}, "vl": {"vllm", "vLLM"}, "ft": {"freetoken", "FreeToken"}}
+	for _, m := range st.Models {
+		if w := wantName[m.Name]; m.Engine != w[0] || m.EngineName != w[1] {
+			t.Errorf("%s: engine %q, engine_name %q; want %q, %q", m.Name, m.Engine, m.EngineName, w[0], w[1])
+		}
+	}
+	if len(st.Models) != 3 {
+		t.Errorf("/v1/status has %d models, want 3", len(st.Models))
+	}
+
 	// /v1/models lists all three, whatever engine serves them.
 	resp, err := http.Get(tn.url("/v1/models"))
 	if err != nil {

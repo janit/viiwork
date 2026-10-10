@@ -8,7 +8,6 @@ import (
 	"runtime"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/janit/viiwork/v2/internal/config"
@@ -42,9 +41,13 @@ func (n *Node) buildUpdate(cfg *config.Config, auth update.Authorizer) (*update.
 		}
 	}
 	models := func() []config.Model { return n.runningConfig().Models }
-	var engines struct {
-		once sync.Once
-		v    map[string]string
+	// Read once: running every engine's --version on each GET would cost a
+	// process per engine per poll. Run starts the read; /v1/update waits for
+	// it and /v1/status does not.
+	n.engines.read = func() map[string]string {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		return update.InstalledEngines(ctx, n.llama.follow(models(), n.llama.pin))
 	}
 	// One store for the API and the confirmer: every read-modify-write of
 	// state.json in this process goes through its lock.
@@ -85,18 +88,9 @@ func (n *Node) buildUpdate(cfg *config.Config, auth update.Authorizer) (*update.
 		Stager:  stager,
 		Managed: n.o.Managed, Stopping: n.stopping,
 		Backends: n.sup.Status,
-		// Read once: running every engine's --version on each GET would cost
-		// a process per engine per poll.
-		Engines: func() map[string]string {
-			engines.once.Do(func() {
-				ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-				defer cancel()
-				engines.v = update.InstalledEngines(ctx, n.llama.follow(models(), n.llama.pin))
-			})
-			return engines.v
-		},
-		Restart: n.RequestRestart,
-		Log:     n.logf,
+		Engines:  n.engines.Wait,
+		Restart:  n.RequestRestart,
+		Log:      n.logf,
 	}
 	if n.llama.root != "" {
 		svc.Stager.PrepareLlama = n.prepareLlama(n.llamaFetch(), models)

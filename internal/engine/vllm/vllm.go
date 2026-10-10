@@ -45,6 +45,9 @@ func New() *Engine {
 
 func (e *Engine) Name() string { return name }
 
+// DisplayName is the project's own spelling.
+func (e *Engine) DisplayName() string { return "vLLM" }
+
 // DefaultStartupTimeout is 20 minutes (v2.2 plan, Decision 10). vLLM profiles
 // the model, allocates the KV cache and captures CUDA graphs before it answers
 // anything; a timeout tuned to llama.cpp's load time produces a permanent

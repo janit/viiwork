@@ -55,6 +55,9 @@ func New() *Engine {
 
 func (e *Engine) Name() string { return name }
 
+// DisplayName is the project's own spelling.
+func (e *Engine) DisplayName() string { return "Strata" }
+
 // DefaultStartupTimeout is 30 minutes. Loads on ten Radeon VIIs took 3.5
 // minutes, and about 6 on the first start that writes the mapped expert file;
 // the rest is room for a slow disk.

@@ -184,6 +184,13 @@ type GPUBindingReader interface {
     BoundGPU(ctx context.Context, addr string) (uuid string, ok bool, err error)
 }
 
+// DisplayNamer says what the engine is called by people ("llama.cpp" where
+// Name is "llamacpp"). It is what status.models[].engine_name carries.
+// enginetest.Run requires it: 1 to 40 bytes, no control characters.
+type DisplayNamer interface {
+    DisplayName() string
+}
+
 // Versioner is an engine that can say which version of itself is installed
 // and which version this viiwork needs. MinVersion "" means no requirement;
 // Version runs the binary the Spec's options name; AtLeast compares in the
@@ -563,7 +570,7 @@ cold start.
 ## Done when
 
 - [ ] `Options` with defaults, and `ValidateOptions` if any value can be wrong
-- [ ] The five methods, and any capability your engine can answer honestly
+- [ ] The five methods, `DisplayName`, and any other capability your engine can answer honestly
 - [ ] `engine.Register(New())` from `init`
 - [ ] `enginetest.Run` passes
 - [ ] Golden command-line tests, and `httptest` tests over captured `testdata/`

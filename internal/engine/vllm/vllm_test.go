@@ -438,3 +438,9 @@ func argOf(args []string, flag string) string {
 	}
 	return args[i+1]
 }
+
+func TestDisplayName(t *testing.T) {
+	if got := New().DisplayName(); got != "vLLM" {
+		t.Errorf("DisplayName() = %q, want vLLM", got)
+	}
+}

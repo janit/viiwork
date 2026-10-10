@@ -43,6 +43,9 @@ func New() *Engine {
 
 func (e *Engine) Name() string { return name }
 
+// DisplayName is the project's own spelling.
+func (e *Engine) DisplayName() string { return "FreeToken" }
+
 // DefaultStartupTimeout is 30 minutes (v2.2 plan, Decision 10). FreeToken loads
 // weights, sizes its cache pools and captures CUDA graphs before it serves, and
 // on an offload MoE backend it then fills a GPU expert cache from host memory.

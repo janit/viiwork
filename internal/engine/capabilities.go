@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -146,4 +147,27 @@ func WarmUpOf(e Engine, s Spec) time.Duration {
 		}
 	}
 	return 0
+}
+
+// DisplayNamer is implemented by an engine to say what it is called by
+// people: "llama.cpp" where Name is "llamacpp". Name stays the id that
+// configuration and the mesh use; this is the spelling a dashboard shows,
+// and only the engine's own package knows it. The conformance kit requires
+// it, because every engine can answer it.
+type DisplayNamer interface {
+	DisplayName() string
+}
+
+// DisplayName is the display name of the engine registered under id, or id
+// itself when there is no such engine or it declares none: a reader gets
+// the id rather than nothing.
+func DisplayName(id string) string {
+	if e, ok := Lookup(id); ok {
+		if d, ok := e.(DisplayNamer); ok {
+			if n := strings.TrimSpace(d.DisplayName()); n != "" {
+				return n
+			}
+		}
+	}
+	return id
 }

@@ -181,6 +181,7 @@ reported. This is the one endpoint a fleet overview needs.
         "gpus":   [ { "gpu_id": 0, "util": 74, "vram_used_mb": 12568, "vram_total_mb": 16368, "power_w": 148 } ],
         "models": [ {
           "name": "some-model-27B", "engine": "llamacpp",
+          "engine_name": "llama.cpp", "engine_version": "b11371",
           "slots": 2, "busy": 1, "queued": 0, "ctx": 49152,
           "backends": [ {
             "id": "some-model-27B/0", "status": "healthy",
@@ -206,6 +207,7 @@ reported. This is the one endpoint a fleet overview needs.
 | `members[].status` | The member's last `/v1/status`, or `null` for a gateway or a member that has not answered yet. **Always null-check it.** |
 | `status.ver` | Build string of that machine. Mixed versions are normal during a rollout. |
 | `status.models[]` | One entry per configured model, with its aggregate `slots` / `busy` / `queued` and `ctx` per slot. |
+| `status.models[].engine`, `engine_name`, `engine_version` | `engine` is the stable id (`llamacpp`, `vllm`, `freetoken`, `strata`): key on it. `engine_name` is the name to show (`llama.cpp`, `vLLM`), present from v2.9.2; on an older node show `engine`. `engine_version` is the engine's own version on that machine, a version string and nothing else. It is absent for an engine that reports none (FreeToken, Strata), when it could not be read, and for the first moments after a node starts. Absent is "cannot say". |
 | `status.models[].backends[]` | The processes behind it. `gpus` is the list of cards one backend holds — two or more means a tensor-split group. `status` is `starting` · `healthy` · `unhealthy` · `dead`; cold-loading a large model sits in `starting` for minutes. |
 | `status.power` | `{watts, available, source}`. When `available` is false, ignore `watts` rather than rendering a zero. `source` is `dcmi`, `sdr`, `sensor:<NAME>`, `nvidia-smi` or `rocm-smi` — diagnostic, for when an operator asks why a host reads what it does. |
 | `status.energy_kwh_24h`, `energy_kwh_30d` | Rolling whole-machine energy from the durable store, present only where it is enabled. Absent is "not recording", not zero. |

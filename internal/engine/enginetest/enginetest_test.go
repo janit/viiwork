@@ -62,6 +62,7 @@ func TestKitCatchesViolations(t *testing.T) {
 		"transport failure must be an error",
 		"want positive",
 		"no field may be negative",
+		"declares no DisplayName",
 	} {
 		if !bytes.Contains(out, []byte(want)) {
 			t.Errorf("the kit did not report %q\n%s", want, indent(out))

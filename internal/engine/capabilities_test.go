@@ -56,3 +56,28 @@ func TestEveryCapabilityIsInCapabilitiesGoAndTheGuide(t *testing.T) {
 		t.Fatal("no capability interfaces found")
 	}
 }
+
+type namedEngine struct {
+	fakeEngine
+	display string
+}
+
+func (e namedEngine) DisplayName() string { return e.display }
+
+func TestDisplayName(t *testing.T) {
+	Register(namedEngine{fakeEngine{name: "displaytest"}, "Display Test"})
+	Register(namedEngine{fakeEngine{name: "displayblank"}, "  "})
+	Register(fakeEngine{name: "displaynone"})
+	if got := DisplayName("displaytest"); got != "Display Test" {
+		t.Errorf("DisplayName of a declaring engine = %q, want its own name", got)
+	}
+	if got := DisplayName("displayblank"); got != "displayblank" {
+		t.Errorf("DisplayName of an engine with a blank name = %q, want the id", got)
+	}
+	if got := DisplayName("displaynone"); got != "displaynone" {
+		t.Errorf("DisplayName of an engine that declares none = %q, want the id", got)
+	}
+	if got := DisplayName("no-such-engine"); got != "no-such-engine" {
+		t.Errorf("DisplayName of an unregistered id = %q, want the id", got)
+	}
+}

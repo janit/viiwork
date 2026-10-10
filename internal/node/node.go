@@ -138,6 +138,7 @@ type Node struct {
 	restartOnce  sync.Once
 	confirmer    *update.Confirmer
 	llama        llamaFollow
+	engines      engineVersions
 	updateSvc    *update.Service
 	stopping     chan struct{} // closed when Run starts shutting down
 	stoppingOnce sync.Once
@@ -479,7 +480,7 @@ func (n *Node) status() meshapi.NodeStatus {
 			return netip.Addr{}
 		},
 		Started: n.started, Models: n.modelStatuses, QueueLen: n.router.QueueLen, Counters: n.counters.Get,
-		Perf: n.perf.Score,
+		Perf: n.perf.Score, EngineVersions: n.engines.Known,
 		GPUs: gpus, Inventory: n.inventory, Vendor: n.vendor, Power: n.power,
 		Energy: energyReader, Cost: costReader, PromptHistory: n.activity.PromptHistoryMax(),
 	})
@@ -580,6 +581,9 @@ func (n *Node) Run(ctx context.Context) error {
 	n.mesh.Store(m)
 	close(n.ready)
 	n.logf("viiwork %s: node %s serving on %s, %s mesh", n.o.Version, n.name, ln.Addr(), m.Mode())
+	// Not a loop and not waited for at shutdown: it ends within its own
+	// minute, and a status built before then carries no engine version.
+	go n.engines.Wait()
 
 	loopCtx, stopLoops := context.WithCancel(context.Background())
 	var loops sync.WaitGroup

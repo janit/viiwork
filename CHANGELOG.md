@@ -1,5 +1,58 @@
 # Changelog
 
+## v2.9.2
+
+**The status names each model's engine for people and says which version of it the machine runs.**
+
+Two new fields on every entry of `models[]` in `GET /v1/status`, and so on
+every `members[].status.models[]` of `GET /v1/cluster` and of the pushed
+`/v1/mesh/stream` snapshots. Nothing else on the wire changed, and no request
+parameter is needed to get them:
+
+```json
+{ "name": "some-model-27B", "engine": "llamacpp",
+  "engine_name": "llama.cpp", "engine_version": "b11371",
+  "slots": 2, "busy": 1, "queued": 0, "ctx": 49152 }
+```
+
+- **`engine`** is what it was: the stable id (`llamacpp`, `vllm`,
+  `freetoken`, `strata`). Key and group on it. It never changes spelling.
+- **`engine_name`** is the name to show: `llama.cpp`, `vLLM`, `FreeToken`,
+  `Strata`. A string, present on every model a v2.9.2 node reports, parked
+  models included. Each engine declares its own name in its own package
+  (`engine.DisplayNamer`, which the conformance kit now requires of a new
+  engine), so a reader needs no table of names and a new engine brings its
+  name with it. For an id the node has no engine for, it is the id.
+- **`engine_version`** is the version of the engine that machine runs, in the
+  engine's own spelling: a llama.cpp build as `b11371`, a vLLM release as
+  `0.31.0`. It is the value `GET /v1/update` reports under `engines` for that
+  engine, now in the cluster snapshot, so a reader no longer needs one call
+  per machine. A string, or **absent**. It is absent:
+  - for an engine that cannot report a version (FreeToken, Strata);
+  - when the engine's binary could not be run or printed no version;
+  - for the first moments after a node starts, until the node has read it
+    (about as long as the engine's `--version` takes; vLLM's is the slowest);
+  - when what the engine printed is not a plain version. Only letters,
+    digits and `. + _ -`, at most 40 characters, are published, because what
+    an engine prints after its number can be a path or a host name, and a
+    status is shown on public dashboards.
+
+  Absent is "cannot say". It is never `""` and never a guess.
+- **How to read them.** Show `engine_name` where there is one and `engine`
+  where there is not, then `engine_version` where there is one:
+  `llama.cpp b11371`, `Strata`, or `llamacpp` from a node older than v2.9.2,
+  which sends neither field. A mesh of mixed versions needs no other rule.
+- **When the values change.** The node reads its engines' versions once,
+  in the background, when it starts (before v2.9.2: on the first
+  `GET /v1/update`). Building a status never runs or waits for a process.
+  The version is per engine and per process: a node that swaps its engine
+  restarts to do it, and reports the new version after that restart. A model
+  of an engine the node did not run at start, added by a reload, has no
+  `engine_version` until the node restarts, and two models of one engine
+  with different binaries both report the first one's version.
+- `/v1/capacity` and `/v1/fleet/capacity` are unchanged: they carry `engine`
+  only.
+
 ## v2.9.1
 
 **Engine pins: Strata v0.1.42 and vLLM v0.31.0, and more than one slot per Strata backend.**

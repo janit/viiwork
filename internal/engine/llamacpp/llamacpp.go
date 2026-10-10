@@ -55,6 +55,9 @@ func New() *Engine {
 
 func (e *Engine) Name() string { return Name }
 
+// DisplayName is the project's own spelling.
+func (e *Engine) DisplayName() string { return "llama.cpp" }
+
 // UsageReporting: llama-server always carries cached_tokens in usage; on
 // 2,436 overnight requests prompt_tokens-cached_tokens equalled timings.prompt_n
 // (performance-routing spike §1).

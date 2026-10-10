@@ -40,3 +40,9 @@ func TestConformance(t *testing.T) {
 		},
 	)
 }
+
+func TestDisplayName(t *testing.T) {
+	if got := New().DisplayName(); got != "llama.cpp" {
+		t.Errorf("DisplayName() = %q, want llama.cpp", got)
+	}
+}
