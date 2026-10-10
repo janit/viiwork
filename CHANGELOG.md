@@ -9,14 +9,34 @@
   request waiting on a slot, evicts old conversation-cache entries instead of
   dropping a snapshot, and runs one pipeline group per GPU for batched
   requests. `/slots`, the defaults the node assumes and the JSON keys it
-  checks are in v0.1.42 as in v0.1.41. **v0.1.42 has not yet served a model
-  under the node**, on gfx906 or on CUDA: what is measured below is v0.1.41.
+  checks are in v0.1.42 as in v0.1.41.
+- **v0.1.42 served under the node on CUDA**, on an RTX 5090 and on two RTX
+  4090 in a layer split, IQ3_XXS at 262,144 context, from images built on
+  each machine: one to six slots, prompts up to 87,000 tokens, no failed
+  request and no respawn. Against v0.1.40.1 on the RTX 5090 with one slot, a
+  request alone decoded at 227 tokens per second where it had 207, and
+  prompts were read as fast as before (4,060 tokens per second at 87,000
+  tokens). **The gfx906 image builds at v0.1.42 and has not served a model
+  on a Radeon VII**: what is measured on Radeon VIIs below is v0.1.41.
+- **What more slots cost and buy, measured at v0.1.42.** Every slot keeps the
+  model's full `context`. On the RTX 5090 each slot after the first took
+  about 1 to 2 GiB of VRAM from the expert cache (24.4 GiB with one slot,
+  20.6 with four) and 3 to 7 GB of RAM, and prompts were read about 25%
+  slower with any number above one; on two RTX 4090 about 10% slower. Four
+  short requests at once, four slots against one: all four started within 2
+  seconds instead of the last waiting 6 to 7 for its turn, each decoded at
+  about 53 tokens per second instead of about 200, and the total was the
+  same within 15% (184 against 195 tokens per second on the RTX 5090, 186
+  against 165 on two RTX 4090). Two and three slots gave less in total than
+  either one or four on both machines. Four prompts of 7,000 tokens at once
+  finished later with four slots than with one on the RTX 5090.
 - **The gfx906 patch is down to one fix** (`docker/strata/gfx906-v0.1.42.patch`):
-  the two stream-priority aliases, whose one use upstream compiles out of a
-  HIP build, so the patch is probably no longer needed. The checkpoint copy
-  on a stream of the saving thread's own, the fix for `saving a checkpoint
-  part failed`, is upstream in v0.1.42, and the two compile fixes v0.1.40.1
-  needed are upstream since v0.1.41.
+  the two stream-priority aliases. Their one use is compiled out of a HIP
+  build, and the engine was seen to compile for gfx906 without the patch as
+  well as with it; it stays for this release. The checkpoint copy on a
+  stream of the saving thread's own, the fix for `saving a checkpoint part
+  failed`, is upstream in v0.1.42, and the two compile fixes v0.1.40.1 needed
+  are upstream since v0.1.41.
 - **On NVIDIA two new upstream defaults change answers slightly**, on a
   backend of one GPU or a layer split whose experts do not all fit in VRAM
   and that has one slot: missed experts ranked 7th or lower are skipped

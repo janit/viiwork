@@ -8,9 +8,9 @@
 # docker/strata/gfx906-<version>.patch carries one fix for Strata v0.1.42,
 # inside the gfx906 build only:
 #   - strata_hip.h: two stream-priority names have no HIP alias. Their one
-#     use (mtp.cpp) is compiled out of a HIP build, so the patch is probably
-#     no longer needed; it stays until a gfx906 build without it has been
-#     seen to compile.
+#     use (mtp.cpp) is compiled out of a HIP build, and on 2026-10-10 the
+#     engine compiled without the patch as well as with it: it can go at the
+#     next pin. Built at v0.1.42, not yet served on a Radeon VII.
 # The checkpoint copy the patch carried up to v0.1.41 is upstream since
 # v0.1.42 (conversation_copy.hpp: the copy goes on a stream of the saving
 # thread's own; on the default stream HIP refused it while another thread

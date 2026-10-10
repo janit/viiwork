@@ -151,9 +151,10 @@ each accelerator. In both images the checkout is `/opt/strata`, which is what
   llama.cpp image uses.
 - **`docker/strata/gfx906-v0.1.42.patch` carries one fix**, inside the gfx906
   build: two stream-priority names have no HIP alias. Their one use
-  (`src/core/mtp.cpp`) is compiled out of a HIP build, so the patch is
-  probably no longer needed; it stays until a gfx906 build without it has
-  been seen to compile. The checkpoint copy the patch carried up to v0.1.41 is
+  (`src/core/mtp.cpp`) is compiled out of a HIP build, and on 2026-10-10 the
+  engine compiled for gfx906 without the patch as well as with it, so it can
+  go at the next pin. The image at v0.1.42 has been built and has not served
+  a model on a Radeon VII. The checkpoint copy the patch carried up to v0.1.41 is
   upstream since v0.1.42: a checkpoint's state is copied on a stream of the
   saving thread's own. That was the cause of `saving a checkpoint part
   failed`: on the default stream HIP refuses the copy while another thread
