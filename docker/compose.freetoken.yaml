@@ -28,7 +28,7 @@ services:
         # pypi: pin the release. Empty takes the latest, which means a rebuild
         # can change the inference stack under you. 0.1.3 is the floor: the
         # node generates --moe-strategy, which older releases do not know.
-        FREETOKEN_VERSION: "0.2.0"
+        FREETOKEN_VERSION: "0.2.1"
         # nightly: fail the build unless nightly is built from this commit. It
         # guards a rebuild rather than reproducing one — nightly keeps only its
         # latest build — so keep the image, not the args.
@@ -72,15 +72,18 @@ services:
       - /var/lib/viiwork:/var/lib/viiwork
       # Model cache, for the HF-repo-id form of models[].path.
       - ${HOME}/.cache/huggingface:/root/.cache/huggingface
-      # FreeToken's own cache: JIT-compiled CUDA kernels and the `ft bench bw`
-      # bandwidth profile. Without this volume every container start recompiles
-      # the kernels it does not find prebuilt, and the profile that makes
-      # moe_backend: auto pick `hybrid` is lost on each restart.
-      #
-      # The image ships upstream's prebuilt kernel cache where one is published
-      # for the installed release (see the Dockerfile), which shortens that
-      # compile — it does not remove it, so keep the volume.
+      # FreeToken's own cache: the `ft bench bw` bandwidth profile. Without
+      # this volume the profile that makes moe_backend: auto pick `hybrid` is
+      # lost on each restart.
       - ${HOME}/.cache/freetoken:/root/.cache/freetoken
+      # Kernels compiled at run time, which is NOT the directory above: Triton
+      # keeps its own in ~/.triton and FlashInfer in ~/.cache/flashinfer.
+      # Without both, a recreated container compiles again on its FIRST
+      # REQUEST, after the backend has already reported healthy: 85 s on an
+      # RTX 5090 with Flint. The image's prebuilt kernel cache (see the
+      # Dockerfile) shortens that compile and does not remove it.
+      - ${HOME}/.cache/freetoken-triton:/root/.triton
+      - ${HOME}/.cache/flashinfer:/root/.cache/flashinfer
       # On a tailnet the node learns its address and finds other machines
       # through tailscaled's local API. The directory, not the socket file: a
       # mounted file keeps its old inode when tailscaled restarts.

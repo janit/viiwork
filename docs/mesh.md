@@ -59,6 +59,11 @@ speed. When no host has one it waits in a FIFO queue on the node that received
 it for up to `routing.queue_timeout` (20 s), then gets 429 with
 `Retry-After: 2`.
 
+- **Images and saved sessions come first.** A request with an image goes only
+  to hosts that read images
+  ([models.md](models.md#models-that-read-images)), and a session with a saved
+  replica prices that host warm
+  ([models.md](models.md#sharing-sessions-between-hosts-kv_share)).
 - **Routing follows measured speed** (`routing.performance`, on by default).
   Every node measures its own time to first token per model and publishes the
   score on `/v1/capacity`. For a request, each host with a free slot gets a

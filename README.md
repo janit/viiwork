@@ -125,7 +125,7 @@ models:
 - **Ports:** 8086 tcp (API, dashboards), 7946 tcp+udp (gossip)
 - **Discovery:** Tailscale (default) or LAN mDNS; optional seeds
 - **Secured or open:** set `VIIWORK_MESH_SECRET`, or declare `mesh.open: true`
-- **Routing:** local free slot → member with most free slots → queue (20 s)
+- **Routing:** a free slot on the host measured fastest → queue (20 s)
 
 → [docs/mesh.md](docs/mesh.md)
 
@@ -161,7 +161,7 @@ All four can run on one node. Adding an engine is one package plus one line.
   across a backend's cards and the experts in host RAM; runs on gfx906 →
   [models](docs/models.md#strata-one-moe-family-across-several-cards)
 
-What the Radeon VII hosts serve today:
+What the Radeon VII hosts served on 2026-09-13:
 
 | Model | Hosts | Context per slot | Role |
 |---|---|---|---|
@@ -211,7 +211,7 @@ darwin/arm64. → [BUILDS.md](BUILDS.md) · [docs/releases.md](docs/releases.md)
 | Document | About |
 |---|---|
 | [setup.md](docs/setup.md) | First-run wizard, join codes, updating, uninstalling |
-| [configuration.md](docs/configuration.md) | Every config key |
+| [configuration.md](docs/configuration.md) | Config keys, by topic |
 | [mesh.md](docs/mesh.md) | Discovery, security modes, routing, aliases |
 | [models.md](docs/models.md) | Measured catalogue and gfx906 tuning |
 | [dashboards.md](docs/dashboards.md) | The web pages |

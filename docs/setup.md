@@ -124,7 +124,8 @@ Model weights are never copied or moved.
 ## When it writes the config only
 
 Only some machines get an engine image and a started node. In these cases the
-wizard writes the config, `mesh.env` and the manifest, starts nothing, and
+wizard writes the config, `mesh.env`, the manifest and
+`/usr/local/bin/viiwork`, creates the state directory, starts nothing, and
 says why:
 
 - **A development build.** Only a release (`vX.Y.Z`, or a pre-release such as

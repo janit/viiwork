@@ -228,7 +228,8 @@ type SessionSharer interface {
 type SessionHolder interface {
 	// SessionHeld is how many tokens the backend at addr still holds of the
 	// longest conversation whose first n token ids (little-endian int32)
-	// hash to `hash` (FNV-1a 64), 0 for none: the replica's own ids, since
+	// hash to `hash` (FNV-1a 64), 0 for none: the replica's resume point (its
+	// deepest checkpoint's ids), since
 	// the branch `session` last continued there can be another one (a
 	// compaction elsewhere). With n = 0 the engine names the conversation by
 	// `session` alone. An error means the backend cannot say (an engine

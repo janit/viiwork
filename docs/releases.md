@@ -27,7 +27,8 @@ stage it.
 
 Every binary is built by `scripts/gobuild.sh` — `make`, CI and the local rebuild
 alike — with `CGO_ENABLED=0`, `-trimpath`, `-buildvcs=false` and only
-`-X main.version` in `-ldflags`. `scripts/build-release.sh` pins the compiler to
+`-X main.version` and the llama.cpp pin and digest from `docker/pins.env` in
+`-ldflags`. `scripts/build-release.sh` pins the compiler to
 go.mod's exact version (`GOTOOLCHAIN`) and writes deterministic archives.
 `bash scripts/build-release_test.sh` builds the committed tree twice from two
 directories and checks that every byte agrees.

@@ -25,7 +25,8 @@ roll back a converted machine.
   for every engine.
 - **Slot-aware routing.** A request goes to a local backend with a free slot,
   else to the member with the most free slots, else it waits in a short queue on
-  the node that received it.
+  the node that received it (by measured speed since v2.7; see
+  [mesh.md](mesh.md#routing)).
 - **Aliases.** A stable name such as `stable-coder` can point at a real model
   mesh-wide and be switched once, from any machine, with `viiwork alias set`.
 

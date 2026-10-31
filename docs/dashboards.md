@@ -45,8 +45,9 @@ and the node that forwarded it there.
 machine you can reach shows you the whole mesh.
 
 - **Mesh Models** — every model across the cluster; click one to filter the view
-- **Aliases** — every alias with its target, fallbacks, what it resolves to now
-  and its state; `shadowed` and `unavailable` are highlighted
+- **Aliases** — every alias with its target and backends; hover a row for its
+  state, fallbacks and what it resolves to now; `shadowed` and `unavailable` are
+  highlighted
 - **In-Flight Requests** — live jobs with elapsed time, task tag, model, and the
   backend and host serving them
 - **Prompts** — the most recent requests across the mesh, newest first. Every row
@@ -60,7 +61,8 @@ machine you can reach shows you the whole mesh.
   [power-and-energy.md](power-and-energy.md)
 - **Host RAM** — a strip of small per-host sparklines under the power panel, each
   scaled 0 to that host's total so the height reads as memory pressure. Hover a
-  frame for the absolute figures. Figures are approximate to about 1 GB — they
+  frame for the absolute figures. Figures are coarsened to 1/64 of the host's
+  total (about 1 GB on a 64 GB host) — they
   are coarsened before being pushed so a value that moves every second cannot
   flood the live stream. `/v1/cluster` carries the exact numbers.
 - **Backends** — backend id, GPUs, host, busy slots, RSS, GPU%, VRAM and decode
@@ -92,8 +94,8 @@ correct either way.
 
 **Halt** (the button in the header, or press `h`) freezes the whole view so rows
 stop moving while you read or click them. Events that arrive during a halt are
-queued, not dropped, and applied in order when you resume — the button shows how
-many are waiting.
+queued (the newest 1000) and applied in order when you resume — the button shows
+how many are waiting.
 
 ## Prompt and output history
 
@@ -118,8 +120,9 @@ activity:
 
 Memory scales with it — roughly the count times up to 100 KB, since a prompt and
 an output are each capped at 50 000 characters. 1000 is therefore about 100 MB of
-worst-case headroom, and realistically far less. A value below 1 falls back to
-the default rather than producing a store that drops everything.
+worst-case headroom, and realistically far less. 0 falls back to
+the default rather than producing a store that drops everything; a negative
+value is refused.
 
 Nodes report their own capacity on `/v1/status` and `/v1/cluster`, and the mesh
 dashboard sizes its list from the largest value any node reports rather than

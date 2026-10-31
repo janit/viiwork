@@ -21,8 +21,8 @@ TRANSLATE_CAPACITY=4
 At the time that was written the model had **36 slots** across node-a, node-b
 and node-c. The constant said 4.
 
-The shortfall is worse than the arithmetic suggests. **viiwork fills a node's
-own slots before forwarding to a peer**, and node-a alone has 12. Four requests
+The shortfall is worse than the arithmetic suggests. **A viiwork node prefers its
+own slots while it is among the fastest hosts**, and node-a alone has 12. Four requests
 in flight never cross that threshold, so node-b and node-c are never asked for
 anything. 24 slots were idle by construction — no amount of load would have
 reached them.

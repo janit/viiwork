@@ -1,7 +1,7 @@
 # Security and the Trust Model
 
-**viiwork authenticates nothing.** Every API endpoint and every dashboard is open
-to any client that can reach the server. Reachability *is* the authorization
+**viiwork authenticates nothing on inference or the dashboards.** Those endpoints
+are open to any client that can reach the server. Reachability *is* the authorization
 model, and the fleet is expected to sit on a tailnet or another trusted network.
 If you expose viiwork to an untrusted network, put a reverse proxy (Caddy, nginx)
 or firewall rules in front of it.
@@ -45,7 +45,10 @@ or firewall rules in front of it.
   names. See [power-and-energy.md](power-and-energy.md#power-control).
 
 Two endpoints are deliberately narrowed, because an unauthenticated API on a
-network that also carries IPMI would otherwise be a probe primitive:
+network that also carries IPMI would otherwise be a probe primitive. Writes that
+change the fleet (aliases, updates, parking) are separate: a signature in a
+secured mesh, a local program in an open one. `/v1/kvshare/*` accepts members
+only.
 
 - **`/v1/mesh/prompt` only forwards to mesh members.** The `addr` parameter is
   checked against the API addresses of alive members before anything is fetched.
@@ -53,6 +56,10 @@ network that also carries IPMI would otherwise be a probe primitive:
   candidates by node name; it never becomes an address. The same holds for
   the names in `?prefer=` and `X-Viiwork-Prefer`, and that header is removed
   before a request goes to a member or an engine.
+
+**kv_share replicas are conversations on disk.** A replica is a session's
+prompt, kept as files in `kv_share.dir` and `slot_save_path` on every member of
+its group. See [models.md](models.md#sharing-sessions-between-hosts-kv_share).
 
 Mesh headers are stripped from every incoming request right after verification,
 so no client can smuggle a forwarding claim through and no engine ever sees one.
@@ -118,8 +125,9 @@ browser. Two guards now run before routing:
   With `allow_origins: []` only the node's own pages may write. Clients that are
   not browsers send no `Origin` and are unaffected: curl, SDKs, the alias CLI,
   member forwards and pipeline steps.
-- **Control writes must be JSON.** `/v1/power`, `/v1/mesh/power` and every
-  write under `/v1/aliases/` (set, delete, revert) require
+- **Control writes must be JSON.** `/v1/power`, `/v1/mesh/power`, every
+  write under `/v1/aliases/` (set, delete, revert), every write under
+  `/v1/update/` and `POST /v1/models/down|up` require
   `Content-Type: application/json`, else 415. A browser cannot send that
   cross-origin without a preflight, and a refused preflight is 403. The
   `viiwork alias` CLI sends it on bodiless deletes and reverts too. A write

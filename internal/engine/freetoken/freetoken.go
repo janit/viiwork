@@ -23,6 +23,7 @@ var (
 	_ engine.Engine           = (*Engine)(nil)
 	_ engine.OptionsValidator = (*Engine)(nil)
 	_ engine.GPUBindingReader = (*Engine)(nil)
+	_ engine.UsageReporter    = (*Engine)(nil)
 )
 
 // Engine runs `ft serve`. It holds no per-backend state: one Engine is
@@ -51,6 +52,14 @@ func (e *Engine) DisplayName() string { return "FreeToken" }
 // on an offload MoE backend it then fills a GPU expert cache from host memory.
 // On the models this engine exists to run, that is minutes to tens of minutes.
 func (e *Engine) DefaultStartupTimeout() time.Duration { return 30 * time.Minute }
+
+// UsageReporting: measured on 0.2.1. A stream carries usage only when the client
+// sets include_usage, and with --enable-cache-report, which Command always
+// passes, prompt_tokens_details.cached_tokens appears whenever any prompt token
+// came from cache, so its absence means zero (server/openai_api.py, _usage).
+func (e *Engine) UsageReporting() engine.UsageReporting {
+	return engine.UsageReporting{Unasked: false, CachedTokens: true}
+}
 
 // Command builds the `ft serve` command line.
 //
@@ -93,6 +102,10 @@ func (e *Engine) Command(s engine.Spec) (engine.Command, error) {
 		// still moe_backend, because C1 freezes the YAML an operator writes;
 		// only the generated flag moved.
 		"--moe-strategy", opts.MoEBackend,
+		// Off by default upstream, where every cached count then reads 0 and
+		// performance routing could never price a FreeToken host. Present
+		// since at least 0.1.3, this package's floor.
+		"--enable-cache-report",
 	}
 	if opts.KVReserveTokens > 0 {
 		// Only when non-zero, and zero is not "no reserve": the engine's own

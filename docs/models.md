@@ -21,8 +21,9 @@ The `strata` engine does the same for one model family on gfx906 itself, with
 the layers split across a backend's cards: see
 [Strata](#strata-one-moe-family-across-several-cards).
 
-- [What the reference fleet runs today](#what-the-reference-fleet-runs-today)
+- [What the reference fleet ran on 2026-09-13](#what-the-reference-fleet-ran-on-2026-09-13)
 - [Large models on one card: FreeToken and MoE offload](#large-models-on-one-card-freetoken-and-moe-offload)
+- [Flint and Qwen3.8-27B on one RTX 5090](#flint-and-qwen38-27b-on-one-rtx-5090)
 - [Strata: one MoE family across several cards](#strata-one-moe-family-across-several-cards)
 - [Models from viiwork-parrot](#models-from-viiwork-parrot)
 - [Tuning rules measured on gfx906](#tuning-rules-measured-on-gfx906)
@@ -31,7 +32,7 @@ the layers split across a backend's cards: see
 - [Single-GPU picks](#single-gpu-picks-16-gb)
 - [Tensor-split picks](#tensor-split-picks-multi-gpu)
 
-## What the reference fleet runs today
+## What the reference fleet ran on 2026-09-13
 
 Five models across a five-host ROCm mesh, read from `/v1/capacity` on
 2026-09-13. The table below this one is the evaluation catalogue — measurements
@@ -54,12 +55,11 @@ because it is traded against slot count and VRAM per backend, not fixed by the
 checkpoint.
 
 Aliases are mesh-wide and resolve on whichever node a request reaches; see
-[mesh.md](mesh.md#aliases). `viiwork alias list` against any node prints the live table.
+[mesh.md](mesh.md#aliases). `viiwork alias ls` against any node prints the live table.
 
 Those five are the ROCm hosts. The fleet also runs `vllm` on one host and
 `freetoken` on two — all three engines in one mesh behind one API, which is what
-v2.2.0 is. `strata` is the fourth engine, added later; it has run on one
-ten-card Radeon VII host (below).
+v2.2.0 is. `strata` is the fourth engine, added later: see below.
 
 ## Models that read images
 
@@ -168,13 +168,13 @@ checkpoints on RTX 5090s is what met it. That lane took part in the 60-minute
 fleet soak alongside the gfx906 and vLLM hosts — 104 slots, 7 models, all three
 engines, 0.1x to 4x of capacity.
 
-Three things to know before you plan one:
+Four things to know before you plan one:
 
 - **Loading is slow, and that is the offload working.** FreeToken loads weights,
   sizes its cache pools and captures CUDA graphs before it serves, and on an
   offload MoE backend it then fills the GPU expert cache from host memory. On the
   models this engine exists to run that is minutes to tens of minutes, which is
-  why viiwork's default `startup_timeout` for `freetoken` is **30 minutes** — ten
+  why viiwork's default `startup_timeout` for `freetoken` is **30 minutes** — three
   times the llama.cpp default. Size it from your observed cold-load time.
 
 - **The advertised context is not the servable context, and viiwork does not
@@ -199,10 +199,92 @@ Three things to know before you plan one:
   window the node advertises; `context × parallel` is the ceiling, every slot
   full at full context.
 
+- **The first request after a fresh install compiles kernels.** A backend reports
+  healthy, and then its first request takes a minute or more (85 s with Flint on
+  an RTX 5090) while FreeToken builds what its prebuilt cache lacks. Later
+  requests are fast, and so are later starts if the compiled kernels persist:
+  `docker/compose.freetoken.yaml` mounts `~/.triton` and `~/.cache/flashinfer`
+  for that. Send one request before you route real work.
+
 Everything else — dtype, attention backend, MoE cache size, KV capacity, page
 size, CUDA-graph sizes — FreeToken resolves from the checkpoint and the card, and
 does it better than a config file can. That is why the `freetoken:` block is four
 keys; anything else belongs in `models[].args`.
+
+### Flint and Qwen3.8-27B on one RTX 5090
+
+Both models ran on the same RTX 5090 (32 GB, limited to 450 W, EPYC 7B12) on
+2026-10-31, each on FreeToken 0.2.1 and on llama.cpp master f5222f2, with two
+slots of 131,072 tokens. Flint is the official 22.9 GB NVFP4 GGUF; Qwen3.8-27B
+is the 17.6 GB Q4_K_M. Long prompts are Go source with one constant to find,
+and no prompt shared a prefix with another.
+
+| | Flint, FreeToken | Flint, llama.cpp | Qwen, FreeToken | Qwen, llama.cpp |
+|---|---:|---:|---:|---:|
+| Read tok/s at 50k | **7,767** | 5,076 | 3,402 | 2,714 |
+| Read tok/s at 118k | **6,124** | 3,749 | 2,674 | 1,759 |
+| Time to first token at 118k | **19 s** | 31 s | 48 s | 73 s |
+| Decode tok/s at 50k | **173** | 167 | 68 | 61 |
+| Decode tok/s at 118k | **153** | 137 | 57 | 47 |
+| Decode tok/s per slot, both busy | 153 | **163** | 77 | 69 |
+| Found the constant, 20k to 118k | 4 of 4 | 4 of 4 | 4 of 4 | 4 of 4 |
+| Load | 51 s | **8 s** | 61 s | not timed |
+| `response_format` (JSON mode) | no | **yes** | no | **yes** |
+
+The Qwen numbers at 118k are from a 129k-token prompt, because its tokenizer
+counts the same text about 10% longer. llama.cpp could not hold Qwen's two
+131k slots in 32 GB at its default f16 KV (16 GB on top of the weights), so that
+column uses `-ctk q8_0 -ctv q8_0`. Flint fits at f16 because its sliding-window
+cache is compact.
+
+**Coding.** Eight small Python tasks, three samples each, scored by hidden tests
+in a sandbox with no network, with a budget of 20,000 tokens:
+
+| Setup | Passed | Median tokens per task | Wall clock |
+|---|---:|---:|---:|
+| Flint, thinking on | **23 of 24** | 2,900 to 6,400, one task 622 | 463 s |
+| Qwen3.8-27B, thinking off | 19 of 24 | 257 to 927 | **178 s** |
+| Qwen3.8-27B, thinking on | 5 of 12, stopped after four tasks | ran out of budget 7 times in 12 | over 30 min |
+
+Read this as a direction, not a benchmark: the tasks are few and were written
+for this test, and the two rows that compare use different engines and
+different thinking settings. Qwen's reasoning was not looping when it ran out:
+it kept revisiting edge cases without repeating itself. Its thinking-off row is
+the setting this page recommends for it.
+
+**Which to run.**
+
+- **On a Blackwell card with 32 GB, Flint on FreeToken.** It reads about twice
+  as fast as Qwen and decodes more than twice as fast, and it passed the most
+  tests. Use the NVFP4 GGUF:
+
+  ```yaml
+  - name: flint
+    engine: freetoken
+    path: /models/flint-nvfp4.gguf
+    gpus: [0]
+    context: 131072
+    parallel: 2
+    startup_timeout: 45m
+    freetoken:
+      kv_reserve_tokens: 262144   # context x parallel
+  ```
+
+  The ModelOpt export ([FutureMLS-Lab/flint-nvfp4-coldgptq](https://huggingface.co/FutureMLS-Lab/flint-nvfp4-coldgptq))
+  passes the same chat, tool-call and long-prompt tests and reads about as fast,
+  but decodes slower on the same card: 121 to 137 tok/s, and 95 per slot with
+  both busy. It did not run the coding tasks.
+- **If a client needs JSON mode, llama.cpp.** FreeToken has no constrained
+  decoding and answers `response_format` with 400, for every model. Flint gives
+  up about 40% of its long-prompt read speed for it, and little decode.
+- **Qwen3.8-27B stays the pick for short replies with thinking off**, and on
+  gfx906. It needed about a tenth of Flint's tokens per task here.
+
+**Flint on gfx906.** It runs with llama.cpp b11804 on ROCm 7.14 on three Radeon
+VIIs (`gpus_per_backend: 3`, 2 slots of 131,072 tokens, about 12 GB per card):
+35 to 37 tok/s decode, and a read rate of about 920 tok/s at 20k that falls to
+360 at 120k. Keep `-fa on`: with `-fa off` it produced garbage at 87k. Two cards
+at the same context used 15 of 16 GB, which is too tight.
 
 ## Strata: one MoE family across several cards
 
@@ -248,7 +330,7 @@ models:
   | expert profile | `/opt/strata/data/expert-profile.bin` | `/opt/strata/terminal/data/expert-profile.bin` |
 
   The engine directory is named for the engine package's version (0.1.48 in
-  Strata 0.2.3; the fork's kv_share build is 0.1.48.1). With another image's
+  Strata 0.2.3; the fork's current kv_share build is 0.1.51). With another image's
   paths the backend dies at launch. The CUDA image's paths were the
   `/opt/strata` checkout and `/opt/strata/.venv/bin/python` up to Strata
   0.1.45 (viiwork v2.11.0-beta1 and earlier).
@@ -371,7 +453,8 @@ that host is full, the turn spills to the next one and pays a cold prefill:
 - Before a session's turn runs on a backend, the node imports the replica it
   holds into that backend's conversation cache (`POST
   /slots/0?action=import`, about 1.5 s at 50k tokens, on the turn's clock),
-  once per replica and backend launch. Strata resumes from it only if the
+  once per replica and backend launch unless the engine has since evicted
+  it (below). Strata resumes from it only if the
   prompt matches, so a stale or foreign replica costs the import and nothing
   else, and a failed import serves the turn cold.
 - Replicas travel on the API port (`/v1/kvshare/manifest` and `/put`) and are
@@ -390,10 +473,11 @@ that host is full, the turn spills to the next one and pays a cold prefill:
   measured import cost as `kv_share_import_ms_per_1k`, and `/v1/status`
   counts pushes, puts and imports under `kv_share`.
 
-Requirements, refused at start when unmet: a janit/Strata kv-export build
-(upstream Strata plus the session save, import and delta endpoints, which
+Requirements: a janit/Strata kv-export build, which nothing checks, so on
+another build no session is shared and nothing says so (upstream Strata plus the session save, import and delta endpoints, which
 upstream lacks; `v0.2.6-kvx2` on Strata 0.2.6 is current, and the oldest that
-lets the node re-import an evicted copy reliably), `"slot_save_path"` in the JSON at a path the
+lets the node re-import an evicted copy reliably). Refused at start when
+unmet: `"slot_save_path"` in the JSON at a path the
 node reads and writes (in the Docker image the node and the engine share the
 container, so it is the same path), a conversation cache (on by default
 since Strata 0.2; an explicit `--conversation-cache-mib` of 0 in `args` is
@@ -584,7 +668,7 @@ same walls.
 | Model | State | What is known |
 |---|---|---|
 | Soofi-S-30B-A3B (hybrid Mamba-2 / MoE) | **Blocked** on HuggingFace manual approval | A TS=2 layout on two cards was drafted but never checked in. The GGUF declares `general.architecture = nemotron_h_moe`, **not** "soofi" — it reuses an existing arch, so no llama.cpp bump is needed; do not grep binaries for "soofi". Quant choice inverts the rule above: columns (2688/1856/3712) are not divisible by 256, so every K-quant falls back — Q6_K becomes q8_0 (~32 GB, no quality gain) and Q5_K_M becomes q5_1 (~25 GB, the pick). No community requant exists to route around the gate, and self-converting is blocked because the base repo is gated too. |
-| Qwen3.8-Flash-Next (125B total / 6B active, GDN + QSA hybrid) | **Runs, but loses to the 27B** — not retained | Loads and serves correctly across all 10 GPUs, and is *slower than Qwen3.8-27B on two*: 8.7 / 16.0 / 20.4 tok/s at conc 1 / 2 / 4 against the 27B's 10.2 / 18.6 / 27.0. The cause is structural, not tuning. `general.architecture = qwen4exp`, which upstream master rejects outright (`unknown model architecture`); support is only in the still-open PR #27742 from `unslothai/llama.cpp` (branch `qwen4exp/qwen3.8-flash-next`). The blocker is `per_layer_token_embd.weight`: **26.82 GB as one indivisible IQ4_NL tensor** (51.2B elements — the n-gram table). A Radeon VII holds 16.37 GB and `-ot` assigns a whole tensor to one device, so it can never be GPU-resident here and stays in host RAM. Decode is then pinned to a **single CPU core** (measured 0.91 of 4 cores busy with GPUs at 0%), which is the real ceiling: 48.5/160 GB VRAM is in use while 30.9 GB sits in RSS. Needs cards ≥27 GB to be worth revisiting. Re-tested at UD-Q4_K_XL (103.7 GB) to rule out the quant: decode was **unchanged at 12.6 tok/s**, confirming the ceiling is CPU, not quantization — on gfx906 the higher quant rides free. Quality at Q4_K_XL was *better* than the 27B on Finnish (correct terminology throughout vs four terminology errors and a case error) and equal on strict-JSON extraction, and it was more token-efficient (5 of 8 eval prompts completed in budget vs the 27B's 2 of 8). But **neither model solves hard reasoning through this stack**: on one bridge-crossing problem the 27B burned 6,000 tokens / 6.4 min and Flash-Next 10,000 tokens / 17.1 min, both still mid-deliberation, and Flash-Next's decode degraded 12.6 -> 9.7 tok/s as context grew (QSA attention cost). Both emit raw chain-of-thought into `content` with no `<think>` delimiters, which looks like a template/integration gap rather than a reasoning limit — worth retrying under vLLM/SGLang before concluding anything about the models. Verdict: not retained; the 27B gives comparable quality at 1.6x the speed on 2 GPUs instead of 10. |
+| Qwen3.8-Flash-Next (125B total / 6B active, GDN + QSA hybrid) | **Under llama.cpp: runs, but loses to the 27B**, not retained there; served through [Strata](#strata-one-moe-family-across-several-cards) | Loads and serves correctly across all 10 GPUs, and is *slower than Qwen3.8-27B on two*: 8.7 / 16.0 / 20.4 tok/s at conc 1 / 2 / 4 against the 27B's 10.2 / 18.6 / 27.0. The cause is structural, not tuning. `general.architecture = qwen4exp`, which upstream master rejects outright (`unknown model architecture`); support is only in the still-open PR #27742 from `unslothai/llama.cpp` (branch `qwen4exp/qwen3.8-flash-next`). The blocker is `per_layer_token_embd.weight`: **26.82 GB as one indivisible IQ4_NL tensor** (51.2B elements — the n-gram table). A Radeon VII holds 16.37 GB and `-ot` assigns a whole tensor to one device, so it can never be GPU-resident here and stays in host RAM. Decode is then pinned to a **single CPU core** (measured 0.91 of 4 cores busy with GPUs at 0%), which is the real ceiling: 48.5/160 GB VRAM is in use while 30.9 GB sits in RSS. Needs cards ≥27 GB to be worth revisiting. Re-tested at UD-Q4_K_XL (103.7 GB) to rule out the quant: decode was **unchanged at 12.6 tok/s**, confirming the ceiling is CPU, not quantization — on gfx906 the higher quant rides free. Quality at Q4_K_XL was *better* than the 27B on Finnish (correct terminology throughout vs four terminology errors and a case error) and equal on strict-JSON extraction, and it was more token-efficient (5 of 8 eval prompts completed in budget vs the 27B's 2 of 8). But **neither model solves hard reasoning through this stack**: on one bridge-crossing problem the 27B burned 6,000 tokens / 6.4 min and Flash-Next 10,000 tokens / 17.1 min, both still mid-deliberation, and Flash-Next's decode degraded 12.6 -> 9.7 tok/s as context grew (QSA attention cost). Both emit raw chain-of-thought into `content` with no `<think>` delimiters, which looks like a template/integration gap rather than a reasoning limit — worth retrying under vLLM/SGLang before concluding anything about the models. Verdict: not retained; the 27B gives comparable quality at 1.6x the speed on 2 GPUs instead of 10. |
 | Muse-Glimmer-30B (meta-models) | Ran on GPUs 4+7, since displaced | Needs llama.cpp **b10369+** (`muse_glimmer` landed in PR #26841); the older b9222 pin could not load it. kquant-dynamic is 19.65 GB so TS=2 is required, not preferred. Output needs `reasoning_strength: low` — at the template default the model self-talks and that text leaks into `content`. `--mmproj` and the DFlash drafter are deliberately not wired in (upstream #26873, #26894). |
 
 ## Single-GPU picks (≤16 GB)

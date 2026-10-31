@@ -1,5 +1,34 @@
 # Changelog
 
+## v2.11.3
+
+**FreeToken 0.2.1 and Flint.** The `freetoken` image now pins FreeToken 0.2.1,
+the release that adds Flint, and Flint is tested end to end through a node on
+an RTX 5090: chat, tool calls, reasoning, needles to 118k tokens, two slots with
+a queue, and forwarding between nodes. `docs/models.md` compares it with
+Qwen3.8-27B on the same card, on both engines.
+
+- **FreeToken hosts publish a performance score.** The engine reports cached
+  tokens only with `--enable-cache-report`, which is off by default, so the node
+  dropped every sample and priced those hosts at the fleet median. The node
+  now always passes the flag. It has been there since at least 0.1.3, the floor.
+- **A recreated FreeToken container no longer compiles on its first request.**
+  The compiled kernels land in `~/.triton` and `~/.cache/flashinfer`, and the
+  compose file persisted neither: 85 s with Flint on a 5090, after the backend
+  had reported healthy. With both mounted it is 1 s. **Add the two volumes from
+  `docker/compose.freetoken.yaml` to an existing compose file.** The first
+  request of a fresh install still compiles.
+- FreeToken answers `response_format` with 400 for every model, because it has
+  no constrained decoding. Use llama.cpp for a client that needs JSON mode.
+- A full review of the documentation against the code: v1 keys and peer-list
+  language are gone, routing is described as it has worked since v2.7, the
+  `/v1/mesh/stream` and `/v1/activity` sections match the server, `viiwork.yaml.example`
+  has a `cost:` block and the right Strata `parallel` rule, and kv_share is
+  covered in `docs/security.md`, `docs/mesh.md` and `docs/api-integration.md`.
+  Fleet tables now carry their date instead of saying "today".
+
+No wire contract changes.
+
 ## v2.11.2
 
 **kv_share asks about the right conversation.** v2.11.1's check asked Strata

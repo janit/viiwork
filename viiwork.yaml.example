@@ -153,7 +153,7 @@ models:
   # refuses to start unless the file agrees with this entry:
   #   "model_name" or "aliases" includes `name`,
   #   --max-context in "args" equals `context`,
-  #   "parallel" is absent or 1,
+  #   "parallel" equals `parallel` (absent is 1),
   #   "lazy_load", "idle_unload_s" and "api_key" are off.
   # Leave "layer_split" out and Strata splits the layers across the cards.
   # The JSON is read when a backend launches. After editing it, `viiwork down`
@@ -222,6 +222,16 @@ power:
 #   factory-a: [100.64.0.10]
 #   batch-b:   [100.64.0.20, 198.51.100.0/24]
 # clients_reload: true     # apply a changed clients section on reload
+
+# Electricity cost (docs/power-and-energy.md). Needs ENTSOE_API_KEY.
+# cost:
+#   bidding_zone: 10YFI-1--------U   # ENTSO-E area code
+#   timezone: Europe/Helsinki
+#   transfer:
+#     winter: {peak_cents_kwh: 4.0, offpeak_cents_kwh: 2.5}
+#     summer: {flat_cents_kwh: 2.5}
+#   electricity_tax_cents_kwh: 2.8
+#   vat_percent: 25.5
 
 # Rolling updates (docs/releases.md). Off unless enabled.
 # update:

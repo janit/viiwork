@@ -1,6 +1,6 @@
 # Power, Cost and Energy
 
-Three related features, in increasing order of what they need from the machine:
+Four related features, in increasing order of what they need from the machine:
 
 | Feature | Answers | Needs |
 |---|---|---|
@@ -31,7 +31,7 @@ band, so a host that simply cannot be measured is never mistaken for a host
 drawing nothing. The RAM strip below needs no BMC at all — it reads
 `/proc/meminfo`, so every host appears in it.
 
-Three things are worth knowing before reading numbers off it:
+Four things are worth knowing before reading numbers off it:
 
 - **Wattage is per machine.** A BMC reading covers the whole chassis; a GPU sum
   covers only the cards. The table names which one each machine reports.
@@ -145,8 +145,7 @@ only receives forwards needs none: the name travels with the forward, in
 `X-Viiwork-Client`. A client cannot send that header itself; it is dropped.
 
 Each node that ran the work then publishes `client_energy` on `/v1/status`
-and `/v1/cluster`: cumulative watt-hours per client. `docs/client-energy.md`
-is the guide for a consumer.
+and `/v1/cluster`: cumulative watt-hours per client.
 
 What the figure is:
 

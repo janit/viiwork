@@ -68,6 +68,7 @@ func TestCommandOmitsKVReserveWhenZero(t *testing.T) {
 		"--max-running-requests", "4",
 		"--max-seq-len-override", "65536",
 		"--moe-strategy", "offload",
+		"--enable-cache-report",
 		"--page-size", "128",
 	}
 	if !slices.Equal(cmd.Args, want) {
@@ -213,6 +214,32 @@ func TestCommandClearsInheritedAPIKey(t *testing.T) {
 	}
 	if !slices.Contains(cmd.Env, "FREETOKEN_API_KEY=") {
 		t.Errorf("Env = %q, want FREETOKEN_API_KEY= to clear an inherited key", cmd.Env)
+	}
+}
+
+// Performance routing drops a sample with no cached count, and FreeToken
+// reports the count only with --enable-cache-report. The flag and the
+// declaration are one promise: either alone leaves the host with no score.
+func TestCommandAlwaysAsksForTheCacheReport(t *testing.T) {
+	s := spec(t, engine.Spec{Name: "m", Path: "/m", GPUs: []int{0}, Port: 1, Context: 8, Parallel: 1}, "")
+	cmd, err := New().Command(s)
+	if err != nil {
+		t.Fatalf("Command: %v", err)
+	}
+	if !slices.Contains(cmd.Args, "--enable-cache-report") {
+		t.Errorf("Args = %q, want --enable-cache-report", cmd.Args)
+	}
+}
+
+func TestUsageReportingMatchesTheEngine(t *testing.T) {
+	r, ok := any(New()).(engine.UsageReporter)
+	if !ok {
+		t.Fatal("freetoken must implement UsageReporter")
+	}
+	// Measured on 0.2.1: no usage chunk unless the client asks, and
+	// prompt_tokens_details appears only when a token came from cache.
+	if got, want := r.UsageReporting(), (engine.UsageReporting{Unasked: false, CachedTokens: true}); got != want {
+		t.Errorf("UsageReporting = %+v, want %+v", got, want)
 	}
 }
 

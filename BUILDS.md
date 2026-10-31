@@ -99,9 +99,25 @@ build is slow (torch and its CUDA wheels) and the image is several GB.
 
 Build: `make docker-freetoken`, off-peak.
 
-### FreeToken 0.2.0 is the pin
+### FreeToken 0.2.1 is the pin
 
-`FREETOKEN_VERSION` defaults to `0.2.0`; 0.1.3 is still the floor. The command
+`FREETOKEN_VERSION` defaults to `0.2.1`; 0.1.3 is still the floor, and Flint
+needs 0.2.1. The kernel cache resolves to the published
+`freetoken_kernel_cache-0.2.1+cu130` wheel. viiwork now also generates
+`--enable-cache-report`, present since at least 0.1.3, so a FreeToken host
+publishes a performance score. What an upgrading host has to check:
+
+- **A GGUF with a fitting `*mmproj*.gguf` in its folder now builds the vision
+  tower.** Add `--text-model-only` to `args:` for the text-only footprint.
+- **GLM-5.2 FTWs from older builds load and route with a rounded bias.** Repair
+  them with upstream's `scripts/ftw_hotfix.py`.
+- **Add the two new cache volumes** from `docker/compose.freetoken.yaml` to an
+  existing compose file, or each new container compiles again on its first
+  request.
+
+### FreeToken 0.2.0
+
+`FREETOKEN_VERSION` moved to `0.2.0`, with 0.1.3 still the floor. The command
 line viiwork generates is unchanged: every flag it passes (`--model`,
 `--served-model-name`, `--host`, `--port`, `--moe-strategy`, `--memory-ratio`,
 `--max-running-requests`, `--max-seq-len-override`, `--kv-reserve-tokens`) is
@@ -123,9 +139,9 @@ look. What an upgrading host has to check:
 - **`--moe-strategy auto` no longer picks `hybrid`** from an `ft bench bw`
   profile, and profiles from older builds are ignored. A host that relied on it
   sets `moe_backend: hybrid` and reruns `ft bench bw --model <checkpoint>`.
-- **0.2.0 serves GGUF files** (`ft serve --model <file>.gguf`; no image input
-  from GGUF yet). The node passes `models[].path` through as `--model`, but
-  no GGUF has been served under viiwork yet. The kernel cache resolves to the published
+- **0.2.0 serves GGUF files** (`ft serve --model <file>.gguf`; image input
+  from GGUF came in 0.2.1). The node passes `models[].path` through as
+  `--model`. The kernel cache resolves to the published
   `freetoken_kernel_cache-0.2.0+cu130` wheel. torch moves to 2.14.
 
 ### FreeToken 0.1.3 is the floor (viiwork 2.3.0)
@@ -247,7 +263,7 @@ Neither engine has to be in a container — `models[].vllm.binary` and
 works and is the simpler shape for a FreeToken host. Two things bite, both
 found bringing this up on teddy:
 
-- **Python must be older than 3.15.** vLLM 0.31.0 requires `>=3.10,<3.15` (0.11.2
+- **Python must be older than 3.15.** vLLM 0.32.0 requires `>=3.11,<3.15` (0.11.2
   required `<3.14`), and a host whose `python3` is newer cannot install it at all — pip reports only that
   no version satisfies the requirement, without saying why. `uv python install
   3.12` and `uv venv --python 3.12` is the quickest fix and touches no system
@@ -305,8 +321,9 @@ deploy:
 Both compose files also set `ipc: host` — required for vLLM tensor parallelism,
 whose shards talk over shared memory — and mount `node.state_dir` as a host
 directory so the alias table survives recreating the container. The FreeToken
-one additionally mounts the JIT kernel cache and the model cache: without those
-two volumes every container start recompiles kernels and re-downloads weights.
+one additionally mounts the JIT kernel caches (`~/.triton`,
+`~/.cache/flashinfer`) and the model cache: without those volumes every new
+container recompiles kernels on its first request and re-downloads weights.
 
 ## Test images
 

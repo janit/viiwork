@@ -8,11 +8,7 @@ health ladders, respawns, routing, the mesh — belongs to the node and is alrea
 written. If you find yourself implementing any of it, stop and read
 "What the node already does" below.
 
-> **Status.** This documents the engine API **as of v2.1.0**, and as of
-> 2026-09-13 it is the API that exists: every declaration below was re-verified
-> against the code on the `v2.1` branch after it was built. If you are working
-> from a checkout that predates it, read "Writing against this before it ships"
-> at the end.
+> **Status.** Kept current with the code.
 >
 > This document is the contract you write against. The design rationale behind
 > each rule — why it is this way, and what went wrong when it was not — is kept
@@ -40,7 +36,8 @@ _ "github.com/janit/viiwork/v2/internal/engine/<name>" // <name>
 Everything that needs to know the engines imports that package: the node
 (`internal/node`), `viiwork-accept` (which validates a config file before the
 node that will run it starts, so an engine it cannot see is an engine it
-reports as unknown) and the acceptance tests. None of them lists engines itself.
+reports as unknown), the setup wizard's renderer (`internal/setup/render`) and
+the acceptance tests. None of them lists engines itself.
 
 **That is the entire footprint.** Nothing in `internal/config`,
 `internal/supervisor`, `internal/node`, `internal/route` or `internal/proxy`
@@ -50,8 +47,7 @@ around it.
 
 ## The API
 
-Everything you compile against. Copy these declarations into a stub if you are
-working before v2.1.0 lands.
+Everything you compile against.
 
 ### `internal/engine`
 
@@ -78,6 +74,7 @@ type Spec struct {
     Parallel int         // sequences this backend admits, always >= 1
     Backends int         // backends this model runs on this node, always >= 1
     Args     []string    // models[].args, the operator's own flags
+    Env      map[string]string // models[].env, appended after Command.Env
     Options  yaml.Node   // this model's engine block, or a zero Node
 }
 
@@ -293,8 +290,9 @@ the node must be able to read and write at the same path.
 backend once, but an engine's cache evicts on its own, so when a session comes
 back with the replica it was already given, the node asks `SessionHeld` how
 many tokens the backend still holds of the conversation that starts with the
-replica's own token ids (their count and FNV-1a 64 hash; a session's latest
-branch on that backend may be another one after a compaction elsewhere), and
+replica's resume point: the token ids of its deepest checkpoint (their count
+and FNV-1a 64 hash; a session's latest branch on that backend may be another
+one after a compaction elsewhere), and
 imports again if that is fewer than the replica's. An error means "cannot say", and the node
 then trusts its record of the import, which is all an engine without the
 method gets.

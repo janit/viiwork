@@ -86,7 +86,8 @@ Separately, some models take a *template* argument that decides whether they
 delimit their reasoning, and getting it wrong produces exactly this symptom with
 nothing wrong on the viiwork side. Laguna is one: its chat template must be run
 with `enable_thinking=true` (via `LLAMA_ARG_CHAT_TEMPLATE_KWARGS`, since
-llama-server accepts `--chat-template-kwargs` and then ignores it) or the model
+the llama-server build tested with Laguna accepted `--chat-template-kwargs`
+and then ignored it) or the model
 reasons with no tags around it and the whole monologue lands in `content`.
 
 ## Capping how much a model thinks
@@ -97,12 +98,13 @@ produced **1767 tokens, of which ~1667 were thinking** — 80 seconds of silence
 before ~5 seconds of correct code, 94% of the wall clock spent on output nobody
 sees.
 
-`--reasoning-budget N` in `backend.extra_args` makes llama.cpp inject the
+`--reasoning-budget N` in `models[].args` makes llama.cpp inject the
 end-of-thinking tag after N tokens, forcing the model to answer:
 
 ```yaml
-backend:
-  extra_args: ["--jinja", "--reasoning-budget", "512"]
+models:
+  - name: my-model
+    args: ["--jinja", "--reasoning-budget", "512"]
 ```
 
 Same prompt at 512: **612 tokens / 29.7 s**, a 2.9× cut, and the capped answer

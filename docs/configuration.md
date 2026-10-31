@@ -305,8 +305,8 @@ off. Never use `*.ts.net`: it is every Tailscale customer's domain, Funnel pages
 included.
 
 Whatever the list, state-changing requests (`POST`, `PUT`, `PATCH`, `DELETE`)
-from a browser origin it refuses are answered 403, and power and alias writes
-must be `Content-Type: application/json`. The reasoning, and what it does and
+from a browser origin it refuses are answered 403, and power, alias, update and
+model parking writes must be `Content-Type: application/json`. The reasoning, and what it does and
 does not stop: [security.md](security.md#browser-origins-cors).
 
 ## viiwork-parrot

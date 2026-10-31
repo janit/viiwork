@@ -29,9 +29,8 @@ mesh.** You do not need to reach every machine, and you do not need to know the
 topology in advance. One HTTP call to one reachable node gives you the fleet;
 one held-open stream gives you live activity for all of it.
 
-Requests follow free slots rather than round-robin: a node runs a request
-locally if it has a free slot, otherwise forwards to the member with the most
-free slots, otherwise queues it. A caller does not choose a host, and should
+Requests follow free slots rather than round-robin: a node sends a request to a
+host with a free slot, chosen by measured speed, otherwise queues it. A caller does not choose a host, and should
 not try to.
 
 Most of what the API exposes is in-memory state that a restart clears —
@@ -146,7 +145,7 @@ expose `X-Gpu-Backend`, `X-Viiwork-Node`, `X-Viiwork-Origin`,
 
 ## 4. API reference
 
-Every endpoint below is `GET`, returns JSON, and requires no headers.
+Unless marked, an endpoint below is `GET`, returns JSON, and requires no headers.
 
 ### `GET /v1/cluster` — the primary call
 
@@ -203,7 +202,7 @@ reported. This is the one endpoint a fleet overview needs.
 | `models` | Every model served anywhere in the mesh, deduplicated. The quick answer to "what can I ask for". |
 | `members[].node` | The member's name, which is its hostname unless configured otherwise. **This is the grouping key for anything measured per machine** — it is a real name, not derived from the address it was dialled on. |
 | `members[].state` | `alive` · `dead` · `left`. A node that stops gracefully goes `left`; one that vanishes goes `dead` after the mesh's suspicion window. `meshapi` also defines `suspect` for other implementations; viiwork never reports it. Keep showing a dead member rather than hiding it. |
-| `members[].role` | `node` (serves models) or `gateway` (routes only, no models, null status). |
+| `members[].role` | `node`. `meshapi` also defines `gateway` (routes only, no models, null status) for other implementations; viiwork never reports it. |
 | `members[].status` | The member's last `/v1/status`, or `null` for a gateway or a member that has not answered yet. **Always null-check it.** |
 | `status.ver` | Build string of that machine. Mixed versions are normal during a rollout. |
 | `status.models[]` | One entry per configured model, with its aggregate `slots` / `busy` / `queued` and `ctx` per slot. |
@@ -211,7 +210,7 @@ reported. This is the one endpoint a fleet overview needs.
 | `status.models[].backends[]` | The processes behind it. `gpus` is the list of cards one backend holds — two or more means a tensor-split group. `status` is `starting` · `healthy` · `unhealthy` · `dead`; cold-loading a large model sits in `starting` for minutes. |
 | `status.power` | `{watts, available, source}`. When `available` is false, ignore `watts` rather than rendering a zero. `source` is `dcmi`, `sdr`, `sensor:<NAME>`, `nvidia-smi` or `rocm-smi` — diagnostic, for when an operator asks why a host reads what it does. |
 | `status.energy_kwh_24h`, `energy_kwh_30d` | Rolling whole-machine energy from the durable store, present only where it is enabled. Absent is "not recording", not zero. |
-| `status.client_energy` | Energy per named client on this node: `since`, `through` and `clients[]` with `name`, `wh_total`, `w_1m`, `kwh_24h`, `kwh_30d`, `busy_s_total`, `tokens_total`. Present only on a node with the energy store that has served a named client. Counters per node: do not sum them across nodes. See `docs/client-energy.md`. |
+| `status.client_energy` | Energy per named client on this node: `since`, `through` and `clients[]` with `name`, `wh_total`, `w_1m`, `kwh_24h`, `kwh_30d`, `busy_s_total`, `tokens_total`. Present only on a node with the energy store that has served a named client. Counters per node: do not sum them across nodes. See "Energy per client" in [power-and-energy.md](power-and-energy.md). |
 | `status.host_mem_*` | Host RAM, `used` being `MemTotal - MemAvailable`, so page cache is not counted as pressure. Coarsened on the pushed stream — see §6. |
 | `power_control.hosts` | Machines this node may power-control. Rows for the fleet should be the **union** of members and this list: a powered-off machine is absent from the mesh entirely, and this is the only place its name still exists. |
 
@@ -241,6 +240,11 @@ A model the node has measured also carries its performance score (v2.7.0):
 tokens) and `perf_samples`. All three are absent when the node cannot say —
 no measurement yet, an older version, or `routing.performance: false` —
 and absent never means zero.
+
+A model in a kv_share group also carries `kv_share_group` and
+`kv_share_import_ms_per_1k`, its measured cost to import a saved session; the
+same group appears as `kv_share` on `/v1/status`. See
+[models.md](models.md#sharing-sessions-between-hosts-kv_share).
 
 A model also carries `images` (v2.10.0): `true` when the node's backends of
 the model read images, `false` when they do not. It is absent when the node
@@ -381,7 +385,7 @@ not as fleet health: `/v1/cluster` is what tells you the mesh is well.
 
 ### `GET /v1/mesh/stream` — `text/event-stream`
 
-One held-open connection carrying **two named event types**. Nothing polls:
+One held-open connection carrying **three named event types**. Nothing polls:
 cluster snapshots are diffed server-side and pushed only when they change, so an
 idle mesh is silent. Peer fan-out happens on the server, so one reachable node
 is enough to see the whole mesh.
@@ -393,23 +397,27 @@ data: {"t":1756360000,"type":"request","message":"some-model → ts-0,1","rid":4
 
 event: cluster
 data: { …a full /v1/cluster payload… }
+
+event: aliases
+data: { …a full /v1/aliases payload… }
 ```
 
-Handle them **by name** — `es.addEventListener("activity", …)` and
-`("cluster", …)`. A bare `onmessage` handler receives nothing, because named
+Handle them **by name** — `es.addEventListener("activity", …)`,
+`("cluster", …)` and `("aliases", …)`. A bare `onmessage` handler receives nothing, because named
 events never dispatch to it.
 
 | Activity field | Meaning |
 |---|---|
 | `t` | Unix seconds. |
 | `type` | `request` · `backend` · `system`. Only `request` events carry a `rid`. |
-| `message` | Human text, shaped `"<model> → <destination>"`, with `" done (1.2s)"` or `" aborted by client"` appended on completion. Split on `→` rather than re-deriving the parts. |
+| `message` | Human text, shaped `"<model> → <destination>"`, with `" done (1.2s)"` or `" aborted by client (1.2s)"` appended on completion. Split on `→` rather than re-deriving the parts. |
 | `rid` | Request id. **Per-process counter, not cluster-wide** — see §6. |
 | `node_id`, `hostname`, `addr` | Which member the event came from. `addr` is empty for the node you are connected to and set for other members; you need it for prompt lookups. |
 
 ### `GET /v1/activity`, `GET /v1/activity/stream`
 
-Single-node event log — the last 200 events, and an SSE stream of the same. No
+Single-node event log — the last `activity.event_history` events (2000 by
+default), and an SSE stream of the same. No
 peer merging and no server-side fan-out, so for a mesh view prefer
 `/v1/mesh/stream`. Useful when you are deliberately looking at one node.
 
@@ -469,11 +477,10 @@ or `mesh` routes as usual. The name is a member name (`node-b`), not `host:port`
 against members the node already knows. A host that is not serving the model answers
 `404` with a message naming both, never a silent fallback to the mesh, and a
 malformed value is `400`. `X-Viiwork-Origin` on the response names the peer
-the request was proxied to; its absence means the answering node ran it. The
+the request came in through; `X-Viiwork-Node` names the member that ran it, and
+`X-Viiwork-Origin` is absent when the answering node ran it itself. The
 value is only compared against hostnames the node already knows and is never
-dialled, so it cannot reach anything normal routing could not. Through the
-gateway a pinned request may take two hops (gateway → a node serving the
-model → the pinned host); that is expected and invisible to the caller.
+dialled, so it cannot reach anything normal routing could not.
 
 **Preferring hosts.** `?prefer=node-a,node-b` names machines in order of
 preference: the first one with a free slot for the model runs the request,
@@ -560,11 +567,11 @@ Same payload, the asked node's own store only, no forwarding. This is what
 which node minted the id; otherwise it 404s.
 
 > **Security constraint — do not work around.** `/v1/mesh/prompt` forwards
-> **only** to addresses already in the answering node's configured peer list.
+> **only** to the API address of an alive member.
 > That check is load-bearing: without it the endpoint fetches whatever address
 > it is handed and echoes the response back, which is a server-side request
 > forgery primitive on a private network. If a lookup returns
-> `400 unknown peer`, the fix is the peer configuration on the viiwork side —
+> `400 unknown peer`, the fix is to make that node a member of the mesh —
 > never a proxy in your application that fetches arbitrary addresses on a
 > caller's behalf.
 
@@ -626,9 +633,9 @@ Two obligations come with it:
   a second time. Key on node, request id, timestamp and message, and hold the
   set deeper than the list you render.
 
-The ring bounds it: a gap longer than `maxEvents` on a given node cannot be
-repaired from the replay. The aggregate counts in `/v1/cluster` (`in_flight`
-per backend) remain correct regardless and are what to trust for totals.
+The ring bounds it: a gap longer than `activity.event_history` events on a
+given node cannot be repaired from the replay. The aggregate counts in
+`/v1/cluster` (`busy` per backend) remain correct regardless and are what to trust for totals.
 
 ### Freshness differs by column
 
@@ -639,7 +646,7 @@ per backend) remain correct regardless and are what to trust for totals.
 | Members' slots, busy and queued | ~1 s | `mesh.capacity_poll` |
 | Members' full status, GPU load | ~5 s | member status poll |
 
-Do not present all three as equally current. A job appearing instantly next to a
+Do not present these as equally current. A job appearing instantly next to a
 GPU utilisation figure that is ten seconds stale reads as a contradiction.
 
 `client_energy` changes once a minute and is 60 to 90 seconds behind the clock,
@@ -716,11 +723,10 @@ backend in `starting` for twenty minutes or more, during which the node answers
 distinguish *node reachable* from *backends healthy*, or it will report a green
 fleet that cannot take a request.
 
-**Stale peer entries are normal.** A peer list is static configuration. Nodes
-that moved, changed port, or were retired stay in `/v1/cluster` as
-`unreachable`, and prompt lookups against them fail with `unknown peer`. Render
-that honestly; it is a fleet configuration matter, not something your
-integration should paper over.
+**Dead and departed members are normal.** Nodes that crashed or left stay in
+`/v1/cluster` as `dead` or `left` for a while, and prompt lookups against them
+fail with `unknown peer`. Render that honestly; it is a fleet matter, not
+something your integration should paper over.
 
 ## 9. Acceptance checklist
 
@@ -747,5 +753,5 @@ Verifiable against a fleet under load.
 ---
 
 Reference implementation of everything above: viiwork's own `/mesh` and
-`/prompt` pages, plus the "Mesh Dashboard", "Prompt and output history",
-"Security" and "API Endpoints" sections of the README.
+`/prompt` pages, plus [dashboards.md](dashboards.md) and
+[security.md](security.md).

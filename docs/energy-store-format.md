@@ -392,12 +392,10 @@ on the same value instead of double counting.
   serialises writes per ring and is safe for concurrent use within a process,
   but nothing coordinates between processes. Two processes writing one directory
   will interleave roll-ups and produce nonsense.
-- **Node wattage is a whole-host measurement.** A host running several node
-  instances — one per model — must enable recording on exactly one of them, or
-  the same chassis draw is recorded several times over. For the same reason a
-  recorder should cover every GPU the host reports, not only the cards its own
-  process owns: the marginal-power denominator has to span the host, or a
-  co-tenant's load is charged to this instance's models.
+- **Node wattage is a whole-host measurement.** A host has one node, and so one
+  recorder. That recorder should cover every GPU the host reports, not only the
+  cards the node's own models use: the marginal-power denominator has to span
+  the host, or a co-tenant's load is charged to this node's models.
 
 ## Compatibility
 

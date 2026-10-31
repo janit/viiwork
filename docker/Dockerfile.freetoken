@@ -50,8 +50,8 @@ ARG FREETOKEN_CHANNEL=pypi
 # pypi only: the release to install. Empty takes the latest, which makes a
 # rebuild non-reproducible; the default is the release this tree was checked
 # against. 0.1.3 is the floor: below it the node's `--moe-strategy` is
-# unrecognised and every backend dies at load.
-ARG FREETOKEN_VERSION=0.2.0
+# unrecognised and every backend dies at load. Flint needs 0.2.1.
+ARG FREETOKEN_VERSION=0.2.1
 # nightly only: fail the build unless nightly is built from this commit.
 ARG FREETOKEN_COMMIT=
 # Set to 0 to skip the prebuilt kernel cache and JIT everything on first use.
