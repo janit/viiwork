@@ -1,5 +1,24 @@
 # Changelog
 
+## v2.11.4
+
+- **The thinking rewrite no longer loses or keeps the wrong text when a
+  backend escapes its think tags.** With `think: false`, the fast path that
+  drops reasoning tokens inside a `<think>` block matched tags on the raw
+  bytes. An engine that writes `</think>` as `\u003c/think\u003e` (any Go
+  JSON encoder does) never closed the block, so the answer after it was lost.
+  A `<think>` inside an open block did not reset the buffer, so a truncated
+  reply salvaged text the slow path would have dropped. Keys spelled
+  `"Choices"` or `"Delta"` were matched case-insensitively. The fast path now
+  checks the decoded text and exact names, and leaves anything else to the
+  slow path. A new test compares the two paths.
+- The rewrite's chunk probe uses `encoding/json/jsontext` with one decoder
+  per stream: a reasoning stream costs about one allocation per token instead
+  of six (−80%), and is about 30% faster in the benchmarks. A stream without
+  reasoning is unchanged.
+
+No wire contract changes.
+
 ## v2.11.3
 
 **FreeToken 0.2.1 and Flint.** The `freetoken` image now pins FreeToken 0.2.1,

@@ -22,21 +22,6 @@ const maxSSELine = 256 << 10
 // suppress fast path before any decoding happens.
 var closeThinkTag = []byte("</think>")
 
-// sseChunkProbe is a cheap typed view of just the fields the think-suppression
-// decision inspects. Decoding into this costs a fraction of map[string]any
-// because the shape is known: no map growth, no interface boxing, and only the
-// string fields actually present allocate. Pointer fields distinguish "absent"
-// from "present but empty", which the decision logic depends on.
-type sseChunkProbe struct {
-	Choices []struct {
-		Delta *struct {
-			Content          *string `json:"content"`
-			ReasoningContent *string `json:"reasoning_content"`
-		} `json:"delta"`
-		FinishReason *string `json:"finish_reason"`
-	} `json:"choices"`
-}
-
 // reasoningLineRe matches lines that look like reasoning artifacts:
 // bullet points, numbered lists, metadata labels, drafting markers, self-checks.
 var reasoningLineRe = regexp.MustCompile(
@@ -326,6 +311,15 @@ func streamThinkDisabled(w http.ResponseWriter, body io.Reader, cancel func()) (
 	// equivalent output — at ~69 allocations per token. Writing the original
 	// bytes instead is both cheaper and byte-exact.
 	reasoningKey := []byte("reasoning_content")
+	// Built on the first chunk that needs it: a stream with no reasoning in
+	// it never does.
+	var probe *chunkProbe
+	needProbe := func() *chunkProbe {
+		if probe == nil {
+			probe = newChunkProbe()
+		}
+		return probe
+	}
 
 	for scanner.Scan() {
 		line := scanner.Bytes() // valid until the next Scan; never retained unless copied
@@ -377,31 +371,25 @@ func streamThinkDisabled(w http.ResponseWriter, body io.Reader, cancel func()) (
 		// SUPPRESS FAST PATH. In a think-heavy stream almost every chunk is a
 		// reasoning token that gets buffered and dropped, never re-emitted — yet
 		// the map[string]any decode below costs ~43 allocations to reach that
-		// conclusion. A typed probe reaches it for ~6.
+		// conclusion. chunkProbe reaches it with a reused jsontext.Decoder and
+		// no allocation, and checks the DECODED text for think tags, so an
+		// escaped <think> or </think> goes to the slow path like a plain one.
 		//
 		// This is deliberately a STRICT SUBSET of the "inside think block —
 		// buffer and suppress" branch further down, not a reimplementation of
 		// the decision tree. Every condition it cannot prove falls through to
 		// the original logic, which is unchanged. Keeping it conservative is
 		// what makes it safe: over-matching here would silently drop tokens.
-		if inThinkBlock && !bytes.Contains(payload, closeThinkTag) {
-			var probe sseChunkProbe
-			if err := json.Unmarshal(payload, &probe); err == nil &&
-				len(probe.Choices) == 1 &&
-				probe.Choices[0].Delta != nil &&
-				probe.Choices[0].Delta.ReasoningContent != nil &&
-				probe.Choices[0].Delta.Content == nil &&
-				(probe.Choices[0].FinishReason == nil || *probe.Choices[0].FinishReason == "") {
-				reasoning := *probe.Choices[0].Delta.ReasoningContent
-				if reasoning != "" {
-					noteGenerated(w)
-				}
-				// Mirrors the else-branch of the in-think-block case below.
-				if thinkBuf.Len()+len(reasoning) <= maxThinkBufSize {
-					thinkBuf.WriteString(reasoning)
-				}
-				continue
+		if inThinkBlock && suppressFastPath && !bytes.Contains(payload, closeThinkTag) &&
+			needProbe().read(payload) && probe.suppressible() {
+			if len(probe.reasoning) > 0 {
+				noteGenerated(w)
 			}
+			// Mirrors the else-branch of the in-think-block case below.
+			if thinkBuf.Len()+len(probe.reasoning) <= maxThinkBufSize {
+				thinkBuf.Write(probe.reasoning)
+			}
+			continue
 		}
 
 		// RENAME FAST PATH. A model whose server splits reasoning out without
@@ -412,7 +400,7 @@ func streamThinkDisabled(w http.ResponseWriter, body io.Reader, cancel func()) (
 		// Like the suppress path it is a strict subset: anything it cannot
 		// prove falls through unchanged.
 		if !inThinkBlock && renameFastPath {
-			if at, ok := untaggedReasoningKey(payload); ok {
+			if at, ok := untaggedReasoningKey(needProbe(), payload); ok {
 				if _, err := writeRenamedReasoning(w, payload, at); err != nil {
 					cancel()
 					return true, nil
@@ -607,9 +595,12 @@ func extractAfterThinkClose(s string) string {
 	return strings.TrimLeft(s[idx+len("</think>"):], "\n\r")
 }
 
-// renameFastPath enables the rename fast path; tests turn it off to compare
-// its output with the slow path's.
-var renameFastPath = true
+// renameFastPath and suppressFastPath enable the two fast paths; tests turn
+// them off to compare their output with the slow path's.
+var (
+	renameFastPath   = true
+	suppressFastPath = true
+)
 
 var (
 	quotedReasoningKey = []byte(`"reasoning_content"`)
@@ -630,17 +621,12 @@ var (
 // anywhere, because a delta that has one keeps it and drops the reasoning.
 // Exactly one "reasoning_content" token, so the one found is the delta's key
 // (inside a JSON string the quotes would be escaped).
-func untaggedReasoningKey(payload []byte) (int, bool) {
+func untaggedReasoningKey(probe *chunkProbe, payload []byte) (int, bool) {
 	if bytes.Contains(payload, openThinkTag) || bytes.Contains(payload, jsonEscapeU) ||
 		bytes.Contains(payload, quotedContentKey) || bytes.Count(payload, quotedReasoningKey) != 1 {
 		return 0, false
 	}
-	var probe sseChunkProbe
-	if err := json.Unmarshal(payload, &probe); err != nil ||
-		len(probe.Choices) != 1 ||
-		probe.Choices[0].Delta == nil ||
-		probe.Choices[0].Delta.ReasoningContent == nil ||
-		probe.Choices[0].Delta.Content != nil {
+	if !probe.read(payload) || !probe.renamable() {
 		return 0, false
 	}
 	return bytes.Index(payload, quotedReasoningKey), true
