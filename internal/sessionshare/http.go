@@ -47,24 +47,13 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Room first when the store looks full, so it makes way for the
 		// newest session; never at the cost of the replica being updated.
 		// Eviction walks every replica, so a put that fits skips it.
-		if u := md.usage.Load(); u.Bytes+meta.Size > md.cfg.MaxBytes {
-			if u, err := md.store.EvictExcept(md.cfg.MaxBytes-meta.Size, r.URL.Query().Get("key")); err == nil {
-				md.usage.Store(&u)
-			}
-		}
+		md.makeRoom(meta.Size, r.URL.Query().Get("key"))
 		r.Body = http.MaxBytesReader(w, r.Body, meta.Size+deltaOverhead)
 		h.meta = &meta
 	}
 	kvshare.HTTPHandler(h).ServeHTTP(w, r)
-	if h.meta != nil && md.evicting.CompareAndSwap(false, true) {
-		// Off the sender's clock, one sweep at a time: a sweep waits for
-		// every other replica's lock.
-		go func() {
-			defer md.evicting.Store(false)
-			if u, err := md.store.Evict(md.cfg.MaxBytes); err == nil {
-				md.usage.Store(&u)
-			}
-		}()
+	if h.meta != nil {
+		md.sweep()
 	}
 }
 
@@ -87,7 +76,15 @@ func (h storeHandler) Put(ctx context.Context, key string, delta io.Reader) (kvs
 	if h.meta.Format == kvshare.FormatEngineDelta {
 		put = h.md.store.PutEngineDelta
 	}
-	res, err := put(ctx, key, delta, *h.meta)
+	meta := *h.meta
+	if h.md.slots != nil {
+		// The node stamps a slot model's replicas, and restores only its own
+		// stamp: storing another would cost the room of one it can use.
+		if id := h.md.ownID(); id != 0 {
+			meta.Identity = kvshare.Identity{Model: id, Config: h.md.cfg.Config}
+		}
+	}
+	res, err := put(ctx, key, delta, meta)
 	if err == nil {
 		h.md.puts.Add(1)
 	}

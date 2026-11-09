@@ -1,11 +1,12 @@
-// Package kvshare moves Strata conversation snapshots between hosts: the
-// session-file layout, block manifests, deltas against a base the receiver
+// Package kvshare moves engine conversation snapshots between hosts: the
+// session-file layouts, block manifests, deltas against a base the receiver
 // already holds, and the transports that carry them.
 //
-// It reads Strata's session files (format STRSESS v1, docs/DETAILS.md "Session
-// files" in Strata) but never writes one itself: a file is rebuilt from a base
+// It reads session files (Strata's STRSESS v1, docs/DETAILS.md "Session files"
+// in Strata, here; other formats from their engine's package through
+// RegisterLayout) but never writes one itself: a file is rebuilt from a base
 // and a delta byte for byte, and its whole-file hash is checked before it is
-// published. Strata validates it again on restore.
+// published. The engine validates it again on restore.
 package kvshare
 
 import (
@@ -13,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 )
 
 const (
@@ -34,15 +36,70 @@ type Section struct {
 
 // Layout is a parsed session file.
 type Layout struct {
-	Size     int64
-	Model    uint64 // Strata's model fingerprint
-	Config   uint64 // Strata's config fingerprint
+	Size int64
+	// Model and Config are the file's own fingerprints (Strata's), zero for
+	// a format without any.
+	Model    uint64
+	Config   uint64
 	Payload  int64
 	Sections []Section
 }
 
-// ParseLayout walks a session file's payload without reading the bulk data.
+// LayoutParser walks one session file format without reading the bulk data.
+type LayoutParser func(r io.ReaderAt, size int64) (*Layout, error)
+
+type layoutFormat struct {
+	magic string
+	parse LayoutParser
+}
+
+var layouts struct {
+	sync.RWMutex
+	formats []layoutFormat
+}
+
+func init() { RegisterLayout(sessMagic, parseStrata) }
+
+// RegisterLayout adds a session file format, recognised by the bytes it
+// starts with. An engine's package registers its own format at init, so a
+// format is one package's business. Registering a magic twice, or one that
+// is a prefix of another's, panics.
+func RegisterLayout(magic string, parse LayoutParser) {
+	if magic == "" || parse == nil {
+		panic("kvshare: RegisterLayout needs a magic and a parser")
+	}
+	layouts.Lock()
+	defer layouts.Unlock()
+	for _, f := range layouts.formats {
+		if len(f.magic) <= len(magic) && magic[:len(f.magic)] == f.magic || len(magic) < len(f.magic) && f.magic[:len(magic)] == magic {
+			panic(fmt.Sprintf("kvshare: session file magic %q clashes with %q", magic, f.magic))
+		}
+	}
+	layouts.formats = append(layouts.formats, layoutFormat{magic, parse})
+}
+
+// ParseLayout walks a session file of any registered format.
 func ParseLayout(r io.ReaderAt, size int64) (*Layout, error) {
+	layouts.RLock()
+	formats := layouts.formats
+	layouts.RUnlock()
+	for _, f := range formats {
+		if size < int64(len(f.magic)) {
+			continue
+		}
+		b := make([]byte, len(f.magic))
+		if _, err := r.ReadAt(b, 0); err != nil {
+			return nil, fmt.Errorf("kvshare: reading the magic: %w", err)
+		}
+		if string(b) == f.magic {
+			return f.parse(r, size)
+		}
+	}
+	return nil, errors.New("kvshare: not a session file of any known format")
+}
+
+// parseStrata walks a Strata session file (STRSESS v1).
+func parseStrata(r io.ReaderAt, size int64) (*Layout, error) {
 	if size < sessHeader+sessTrailer {
 		return nil, errors.New("kvshare: too short for a session file")
 	}

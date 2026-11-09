@@ -41,12 +41,16 @@ func sessionModels(models []config.Model) []sessionshare.Model {
 		if !ok {
 			continue
 		}
-		ss, ok := e.(engine.SessionSharer)
-		if !ok {
-			continue
-		}
-		if cfg, ok := ss.SessionShare(config.ModelSpec(m)); ok {
-			out = append(out, sessionshare.Model{Name: m.Name, Engine: ss, Config: cfg})
+		spec := config.ModelSpec(m)
+		switch se := e.(type) {
+		case engine.SessionSharer:
+			if cfg, ok := se.SessionShare(spec); ok {
+				out = append(out, sessionshare.Model{Name: m.Name, Engine: se, Config: cfg})
+			}
+		case engine.SlotSharer:
+			if cfg, ok := se.SessionShare(spec); ok {
+				out = append(out, sessionshare.Model{Name: m.Name, Slots: se, Config: cfg})
+			}
 		}
 	}
 	return out

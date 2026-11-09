@@ -221,6 +221,55 @@ type SessionSharer interface {
 	ImportSession(ctx context.Context, addr, name string) error
 }
 
+// SlotAddressed is implemented by an engine whose requests can name the slot
+// that runs them. The node then chooses every slot of such a backend itself
+// and names it in each request body, so it knows which slot holds which
+// session: llama.cpp saves and restores by slot index, and says in no
+// response which slot served it.
+type SlotAddressed interface {
+	// SlotField is the request body's field for the slot index, "" when the
+	// model's backends are not addressed by slot (llama.cpp addresses them
+	// only for a kv_share model). Called once per launch with its Spec.
+	SlotField(s Spec) string
+}
+
+// SlotFieldOf is e's slot field for s, or "".
+func SlotFieldOf(e Engine, s Spec) string {
+	if a, ok := e.(SlotAddressed); ok {
+		return a.SlotField(s)
+	}
+	return ""
+}
+
+// SlotSharer is implemented by an engine that saves and restores a
+// conversation by slot index rather than by session (llama.cpp), so that a
+// session can resume warm on another member (kv_share). Such an engine is
+// also SlotAddressed for the same models: the node chooses every slot and
+// knows which slot holds which session. A restore replaces what the slot
+// held; the engine resumes only from a prompt prefix that matches what it
+// restored, so a stale or foreign file costs a cold prefill, never a wrong
+// answer.
+type SlotSharer interface {
+	// SessionShare is the model's kv_share settings, fingerprints included;
+	// ok is false when the model shares nothing.
+	SessionShare(s Spec) (cfg SessionShareConfig, ok bool)
+	// SaveSlot writes slot `slot` of the backend at addr to the file `name`
+	// in SaveDir. ErrSessionGone when the slot holds nothing the engine
+	// can save, which is not a failure.
+	SaveSlot(ctx context.Context, addr string, slot int, name string) error
+	// RestoreSlot replaces slot `slot`'s conversation with the file `name`
+	// in SaveDir.
+	RestoreSlot(ctx context.Context, addr string, slot int, name string) error
+}
+
+// ModelFingerprinter is a SlotSharer whose model fingerprint is the weights
+// file a backend was launched with. For a model with a source that file is
+// known only once a backend has fetched it, after SessionShare ran, so
+// kv_share asks again with the backend's own path.
+type ModelFingerprinter interface {
+	ModelFingerprint(path string) (uint64, error)
+}
+
 // SessionHolder is implemented by a SessionSharer that can say what a
 // backend still holds of a session's conversation. An engine's cache evicts
 // on its own, so an import made earlier proves nothing about the next turn;
@@ -268,6 +317,19 @@ type SessionShareConfig struct {
 	// MaxFileBytes is the largest session file the model can write; a
 	// member's put declaring more is refused.
 	MaxFileBytes int64
+	// Model and Config fingerprint the state a file from this model can be
+	// restored into, for an engine that does not check its own files
+	// (llama.cpp restores a file from another GGUF of the same shape
+	// silently). The sender stamps its replicas with them and a receiver
+	// restores only a replica that matches its own. Zero for an engine whose
+	// files carry and check their own (Strata).
+	Model, Config uint64
+	// Local: this node keeps its own copy of every session it saves and
+	// restores a session from it into a slot that does not hold it.
+	Local bool
+	// LazySaves: a session is saved only before its slot is reused and
+	// when the node stops (kv_share.saves: lazy).
+	LazySaves bool
 }
 
 // ErrSessionGone: the backend does not hold the session's conversation

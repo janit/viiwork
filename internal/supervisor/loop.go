@@ -127,7 +127,7 @@ func (l *loop) resolveSource() bool {
 		<-l.ctx.Done()
 		return false
 	}
-	b.path = path
+	b.path.Store(&path)
 	l.ticket = l.gate.enqueue()
 	return true
 }

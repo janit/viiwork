@@ -1,5 +1,39 @@
 # Changelog
 
+## v2.12.0-beta1
+
+- **kv_share for llama.cpp backends** (`llamacpp.kv_share`, off unless
+  written). The node now chooses each request's slot itself and names it in
+  the body (`id_slot`), because llama.cpp saves and restores by slot and no
+  response says which slot ran a request. A session keeps its own slot.
+  Otherwise the node takes an empty slot, then a sessionless or idle one,
+  then the least recently used. Members of a group send each other a
+  session's slot file after a turn, so a turn that spills to another host
+  resumes warm. Slot files are split into sections, so a turn sends only what
+  changed: about 600 MB of a 4 GB, 50k-token Qwen3.8-27B file. A replica is
+  restored only where the model file and the state-shaping flags match the
+  sender's. A receiver refuses (409) a replica stamped with other weights.
+- **`kv_share.local`** (llama.cpp and Strata). The node keeps its own copy of
+  every session it saves, and restores from it when the backend no longer
+  holds the session: after a restart, an update or a respawn, and when more
+  sessions than slots have taken the slot. A request that takes a slot
+  holding another session's unsaved conversation saves that conversation
+  first. Without a group, a turn is saved only once the backend is idle,
+  because a llama.cpp slot save stops every other slot. `saves: lazy` saves
+  only before a slot is reused and at shutdown.
+- **A stopping node saves the sessions still waiting for a save** before it
+  stops its backends. It gets what is left of 80 s after requests drain, and
+  at least 30 s.
+- On gb5 (gfx906, Qwen3.8-27B, three 35-51k sessions on two slots), turns
+  after a node restart took 20-42 s against 115-203 s cold. Within one
+  process, llama.cpp's own `--cache-ram` is as fast.
+- **Fix: a kv_share store near `max_gib` no longer evicts a neighbour on
+  every update of a large replica.** Making room counted the replica that the
+  update replaces.
+
+No wire contract changes: `id_slot` is engine-facing only, and the kv_share
+endpoints are the ones v2.11.0 added.
+
 ## v2.11.4
 
 - **The thinking rewrite no longer loses or keeps the wrong text when a

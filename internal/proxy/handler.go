@@ -428,7 +428,7 @@ func (h *Handler) dispatch(w http.ResponseWriter, r *http.Request, d *dispatch) 
 			if t.Local {
 				h.d.Counters.Add(d.model, tokens)
 				h.recordPerf(d.model, res, d.capture)
-				h.afterSessionTurn(r, d, res, lease.Backend(), session)
+				h.afterSessionTurn(r, d, res, lease, session)
 			}
 			if res.Truncated {
 				// The headers are out, so the status cannot say it failed; a
@@ -520,8 +520,8 @@ func (h *Handler) localBodyFor(d *dispatch) ([]byte, bool) {
 // the prompt's length, which decides whether the conversation is worth
 // replicating. Only a whole 200: a cut or failed turn leaves the engine's
 // state where the next turn will not resume from it.
-func (h *Handler) afterSessionTurn(r *http.Request, d *dispatch, res execResult, b route.LocalBackend, key uint64) {
-	if h.d.Sessions == nil || key == 0 || res.Status != http.StatusOK || res.Aborted || res.Truncated || b == nil {
+func (h *Handler) afterSessionTurn(r *http.Request, d *dispatch, res execResult, lease *route.Lease, key uint64) {
+	if h.d.Sessions == nil || key == 0 || res.Status != http.StatusOK || res.Aborted || res.Truncated || lease.Backend() == nil {
 		return
 	}
 	u, ok := promptUsageFromEvent(res.StrippedUsage)
@@ -531,7 +531,7 @@ func (h *Handler) afterSessionTurn(r *http.Request, d *dispatch, res execResult,
 	if !ok {
 		return
 	}
-	h.d.Sessions.AfterLocal(d.model, sessionHeader(r), key, b, u.Prompt)
+	h.d.Sessions.AfterLocal(d.model, sessionHeader(r), key, sessionBackend(lease), u.Prompt)
 }
 
 // recordPerf records one local serve's service TTFT (spec §1): only a 200
@@ -597,14 +597,22 @@ func (h *Handler) attempt(w http.ResponseWriter, r *http.Request, lease *route.L
 		if h.d.Sessions != nil {
 			// Inside the lease and on the client's clock: a spilled turn
 			// waits for its replica's import, which its prefill then saves.
-			if raw := sessionHeader(r); raw != "" {
-				h.d.Sessions.BeforeLocal(r.Context(), d.model, raw, sessionKey(r), lease.Backend())
+			// A request without a session still goes in when its slot
+			// held a session's conversation, which must be saved first.
+			if raw := sessionHeader(r); raw != "" || displacesSession(lease) {
+				h.d.Sessions.BeforeLocal(r.Context(), d.model, raw, sessionKey(r), sessionBackend(lease))
 			}
 		}
 		// After the import: a spilled turn has few uncached tokens, and
 		// counting its import as time to first token would raise this
 		// node's published overhead, sending traffic away from the host
 		// that holds the replicas. Import cost is published on its own.
+		// A slot-addressed backend runs the request in the slot the lease
+		// claimed, so the node knows which slot holds which session. Per
+		// attempt: a retry may land on another backend or slot.
+		if c, ok := lease.Slot(); ok {
+			body = withSlot(body, c.Field, c.Index)
+		}
 		granted := time.Now()
 		separate := h.d.SeparateReasoning != nil && h.d.SeparateReasoning(d.model)
 		res = serveLocal(w, r, body, lease.Backend(), d.model, h.d.Self, d.thinkDisabled, strip, separate)

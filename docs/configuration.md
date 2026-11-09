@@ -107,6 +107,58 @@ directories are a write-heavy cache, about 240 MB per long-session turn:
 give them a drive of their own, mounted at the same path on every host of
 the group. See [models.md](models.md#sharing-sessions-between-hosts-kv_share).
 
+`llamacpp.kv_share` does the same for a llama.cpp model, with the same keys
+plus `save_dir` (required, absolute): the directory llama-server saves and
+restores slot files in (`--slot-save-path`, which the engine sets; the node
+creates the directory). The node then chooses every request's slot itself
+and names it in the body (`id_slot`), since llama.cpp saves and restores by
+slot and says in no response which slot ran a request. So `args` must not
+set `--slot-save-path`, `--parallel` / `-np` (the slot count is `parallel`)
+or `--kv-unified`. A replica is restored only on a member whose model file
+(its header and samples of the rest) and state-shaping flags (cache types,
+flash attention, `--swa-full`, checkpoint settings) match the sender's, so a
+member serving another GGUF of the same shape never resumes from it. A
+50k-token Qwen3.8-27B conversation is a ~4 GB file, of which a turn sends
+~600 MB (the DeltaNet state and the new checkpoints): put `save_dir` and
+`dir` on a disk. A save reads the whole state off the cards: on a host whose
+cards each reach the CPU over a single PCIe 1.0 lane (mining-style risers),
+a file of that size takes ~18 s to save and as long to restore.
+
+```yaml
+    llamacpp:
+      kv_share:
+        group: qwen-gfx906
+        save_dir: /var/lib/viiwork/slots/qwen
+        min_tokens: 8192
+```
+
+Either engine's block also takes `local: true`: the node keeps its own copy
+of every session it saves, in `dir`, and restores a session from it when the
+backend no longer holds it: after a restart, an update or a respawn, and for
+llama.cpp when the session's slot went to another conversation (more
+sessions than `parallel`; with `--cache-ram 0` llama.cpp keeps nothing of a
+reused slot). With `local`, `group` may be left out; the node then keeps
+copies and sends none, and saves a turn only once its backend serves no
+other request: a llama.cpp slot save stops every other slot until the file
+is written (1.8 s at 51k tokens on an RTX 5090). A request that takes a slot holding another
+session's conversation first saves that session if its save has not run
+yet, and pays for that save (on a gb host, up to ~18 s at 50k tokens).
+`saves: lazy` (local and no group only) saves a session only when its slot
+is about to be reused and when the node stops, instead of after every
+turn: nothing is saved while sessions keep their slots, but a crashed
+backend's sessions are lost. A stopping node saves every session whose
+save is still waiting before it stops its backends, whatever the mode,
+within what is left of 80 s after its requests have drained (at least
+30 s; a gb host saves a 50k session in ~20 s, one slot after another).
+
+```yaml
+    llamacpp:
+      kv_share:
+        local: true
+        saves: lazy
+        save_dir: /var/lib/viiwork/slots/qwen
+```
+
 ## Tensor-split mode
 
 For models that don't fit in a single GPU's VRAM, one backend spans several

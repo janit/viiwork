@@ -22,6 +22,11 @@ type fakeBackend struct {
 	inFlight int
 	releases atomic.Int64
 	hard     atomic.Int64
+	// slotField makes it slot-addressed, as a supervisor.Backend whose
+	// engine names slots: claims hand out free indices.
+	slotField string
+	slotBusy  map[int]uint64 // index -> session of the claim
+	claims    []uint64       // sessions claimed, in order
 }
 
 func newFakeBackend(id string, slots int) *fakeBackend {
@@ -57,6 +62,31 @@ func (b *fakeBackend) Release() {
 	b.mu.Unlock()
 }
 func (b *fakeBackend) NoteHardFailure() { b.hard.Add(1) }
+
+func (b *fakeBackend) ClaimSlot(session uint64) (supervisor.SlotClaim, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.slotField == "" {
+		return supervisor.SlotClaim{}, false
+	}
+	if b.slotBusy == nil {
+		b.slotBusy = map[int]uint64{}
+	}
+	for i := 0; i < b.slots; i++ {
+		if _, busy := b.slotBusy[i]; !busy {
+			b.slotBusy[i] = session
+			b.claims = append(b.claims, session)
+			return supervisor.SlotClaim{Field: b.slotField, Index: i}, true
+		}
+	}
+	return supervisor.SlotClaim{}, false
+}
+
+func (b *fakeBackend) FreeSlot(c supervisor.SlotClaim) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.slotBusy, c.Index)
+}
 
 func (b *fakeBackend) set(state supervisor.State) {
 	b.mu.Lock()

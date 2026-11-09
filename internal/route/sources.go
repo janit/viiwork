@@ -23,6 +23,17 @@ type LocalBackend interface {
 
 var _ LocalBackend = (*supervisor.Backend)(nil)
 
+// SlotClaimer is a LocalBackend whose slots the node names itself
+// (engine.SlotAddressed). A local lease claims one slot after Acquire and
+// frees it on Release; ClaimSlot's ok is false for a backend not addressed
+// by slot. *supervisor.Backend satisfies it.
+type SlotClaimer interface {
+	ClaimSlot(session uint64) (supervisor.SlotClaim, bool)
+	FreeSlot(supervisor.SlotClaim)
+}
+
+var _ SlotClaimer = (*supervisor.Backend)(nil)
+
 // LocalModels answers which backends serve a model on this node, and whether
 // the model still admits requests (it stops while draining).
 type LocalModels interface {

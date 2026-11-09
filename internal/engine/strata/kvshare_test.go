@@ -103,7 +103,7 @@ func TestSessionShare(t *testing.T) {
 		t.Fatalf("got %+v\nwant %+v", cfg, want)
 	}
 	cfg, _ = New().SessionShare(spec(t, shareSpec(path), shareBlock))
-	if cfg.MinTokens != defaultKVShareMinTokens || cfg.MaxBytes != defaultKVShareGiB<<30 {
+	if cfg.MinTokens != engine.DefaultKVShareMinTokens || cfg.MaxBytes != engine.DefaultKVShareGiB<<30 {
 		t.Fatalf("defaults: %+v", cfg)
 	}
 	if _, ok := New().SessionShare(spec(t, shareSpec(path), "dir: /opt/strata\n")); ok {

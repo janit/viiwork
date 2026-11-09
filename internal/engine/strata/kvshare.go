@@ -23,51 +23,25 @@ var (
 // KVShareOptions is the `kv_share:` block. Strata writes a conversation to a
 // session file (STRSESS) and parks one in its conversation cache; the node
 // carries the files between the members of the group (internal/sessionshare).
-type KVShareOptions struct {
-	// Group names the members that replicate to each other. They must serve
-	// the same model files with the same Strata configuration: Strata checks
-	// both fingerprints and refuses a file from anything else.
-	Group string `yaml:"group"`
-	// Transport is how the files travel; "http" (the default) is the
-	// node's own API port, the only one a node serves.
-	Transport string `yaml:"transport"`
-	// Dir holds the replicas this node receives; "" is
-	// <state_dir>/kvshare/<model>.
-	Dir string `yaml:"dir"`
-	// MaxGiB bounds Dir; the least recently received replicas go first.
-	MaxGiB float64 `yaml:"max_gib"`
-	// MinTokens: a shorter conversation is neither sent nor imported, since
-	// its cold prefill costs little.
-	MinTokens *int64 `yaml:"min_tokens"`
-}
+// Members must serve the same model files with the same Strata
+// configuration: Strata checks both fingerprints and refuses a file from
+// anything else.
+type KVShareOptions = engine.KVShareOptions
 
 const (
-	defaultKVShareGiB       = 32
-	defaultKVShareMinTokens = 8192
 	// A session file holds the K/V and the running state: about 20 KiB per
 	// token of context at most, plus the state and its checkpoint.
 	sessionBytesPerToken = 20 << 10
 	sessionBytesFixed    = 300 << 20
 )
 
-func (o *KVShareOptions) validate(path string, s engine.Spec) error {
+// validateKVShare is the shared rules plus Strata's own.
+func validateKVShare(o *KVShareOptions, path string, s engine.Spec) error {
 	if o == nil {
 		return nil
 	}
-	if strings.TrimSpace(o.Group) == "" {
-		return fmt.Errorf("%s.group is required: the members that share this model's sessions", path)
-	}
-	if o.Transport != "" && o.Transport != "http" {
-		return fmt.Errorf(`%s.transport must be "http" (got %q): a node serves the replicas on its API port only`, path, o.Transport)
-	}
-	if o.Dir != "" && !filepath.IsAbs(o.Dir) {
-		return fmt.Errorf("%s.dir must be absolute (got %q)", path, o.Dir)
-	}
-	if o.MaxGiB < 0 {
-		return fmt.Errorf("%s.max_gib must not be negative (got %g)", path, o.MaxGiB)
-	}
-	if o.MinTokens != nil && *o.MinTokens < 0 {
-		return fmt.Errorf("%s.min_tokens must not be negative (got %d)", path, *o.MinTokens)
+	if err := o.Validate(path); err != nil {
+		return err
 	}
 	if len(s.GPUs) > 1 {
 		return fmt.Errorf("%s needs one GPU per backend: Strata does not save the session of a layer split (gpus_per_backend %d)", path, len(s.GPUs))
@@ -124,22 +98,7 @@ func (e *Engine) SessionShare(s engine.Spec) (engine.SessionShareConfig, bool) {
 	if err != nil {
 		return engine.SessionShareConfig{}, false
 	}
-	k := opts.KVShare
-	cfg := engine.SessionShareConfig{
-		Group: k.Group, Transport: k.Transport, StoreDir: k.Dir, SaveDir: dir,
-		MaxBytes:     int64(defaultKVShareGiB) << 30,
-		MinTokens:    defaultKVShareMinTokens,
-		MaxFileBytes: int64(s.Context)*sessionBytesPerToken + sessionBytesFixed,
-	}
-	if cfg.Transport == "" {
-		cfg.Transport = "http"
-	}
-	if k.MaxGiB > 0 {
-		cfg.MaxBytes = int64(k.MaxGiB * (1 << 30))
-	}
-	if k.MinTokens != nil {
-		cfg.MinTokens = *k.MinTokens
-	}
+	cfg := opts.KVShare.Config(dir, int64(s.Context)*sessionBytesPerToken+sessionBytesFixed)
 	return cfg, true
 }
 

@@ -1,6 +1,8 @@
 package node
 
 import (
+	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -34,6 +37,17 @@ import (
 //	                             1000 FAKE_PROMPT_TOKENS before its first chunk
 //	FAKE_PROMPT_TOKENS=<n>       prompt tokens reported in a streamed
 //	                             completion's usage, with zero cached tokens
+//	FAKE_PROMPT_COUNTER=<path>   every completion adds 100 prompt tokens per
+//	                             completion before it, counted in this file
+//	                             (shared by the fakes of one test): a
+//	                             conversation grows turn by turn
+//	FAKE_LOG=<path>              append "chat slot=<id_slot> sess=<session>",
+//	                             "save <slot> <tokens>" and "restore <slot>
+//	                             <tokens>" lines (kv_share)
+//
+// With --slot-save-path it serves POST /slots/N?action=save|restore: a save
+// writes a small but well-formed slot file (llamacpp's state file format) of
+// the slot's last prompt, a restore reads one back into the slot.
 
 func TestMain(m *testing.M) {
 	switch os.Getenv("NODE_HELPER") {
@@ -61,6 +75,54 @@ func argValue(args []string, flag string) string {
 		}
 	}
 	return ""
+}
+
+// fakeChatHook is set by serveFakeLlamaServer once its kv_share log exists.
+var fakeChatHook atomic.Pointer[func(*http.Request, []byte)]
+
+// fakeSlotFile is a slot save file of n tokens as llama.cpp writes one
+// (state format 4): one K/V cache of one layer, rows depending only on the
+// token's position, so a longer conversation's file shares its prefix, and
+// one context checkpoint.
+func fakeSlotFile(n int) []byte {
+	var b bytes.Buffer
+	w := func(v any) { _ = binary.Write(&b, binary.LittleEndian, v) }
+	b.WriteString("qsgg")
+	w(uint32(4))
+	w(uint32(n))
+	for i := 0; i < n; i++ {
+		w(int32(1000 + i))
+	}
+	w(uint32(1)) // n_stream
+	w(uint32(n)) // cells
+	for i := 0; i < n; i++ {
+		w(int32(i))
+		w(uint32(1))
+		w(int32(0))
+	}
+	w(uint32(0))   // v_trans
+	w(uint32(1))   // n_layer
+	w(uint32(128)) // n_rot_k
+	w(uint32(128)) // n_rot_v
+	const row = 256
+	for _, kv := range []byte{'k', 'v'} {
+		w(int32(1))
+		w(uint64(row))
+		for i := 0; i < n; i++ {
+			b.Write(bytes.Repeat([]byte{kv ^ byte(i)}, row))
+		}
+	}
+	w(uint32(0x504b4353)) // SCKP
+	w(uint32(1))
+	w(uint32(1))
+	w(int64(max(n-10, 0)))
+	w(int32(max(n-11, 0)))
+	w(int32(max(n-11, 0)))
+	w(uint64(4096))
+	b.Write(bytes.Repeat([]byte{0x5a}, 4096))
+	w(uint64(0))
+	w(uint64(0))
+	return b.Bytes()
 }
 
 func serveFakeLlamaServer() {
@@ -103,7 +165,21 @@ func serveFakeLlamaServer() {
 	mux.HandleFunc("POST /v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
 		busy.Add(1)
 		defer busy.Add(-1)
+		promptTokens := promptTokens
+		if p := os.Getenv("FAKE_PROMPT_COUNTER"); p != "" {
+			if st, err := os.Stat(p); err == nil {
+				promptTokens += 100 * int(st.Size())
+			}
+			if f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
+				_, _ = f.Write([]byte{'.'})
+				_ = f.Close()
+			}
+		}
+		r.Header.Set("X-Fake-Prompt-Tokens", strconv.Itoa(promptTokens)) // for the chat hook
 		body, _ := io.ReadAll(r.Body)
+		if h := fakeChatHook.Load(); h != nil {
+			(*h)(r, body)
+		}
 		if strings.Contains(string(body), `"stream":true`) {
 			time.Sleep(time.Duration(float64(prefillPer1k) * float64(promptTokens) / 1000))
 			w.Header().Set("Content-Type", "text/event-stream")
@@ -122,6 +198,75 @@ func serveFakeLlamaServer() {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"hi"}}],"usage":{"prompt_tokens":1,"completion_tokens":3,"total_tokens":4}}`)
 	})
+	saveDir := argValue(args, "--slot-save-path")
+	logPath := os.Getenv("FAKE_LOG")
+	var logMu sync.Mutex
+	logLine := func(format string, a ...any) {
+		if logPath == "" {
+			return
+		}
+		logMu.Lock()
+		defer logMu.Unlock()
+		f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			return
+		}
+		defer f.Close()
+		fmt.Fprintf(f, format+"\n", a...)
+	}
+	var slotMu sync.Mutex
+	slotTokens := map[int]int{}
+	if saveDir != "" {
+		mux.HandleFunc("POST /slots/{id}", func(w http.ResponseWriter, r *http.Request) {
+			id, _ := strconv.Atoi(r.PathValue("id"))
+			var req struct{ Filename string }
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			path := filepath.Join(saveDir, filepath.Base(req.Filename))
+			switch r.URL.Query().Get("action") {
+			case "save":
+				slotMu.Lock()
+				n := slotTokens[id]
+				slotMu.Unlock()
+				if err := os.WriteFile(path, fakeSlotFile(n), 0o600); err != nil {
+					http.Error(w, `{"error":{"message":"write"}}`, 500)
+					return
+				}
+				logLine("save %d %d", id, n)
+			case "restore":
+				b, err := os.ReadFile(path)
+				if err != nil || len(b) < 12 || string(b[:4]) != "qsgg" {
+					w.WriteHeader(400)
+					_, _ = io.WriteString(w, `{"error":{"message":"invalid slot save file"}}`)
+					return
+				}
+				n := int(binary.LittleEndian.Uint32(b[8:]))
+				slotMu.Lock()
+				slotTokens[id] = n
+				slotMu.Unlock()
+				logLine("restore %d %d", id, n)
+			default:
+				w.WriteHeader(400)
+				return
+			}
+			_, _ = io.WriteString(w, `{}`)
+		})
+	}
+	logChat := func(r *http.Request, body []byte) {
+		var b struct {
+			IDSlot *int `json:"id_slot"`
+		}
+		_ = json.Unmarshal(body, &b)
+		slot := "none"
+		if b.IDSlot != nil {
+			slot = strconv.Itoa(*b.IDSlot)
+			slotMu.Lock()
+			n, _ := strconv.Atoi(r.Header.Get("X-Fake-Prompt-Tokens"))
+			slotTokens[*b.IDSlot] = max(n, 1)
+			slotMu.Unlock()
+		}
+		logLine("chat slot=%s sess=%s", slot, r.Header.Get("X-Session-Affinity"))
+	}
+	fakeChatHook.Store(&logChat)
 	go func() { _ = http.Serve(ln, mux) }()
 
 	sig := make(chan os.Signal, 1)

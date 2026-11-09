@@ -260,6 +260,26 @@ type SessionSharer interface {
 type SessionHolder interface {
     SessionHeld(ctx context.Context, addr, session string, n int64, hash uint64) (int64, error)
 }
+
+// SlotAddressed is implemented by an engine whose requests can name the
+// slot that runs them.
+type SlotAddressed interface {
+    SlotField(s Spec) string
+}
+
+// SlotSharer is implemented by an engine that saves and restores a
+// conversation by slot index rather than by session.
+type SlotSharer interface {
+    SessionShare(s Spec) (cfg SessionShareConfig, ok bool)
+    SaveSlot(ctx context.Context, addr string, slot int, name string) error
+    RestoreSlot(ctx context.Context, addr string, slot int, name string) error
+}
+
+// ModelFingerprinter is a SlotSharer whose model fingerprint is the weights
+// file a backend was launched with.
+type ModelFingerprinter interface {
+    ModelFingerprint(path string) (uint64, error)
+}
 ```
 
 `ReasoningSeparator` decides what a client sees when it streams without
@@ -296,6 +316,35 @@ one after a compaction elsewhere), and
 imports again if that is fewer than the replica's. An error means "cannot say", and the node
 then trusts its record of the import, which is all an engine without the
 method gets.
+
+`SlotAddressed` hands slot choice to the node. With a non-empty `SlotField`
+for a backend's Spec, the node keeps a record of that backend's slots, claims
+one for every request it sends there (the session's own slot first, then an
+empty one, then one no recent session holds, then the least recently used)
+and splices the slot index into the body under that field, overriding any
+the client sent. The node must be the backend's only client and every
+request must name its slot, or the record is wrong; an engine that would
+defer a request naming a busy slot is fine, because the node only names free
+ones. Return "" for a model that has no use for it: its bodies are then not
+touched. llama.cpp declares it for a kv_share model, since it saves and
+restores by slot index and reports in no response which slot served it.
+
+`SlotSharer` is kv_share for an engine that saves and restores by slot index
+(llama.cpp) rather than by session. Declare `SlotAddressed` for the same
+models: the node then knows which slot holds a session, saves that slot after
+the session's turn (`SaveSlot`) and, before a turn of a session whose
+replica it holds, restores the replica into the slot the request was given
+(`RestoreSlot`), which replaces what the slot held. A restore needs no
+`SessionHolder`: the node's own slot record says whether the slot still holds
+the session. If the engine's files carry no fingerprint it checks, fill
+`SessionShareConfig.Model` and `Config`: the node stamps them on every
+replica it sends and restores only replicas whose stamp equals its own, so a
+member serving another file of the same shape never resumes from one.
+Declare `ModelFingerprinter` when `Model` comes from the weights file: a
+model with a `source` has no path until a backend fetched it, so the node
+fingerprints the file each backend actually runs. Read
+your block's `kv_share:` keys into `engine.KVShareOptions` (inline in the
+engine's own struct) so they mean the same for every engine.
 
 `UsageReporter` is what lets a host earn a performance score. A sample needs
 the prompt's uncached token count, so viiwork asks the engine for usage

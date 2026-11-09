@@ -35,6 +35,10 @@ type fakeLocalBackend struct {
 	onRelease   func(n int)
 	hard        atomic.Int64
 	panicOnHard bool // NoteHardFailure panics with "boom"
+	// slotField makes it slot-addressed, as a supervisor.Backend whose
+	// engine names slots.
+	slotField string
+	slotBusy  map[int]bool
 }
 
 func (b *fakeLocalBackend) ID() string   { return b.id }
@@ -75,7 +79,34 @@ func (b *fakeLocalBackend) NoteHardFailure() {
 	b.hard.Add(1)
 }
 
-var _ route.LocalBackend = (*fakeLocalBackend)(nil)
+func (b *fakeLocalBackend) ClaimSlot(uint64) (supervisor.SlotClaim, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.slotField == "" {
+		return supervisor.SlotClaim{}, false
+	}
+	if b.slotBusy == nil {
+		b.slotBusy = map[int]bool{}
+	}
+	for i := 0; i < b.slots; i++ {
+		if !b.slotBusy[i] {
+			b.slotBusy[i] = true
+			return supervisor.SlotClaim{Field: b.slotField, Index: i}, true
+		}
+	}
+	return supervisor.SlotClaim{}, false
+}
+
+func (b *fakeLocalBackend) FreeSlot(c supervisor.SlotClaim) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.slotBusy, c.Index)
+}
+
+var (
+	_ route.LocalBackend = (*fakeLocalBackend)(nil)
+	_ route.SlotClaimer  = (*fakeLocalBackend)(nil)
+)
 
 func engineServer(t *testing.T, h http.HandlerFunc) *httptest.Server {
 	t.Helper()

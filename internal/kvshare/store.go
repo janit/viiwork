@@ -11,6 +11,7 @@ import (
 	"hash/fnv"
 	"io"
 	"io/fs"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -52,7 +53,8 @@ type replicaState struct {
 	Complete bool          `json:"complete"`
 	Items    []replicaItem `json:"items"`
 	Updated  time.Time     `json:"updated"`
-	// Tokens is the conversation's length: live.ids holds one int32 per token.
+	// Tokens is the conversation's length: its token list section (tokenSection)
+	// holds one int32 per token.
 	Tokens int64 `json:"tokens"`
 	// SaveID is the engine's id of the save these bytes are, "" when the
 	// sender did not say: an engine delta applies only against it.
@@ -210,6 +212,20 @@ func (s *Store) put(_ context.Context, key string, delta io.Reader, want *FileMe
 	if !ValidKey(key) {
 		return PutResult{}, fmt.Errorf("kvshare: invalid key %q", key)
 	}
+	start := time.Now()
+	// The header first, outside the lock: a refused put leaves the replica
+	// it would have replaced as it was.
+	d, err := NewDeltaReader(delta)
+	if err != nil {
+		return PutResult{}, err
+	}
+	if want != nil && (d.Header.Size != want.Size || d.Header.Digest != want.Digest) {
+		return PutResult{}, errors.New("kvshare: the delta builds another file than the request declared")
+	}
+	if want != nil && want.Identity != (Identity{}) && (d.Header.Model != want.Identity.Model || d.Header.Config != want.Identity.Config) {
+		return PutResult{}, Statusf(http.StatusConflict, "kvshare: the replica is of another model or configuration (%016x/%016x, this node %016x/%016x)",
+			d.Header.Model, d.Header.Config, want.Identity.Model, want.Identity.Config)
+	}
 	unlock := s.lock(key)
 	defer func() {
 		if err != nil {
@@ -220,14 +236,6 @@ func (s *Store) put(_ context.Context, key string, delta io.Reader, want *FileMe
 			unlock()
 		}
 	}()
-	start := time.Now()
-	d, err := NewDeltaReader(delta)
-	if err != nil {
-		return PutResult{}, err
-	}
-	if want != nil && (d.Header.Size != want.Size || d.Header.Digest != want.Digest) {
-		return PutResult{}, errors.New("kvshare: the delta builds another file than the request declared")
-	}
 	old, err := s.readState(key)
 	if err != nil {
 		return PutResult{}, err
@@ -294,7 +302,7 @@ func (s *Store) put(_ context.Context, key string, delta io.Reader, want *FileMe
 		keeps[it.Section] = it.Keep
 		delete(have, it.Section)
 		next.Items = append(next.Items, replicaItem{Section: it.Section, Len: it.Len})
-		if it.Section == "live.ids" {
+		if tokenSection[it.Section] {
 			next.Tokens = it.Len / 4
 		}
 	}
@@ -539,6 +547,10 @@ func sealTrailer(f *os.File, st *replicaState) error {
 	return nil
 }
 
+// tokenSection names the sections that are a file's token list, one int32
+// per token, by format: Strata's live ids, llama.cpp's prompt tokens.
+var tokenSection = map[string]bool{"live.ids": true, "tokens": true}
+
 // Replica describes a complete replica.
 type Replica struct {
 	Size    int64
@@ -546,6 +558,8 @@ type Replica struct {
 	SaveID  string
 	Tokens  int64
 	Updated time.Time
+	// Model and Config are the identity the sender stamped (Identity).
+	Model, Config uint64
 }
 
 // Info reports the complete replica under key; ok is false when there is none.
@@ -558,7 +572,7 @@ func (s *Store) Info(key string) (r Replica, ok bool, err error) {
 	if err != nil || st == nil || !st.Complete {
 		return Replica{}, false, err
 	}
-	return Replica{Size: st.Size, Digest: st.Digest, SaveID: st.SaveID, Tokens: st.Tokens, Updated: st.Updated}, true, nil
+	return Replica{Size: st.Size, Digest: st.Digest, SaveID: st.SaveID, Tokens: st.Tokens, Updated: st.Updated, Model: st.Model, Config: st.Config}, true, nil
 }
 
 // ResumeIDs names the conversation a replica resumes as Strata names one
@@ -662,8 +676,10 @@ func (s *Store) Evict(maxBytes int64) (Usage, error) {
 	return s.evict(maxBytes, "", false)
 }
 
-// EvictExcept is Evict that never removes the replica under key: the one a
-// put is about to update.
+// EvictExcept removes the least recently put replicas other than key's
+// while they hold more than maxBytes: key's replica is the one a put is
+// about to replace, so it is neither removed nor counted (counting it
+// evicted a neighbour for every update of a large replica).
 func (s *Store) EvictExcept(maxBytes int64, key string) (Usage, error) {
 	return s.evict(maxBytes, key, false)
 }
@@ -689,6 +705,7 @@ func (s *Store) evict(maxBytes int64, except string, clean bool) (Usage, error) 
 	}
 	var reps []rep
 	var u Usage
+	var kept int64 // except's bytes, which a put replaces
 	for _, e := range ents {
 		key := e.Name()
 		if !e.IsDir() || !ValidKey(key) {
@@ -723,14 +740,16 @@ func (s *Store) evict(maxBytes int64, except string, clean bool) (Usage, error) 
 		u.Bytes += n
 		if key != except {
 			reps = append(reps, rep{key, n, updated})
+		} else {
+			kept = n
 		}
 	}
-	if maxBytes < 0 || u.Bytes <= maxBytes {
+	if maxBytes < 0 || u.Bytes-kept <= maxBytes {
 		return u, nil
 	}
 	sort.Slice(reps, func(i, j int) bool { return reps[i].updated.Before(reps[j].updated) })
 	for _, r := range reps {
-		if u.Bytes <= maxBytes {
+		if u.Bytes-kept <= maxBytes {
 			break
 		}
 		unlock := s.lock(r.key)

@@ -100,6 +100,8 @@ type Lease struct {
 	r       *Router
 	target  Target
 	backend LocalBackend
+	slot    supervisor.SlotClaim
+	hasSlot bool
 	key     resKey
 	res     *reservation
 	once    sync.Once
@@ -109,6 +111,10 @@ func (l *Lease) Target() Target { return l.target }
 
 // Backend is the local backend, nil for a peer lease.
 func (l *Lease) Backend() LocalBackend { return l.backend }
+
+// Slot is the slot a local lease holds on a slot-addressed backend, which
+// the request must name in its body; ok is false for any other lease.
+func (l *Lease) Slot() (supervisor.SlotClaim, bool) { return l.slot, l.hasSlot }
 
 // Refused records that the lease's peer refused the request, or could not be
 // reached, before responding. Until a report received after this moment
@@ -130,6 +136,9 @@ func (l *Lease) Refused() {
 func (l *Lease) Release() {
 	l.once.Do(func() {
 		if l.backend != nil {
+			if l.hasSlot {
+				l.backend.(SlotClaimer).FreeSlot(l.slot)
+			}
 			l.backend.Release()
 		} else {
 			l.r.mu.Lock()
@@ -335,7 +344,11 @@ func (r *Router) pickLocalLocked(req Request, backends []LocalBackend) *Lease {
 		b = tied[n%len(tied)]
 	}
 	b.Acquire()
-	return &Lease{r: r, backend: b, target: Target{Local: true, Node: r.c.Self, BackendID: b.ID(), Addr: b.Addr()}}
+	l := &Lease{r: r, backend: b, target: Target{Local: true, Node: r.c.Self, BackendID: b.ID(), Addr: b.Addr()}}
+	if sc, ok := b.(SlotClaimer); ok {
+		l.slot, l.hasSlot = sc.ClaimSlot(req.SessionKey)
+	}
+	return l
 }
 
 // pickSessionLocked sends a session to the host with the highest rendezvous

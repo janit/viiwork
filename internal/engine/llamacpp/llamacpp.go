@@ -158,6 +158,15 @@ func (e *Engine) Command(s engine.Spec) (engine.Command, error) {
 		}
 	}
 
+	if k := o.KVShare; k != nil {
+		// Here and not in validation: the directory is the node's, and the
+		// setup wizard validates container paths from the host.
+		if err := os.MkdirAll(k.SaveDir, 0o755); err != nil {
+			return engine.Command{}, fmt.Errorf("llamacpp: model %s: llamacpp.kv_share.save_dir: %w", s.Name, err)
+		}
+		args = append(args, "--slot-save-path", k.SaveDir)
+	}
+
 	if o.Mmproj != "" {
 		if _, err := os.Stat(o.Mmproj); err != nil {
 			return engine.Command{}, fmt.Errorf("llamacpp: model %s: llamacpp.mmproj %s: %w", s.Name, o.Mmproj, err)

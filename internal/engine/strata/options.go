@@ -76,7 +76,7 @@ func options(path string, s engine.Spec) (Options, error) {
 	if s.Parallel < 1 || s.Parallel > parallelMax {
 		return opts, fmt.Errorf("%s.parallel must be between 1 and %d for engine %s: the engine's batch window holds %d requests (got %d)", path, parallelMax, name, parallelMax, s.Parallel)
 	}
-	if err := opts.KVShare.validate(path+"."+name+".kv_share", s); err != nil {
+	if err := validateKVShare(opts.KVShare, path+"."+name+".kv_share", s); err != nil {
 		return opts, err
 	}
 	for _, flag := range []string{"--config", "--api-key"} {

@@ -27,6 +27,9 @@ type Options struct {
 	// Mmproj is the model's vision projector, a GGUF file. With it the
 	// backend reads images, and the node says so to the mesh.
 	Mmproj string `yaml:"mmproj"`
+	// KVShare shares the model's sessions with the members of its group
+	// (kvshare.go).
+	KVShare *KVShareOptions `yaml:"kv_share"`
 }
 
 // defaults are what an operator gets when they write no block at all, or leave
@@ -78,5 +81,8 @@ func (e *Engine) ValidateOptions(path string, s engine.Spec) error {
 	if o.Threads < 0 {
 		return fmt.Errorf("%s.llamacpp.threads must be >= 0 (0 = auto)", path)
 	}
-	return validateMmproj(path, o, s)
+	if err := validateMmproj(path, o, s); err != nil {
+		return err
+	}
+	return validateKVShare(path+".llamacpp.kv_share", o.KVShare, s)
 }

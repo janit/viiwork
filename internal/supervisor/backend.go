@@ -37,11 +37,14 @@ type Backend struct {
 
 	// fetch is the model's shared source resolution, nil for a model with a
 	// path. path is what it resolved to: set once by the loop goroutine before
-	// the first launch and read only by it, so it needs no lock.
+	// the first launch; ModelPath reads it from other goroutines.
 	fetch *fetch
-	path  string
+	path  atomic.Pointer[string]
 
 	inFlight atomic.Int64
+	// slots is the record of a slot-addressed backend's slots, nil for any
+	// other backend (slots.go). Replaced or reset at each launch.
+	slots atomic.Pointer[slotTable]
 
 	mu   sync.Mutex
 	proc *Process
@@ -120,6 +123,15 @@ func (b *Backend) Release() {
 
 func (b *Backend) InFlight() int { return int(b.inFlight.Load()) }
 
+// ModelPath is the weights the backend runs: its model's path, or what its
+// source resolved to ("" before the fetch).
+func (b *Backend) ModelPath() string {
+	if p := b.path.Load(); p != nil {
+		return *p
+	}
+	return b.model.Path
+}
+
 // Slots is the engine's slot count from a fresh load, else the model's
 // parallel. It is independent of health; the router checks health itself.
 func (b *Backend) Slots() int {
@@ -186,8 +198,8 @@ func (b *Backend) launch() error {
 	// One builder for the config-to-Spec mapping, shared with validation, so an
 	// engine validates its options against the same shape it is launched with.
 	spec := config.ModelSpec(b.model)
-	if b.path != "" {
-		spec.Path = b.path
+	if p := b.path.Load(); p != nil {
+		spec.Path = *p
 	}
 	spec.GPUs = slices.Clone(b.gpus)
 	spec.Port = port
@@ -199,6 +211,7 @@ func (b *Backend) launch() error {
 	b.mu.Lock()
 	b.spec = spec
 	b.mu.Unlock()
+	b.resetSlots(spec)
 	env := backendEnv(b.deps.Environ(), b.deps.Vendor, b.gpus, cmd.Env, b.model.Env)
 	proc, err := StartProcess(cmd.Path, cmd.Args, env, b.out)
 	if err != nil {

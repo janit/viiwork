@@ -52,7 +52,15 @@ const (
 	// gpuHistorySamples is an hour of GPU samples at 5 s (v1).
 	gpuHistorySamples = 720
 	leaveTimeout      = 5 * time.Second
-	supervisorStop    = 10 * time.Second
+	// sessionFlush is the least time the kv_share saves a stopping node
+	// still makes get: a 50k conversation saves in ~2 s on a 5090 and ~20 s
+	// on a gb host, one slot after another. They get more when the rest of
+	// the shutdown was quick (flushBudget).
+	sessionFlush = 30 * time.Second
+	// shutdownBudget is what a whole shutdown aims to fit in: the compose
+	// example gives a stopping container 90 s before it is killed.
+	shutdownBudget = 80 * time.Second
+	supervisorStop = 10 * time.Second
 )
 
 type Options struct {
@@ -702,6 +710,7 @@ func (n *Node) Run(ctx context.Context) error {
 // loops (with the energy flush) end in the caller.
 func (n *Node) shutdown(srv *http.Server, m *mesh.Mesh, cfg *config.Config) {
 	n.logf("shutting down")
+	start := time.Now()
 	if err := m.Leave(leaveTimeout); err != nil {
 		n.logf("mesh leave: %v", err)
 	}
@@ -712,8 +721,13 @@ func (n *Node) shutdown(srv *http.Server, m *mesh.Mesh, cfg *config.Config) {
 		srv.Close()
 	}
 	cancel()
-	// No request is left to queue a save; one in progress is cancelled
-	// rather than left to fail against a stopping backend.
+	// No request is left to queue a save. The saves still waiting run now,
+	// while the backends hold their sessions; past the budget, one in
+	// progress is cancelled rather than left to fail against a stopping
+	// backend.
+	flushCtx, cancel := context.WithTimeout(context.Background(), flushBudget(time.Since(start)))
+	n.sessions.Flush(flushCtx)
+	cancel()
 	n.sessions.Close()
 	supCtx, cancel := context.WithTimeout(context.Background(), supervisorStop)
 	n.sup.Shutdown(supCtx)
@@ -721,6 +735,14 @@ func (n *Node) shutdown(srv *http.Server, m *mesh.Mesh, cfg *config.Config) {
 	if err := m.Shutdown(); err != nil {
 		n.logf("mesh shutdown: %v", err)
 	}
+}
+
+// flushBudget is the time the session saves get once the shutdown has run
+// for elapsed: what is left of shutdownBudget after them and the backends'
+// stop, and never less than sessionFlush. Three 50k sessions on a gb host
+// (~20 s each) fit when no request held the shutdown up.
+func flushBudget(elapsed time.Duration) time.Duration {
+	return max(sessionFlush, shutdownBudget-elapsed-supervisorStop)
 }
 
 // sampleLoop is v1's health-loop extras: IPMI, cost and GPU samples every

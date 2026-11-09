@@ -226,6 +226,10 @@ type FileMeta struct {
 	// Format is "" for a KVDELTA2 stream, FormatEngineDelta for the
 	// engine's own delta file.
 	Format string
+	// Identity the receiver can restore (not on the wire: the receiver sets
+	// it from its own model): a KVDELTA2 stream stamped with another is
+	// refused with 409 before anything is stored. Zero accepts any.
+	Identity Identity
 }
 
 // Query is the meta as query parameters (size, digest in hex, save_id and

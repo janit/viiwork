@@ -1,5 +1,5 @@
-// viiwork-kvsync is a development tool for moving Strata session files
-// between hosts as deltas (internal/kvshare): a receiver, a sender, and a
+// viiwork-kvsync is a development tool for moving engine session files (Strata,
+// llama.cpp) between hosts as deltas (internal/kvshare): a receiver, a sender, and a
 // local planner for measuring what a delta would carry.
 //
 //	viiwork-kvsync serve -listen :7950 -transport tcp -dir /var/lib/kvsync
@@ -18,6 +18,8 @@ import (
 	"syscall"
 	"time"
 
+	// Engines register their session file layouts with kvshare.
+	_ "github.com/janit/viiwork/v2/internal/engine/all"
 	"github.com/janit/viiwork/v2/internal/kvshare"
 )
 

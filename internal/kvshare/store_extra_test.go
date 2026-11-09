@@ -118,6 +118,39 @@ func TestEvictExceptKeepsTheKeyBeingPut(t *testing.T) {
 	}
 }
 
+// Updating a replica replaces it: room for the new file is made among the
+// other replicas without counting the old one.
+func TestEvictExceptDoesNotCountTheReplicaItReplaces(t *testing.T) {
+	st := NewStore(t.TempDir())
+	var sizes []int64
+	for i, k := range []string{"a", "b", "c"} {
+		push(t, st, k, fakeSession{model: 1, config: 2, cells: 2000, stateSeed: uint64(i + 1)}.bytes())
+		r, _, _ := st.Info(k)
+		sizes = append(sizes, r.Size)
+		time.Sleep(5 * time.Millisecond)
+	}
+	// Room for a and b (plus their state files, which the store counts) but
+	// not for all three: c's old copy, still on disk, must not count.
+	slack := sizes[2] / 2
+	if _, err := st.EvictExcept(sizes[0]+sizes[1]+slack, "c"); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"a", "b", "c"} {
+		if _, ok, _ := st.Info(k); !ok {
+			t.Fatalf("%s was evicted although the others fit", k)
+		}
+	}
+	if _, err := st.EvictExcept(sizes[1]+slack, "c"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := st.Info("a"); ok {
+		t.Fatal("the least recently put replica should have gone")
+	}
+	if _, ok, _ := st.Info("b"); !ok {
+		t.Fatal("b fits and was evicted")
+	}
+}
+
 func TestKeyLocksAreReleased(t *testing.T) {
 	st := NewStore(t.TempDir())
 	for _, k := range []string{"a", "b", "c"} {
