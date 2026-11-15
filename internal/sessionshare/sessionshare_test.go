@@ -25,14 +25,15 @@ import (
 type fakeEngine struct {
 	dir string
 
-	mu        sync.Mutex
-	sessions  map[string]kvsharetest.Session // by raw session header
-	saves     int
-	deltas    int                            // saves written as engine deltas
-	lineage   map[string]kvsharetest.Session // save id -> what it saved
-	nextID    uint64
-	imports   []int // size of each file imported
-	importErr error
+	mu          sync.Mutex
+	sessions    map[string]kvsharetest.Session // by raw session header
+	saves       int
+	deltas      int                            // saves written as engine deltas
+	lineage     map[string]kvsharetest.Session // save id -> what it saved
+	nextID      uint64
+	imports     []int // size of each file imported
+	importErr   error
+	importDelay time.Duration // each import reads its file this late
 	// held answers SessionHeld; nil is an engine that cannot say
 	held func(raw string, n int64, hash uint64) (int64, error)
 }
@@ -78,6 +79,7 @@ func (e *fakeEngine) SaveSession(_ context.Context, _, raw, name, base string) (
 }
 
 func (e *fakeEngine) ImportSession(_ context.Context, _, name string) error {
+	time.Sleep(e.importDelay)
 	b, err := os.ReadFile(filepath.Join(e.dir, name))
 	if err != nil {
 		return err
@@ -169,7 +171,9 @@ func (n *node) sees(peer *node, group string, healthy int, at time.Time) {
 
 func waitFor(t *testing.T, what string, ok func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	// Background saves and pushes of multi-MB test sessions take seconds
+	// under -race on a loaded host (load 40-60 on teddy, 2026-11-15).
+	deadline := time.Now().Add(30 * time.Second)
 	for !ok() {
 		if time.Now().After(deadline) {
 			t.Fatalf("timed out waiting for %s", what)
@@ -193,7 +197,10 @@ func TestTurnGoesToTheSpillHostAndImportsThere(t *testing.T) {
 		t.Fatalf("first turn: %+v", st)
 	}
 
-	// the next turn sends what changed only
+	// the next turn sends what changed only. A fresh report first: one
+	// older than 3 s routes nothing, and under -race on a loaded host the
+	// first push alone can take that long.
+	a.sees(b, "g", 1, time.Now())
 	turn2 := kvsharetest.Session{Model: 1, Config: 2, Cells: 2600, StateSeed: 2}
 	a.eng.set("sess-1", turn2)
 	a.m.AfterLocal(testModel, "sess-1", 42, ba, 2600)
@@ -503,5 +510,70 @@ func TestAnEvictedReplicaIsImportedAgain(t *testing.T) {
 	b.m.BeforeLocal(ctx, testModel, "s", 7, bb)
 	if _, n := b.eng.counts(); n != 3 {
 		t.Fatalf("cannot say: %d imports, want no new one", n)
+	}
+}
+
+// A replica the engine refuses as unusable here is removed, not imported
+// again on every turn; a transient failure (above) keeps it.
+func TestRejectedReplicaIsRemoved(t *testing.T) {
+	a, b := newNode(t, "a"), newNode(t, "b")
+	a.sees(b, "g", 1, time.Now())
+	a.eng.set("s", kvsharetest.Session{Model: 1, Config: 2, Cells: 2000, StateSeed: 1})
+	a.m.AfterLocal(testModel, "s", 7, &fakeBackend{id: "m/0"}, 2000)
+	waitFor(t, "the push", func() bool { return b.m.Stats(testModel).Puts == 1 })
+	b.eng.importErr = fmt.Errorf("%w: strata: 400 config fingerprint differs", engine.ErrReplicaRejected)
+	be := &fakeBackend{id: "m/0"}
+	b.m.BeforeLocal(context.Background(), testModel, "s", 7, be)
+	if _, ok, _ := b.m.model(testModel).store.Info(storeKey(7)); ok {
+		t.Fatal("the refused replica is still in the store")
+	}
+	b.m.BeforeLocal(context.Background(), testModel, "s", 7, be)
+	if s := b.m.Stats(testModel); s.ImportFails != 1 {
+		t.Fatalf("imported a refused replica again: %+v", s)
+	}
+}
+
+// Each import assembles its own file: two turns of one session importing at
+// once must not remove each other's file.
+func TestConcurrentImportsUseTheirOwnFiles(t *testing.T) {
+	a, b := newNode(t, "a"), newNode(t, "b")
+	a.sees(b, "g", 1, time.Now())
+	a.eng.set("s", kvsharetest.Session{Model: 1, Config: 2, Cells: 2000, StateSeed: 1})
+	a.m.AfterLocal(testModel, "s", 7, &fakeBackend{id: "m/0"}, 2000)
+	waitFor(t, "the push", func() bool { return b.m.Stats(testModel).Puts == 1 })
+	b.eng.importDelay = 50 * time.Millisecond // the imports overlap
+	var wg sync.WaitGroup
+	for i := range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			b.m.BeforeLocal(context.Background(), testModel, "s", 7, &fakeBackend{id: fmt.Sprintf("m/%d", i)})
+		}()
+	}
+	wg.Wait()
+	if s := b.m.Stats(testModel); s.ImportFails != 0 || s.Imports != 4 {
+		t.Fatalf("concurrent imports failed: %+v", s)
+	}
+}
+
+// kv_share.peers sends a member's replicas to the address it names, not the
+// member's mesh address (the forges' LAN instead of the tailnet).
+func TestPeersAddressIsUsedForTheMember(t *testing.T) {
+	a, b := newNode(t, "a"), newNode(t, "b")
+	// b's mesh address leads nowhere; its peers entry is the real one.
+	a.reports.mu.Lock()
+	a.reports.reps = append(a.reports.reps, capacity.Report{
+		Node: "b", APIAddr: "127.0.0.1:1", Received: time.Now(),
+		Models: []meshapi.ModelCapacity{{Name: testModel, Slots: 1, HealthyBackends: 1, KVShareGroup: "g"}},
+	})
+	a.reports.mu.Unlock()
+	cfg := shareConfig(a.eng)
+	cfg.Peers = map[string]string{"b": strings.TrimPrefix(b.srv.URL, "http://")}
+	a.m.SetModels([]Model{{Name: testModel, Engine: a.eng, Config: cfg}})
+	a.eng.set("s", kvsharetest.Session{Model: 1, Config: 2, Cells: 2000, StateSeed: 1})
+	a.m.AfterLocal(testModel, "s", 7, &fakeBackend{id: "m/0"}, 2000)
+	waitFor(t, "the push over the peers address", func() bool { return b.m.Stats(testModel).Puts == 1 })
+	if s := a.m.Stats(testModel); s.PushFailures != 0 {
+		t.Fatalf("stats %+v", s)
 	}
 }

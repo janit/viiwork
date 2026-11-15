@@ -195,5 +195,10 @@ func (e *Engine) slotAction(ctx context.Context, addr, path string, body map[str
 	if _, isSave := body["session"]; isSave && (resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusConflict) {
 		return fmt.Errorf("%w: %s", engine.ErrSessionGone, msg.Error.Message)
 	}
+	// 400 on an import: the server read the file and refused it (another
+	// engine configuration or model). A missing file is a 404 or 500.
+	if resp.StatusCode == http.StatusBadRequest && strings.Contains(path, "action=import") {
+		return fmt.Errorf("%w: strata: %s: %d %s", engine.ErrReplicaRejected, path, resp.StatusCode, msg.Error.Message)
+	}
 	return fmt.Errorf("strata: %s: %d %s", path, resp.StatusCode, msg.Error.Message)
 }

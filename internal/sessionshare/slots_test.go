@@ -19,12 +19,13 @@ import (
 type fakeSlotEngine struct {
 	dir string
 
-	mu       sync.Mutex
-	slots    map[int]kvsharetest.Session
-	saves    []int // slot of each save
-	restores []restore
-	delay    time.Duration // each save takes this long
-	onSave   func()        // runs during each save
+	mu         sync.Mutex
+	slots      map[int]kvsharetest.Session
+	saves      []int // slot of each save
+	restores   []restore
+	delay      time.Duration // each save takes this long
+	onSave     func()        // runs during each save
+	beforeSave func()        // runs as each save starts
 }
 
 type restore struct{ slot, bytes int }
@@ -34,6 +35,9 @@ func (e *fakeSlotEngine) SessionShare(engine.Spec) (engine.SessionShareConfig, b
 }
 
 func (e *fakeSlotEngine) SaveSlot(_ context.Context, _ string, slot int, name string) error {
+	if e.beforeSave != nil {
+		e.beforeSave()
+	}
 	time.Sleep(e.delay)
 	if e.onSave != nil {
 		e.onSave()
@@ -273,5 +277,36 @@ func TestSlotLateOlderReplicaIsNotRestored(t *testing.T) {
 	b.m.BeforeLocal(ctx, testModel, "s", 9, bb)
 	if _, n := b.slots.counts(); n != 0 {
 		t.Fatal("restored an earlier turn over the slot's newer one")
+	}
+}
+
+// A request that claims a slot while that slot's save is already running
+// waits for the save, and the file is sent: nothing ran in the slot during
+// the save, because the request waited. On a busy host (gb1: two slots, a
+// ~18 s save) a fleet request took the slot in that window on every turn,
+// and every save was dropped as taken during the save.
+func TestSlotClaimedDuringItsSaveWaitsAndTheFileIsSent(t *testing.T) {
+	a, b := newSlotNode(t, "a", 0xabc), newSlotNode(t, "b", 0xabc)
+	a.sees(b.node, "g", 1, time.Now())
+	a.slots.slots[1] = kvsharetest.Session{Model: 1, Config: 2, Cells: 2000, StateSeed: 1}
+	a.slots.delay = 300 * time.Millisecond
+	started := make(chan struct{})
+	var once sync.Once
+	ba := &slotBackend{fakeBackend: fakeBackend{id: "m/0"}, claim: supervisor.SlotClaim{Field: "id_slot", Index: 1}, holds: true}
+	a.slots.beforeSave = func() { once.Do(func() { close(started) }) }
+	a.m.AfterLocal(testModel, "s42", 42, ba, 2000)
+	<-started // the worker's save of 42 is running
+
+	// Another request claims slot 1: it is busy now, so SlotHolds is false.
+	ba.holds = false
+	next := &slotBackend{fakeBackend: fakeBackend{id: "m/0"}, claim: supervisor.SlotClaim{Field: "id_slot", Index: 1, Displaced: 42}}
+	t0 := time.Now()
+	a.m.BeforeLocal(context.Background(), testModel, "", 0, next)
+	if waited := time.Since(t0); waited < 150*time.Millisecond {
+		t.Fatalf("the request went ahead after %v, before the running save of its slot finished", waited)
+	}
+	waitFor(t, "the push", func() bool { return b.m.Stats(testModel).Puts == 1 })
+	if saves, _ := a.slots.counts(); saves != 1 {
+		t.Fatalf("saved %d times, want once", saves)
 	}
 }

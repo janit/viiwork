@@ -64,6 +64,7 @@ func TestStrataLocalCopyAndPeer(t *testing.T) {
 	a.eng.set("s", kvsharetest.Session{Model: 1, Config: 2, Cells: 2000, StateSeed: 1})
 	a.m.AfterLocal(testModel, "s", 5, b0, 2000)
 	waitFor(t, "the first push", func() bool { return b.m.Stats(testModel).Puts == 1 })
+	a.sees(b, "g", 1, time.Now()) // a report older than 3 s routes nothing
 	a.eng.set("s", kvsharetest.Session{Model: 1, Config: 2, Cells: 2400, StateSeed: 2})
 	a.m.AfterLocal(testModel, "s", 5, b0, 2400)
 	waitFor(t, "the second push", func() bool { return b.m.Stats(testModel).Puts == 2 })

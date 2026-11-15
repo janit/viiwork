@@ -563,6 +563,20 @@ type Replica struct {
 }
 
 // Info reports the complete replica under key; ok is false when there is none.
+// Remove deletes key's replica; a key it does not hold is no error.
+func (s *Store) Remove(key string) error {
+	if !ValidKey(key) {
+		return fmt.Errorf("kvshare: invalid key %q", key)
+	}
+	unlock := s.lock(key)
+	defer unlock()
+	err := os.RemoveAll(s.keyDir(key))
+	s.mu.Lock()
+	delete(s.man, key)
+	s.mu.Unlock()
+	return err
+}
+
 func (s *Store) Info(key string) (r Replica, ok bool, err error) {
 	if !ValidKey(key) {
 		return Replica{}, false, fmt.Errorf("kvshare: invalid key %q", key)

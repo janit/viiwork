@@ -1,5 +1,32 @@
 # Changelog
 
+## v2.12.0-beta2
+
+- **llama.cpp v1.0.0** (b12359). The CUDA and Vulkan images are on b12375,
+  the first build after 1.0 with upstream images. Every flag the engine and
+  the fleet configs pass still exists; 1.0 drops only `--defrag-thold`. The
+  slot file format is unchanged, so replicas saved by b11804 restore into 1.0
+  and a mixed group keeps working during a rollout. On gfx906 (Qwen3.8-27B
+  Q6_K, three cards), prefill is 6-8% faster; decode, slot save and restore
+  and load time are unchanged.
+- **Fix: a busy host's sessions are shared.** A request that claims a slot
+  while that slot's save is running waits for the save, and the file is kept.
+  Before, on gb1 under fleet traffic (two slots, ~18 s saves), every save was
+  dropped as taken during the save. A dropped save is now logged.
+- **Fix: a kv_share push ends when it stops making progress** (no byte for
+  90 s, at most 30 min) rather than after a fixed 5 min, so a slow link
+  finishes a large replica instead of resending it every turn.
+- **Fix: a replica the engine refuses as unusable here** (another engine
+  configuration) is removed instead of retried every turn, and each import
+  assembles its own file, so two turns of one session no longer delete each
+  other's.
+- **`kv_share.peers`** maps a member's node name to the `host:port` this node
+  sends that member's replicas to, so members on one LAN move replicas over
+  it rather than through the tailnet.
+- **Fix: no `load failed` log during a long prefill.** llama-server answers
+  the load poll from the loop the prefill holds, so the poll timed out; a
+  timeout while the backend has requests in flight is no longer logged.
+
 ## v2.12.0-beta1
 
 - **kv_share for llama.cpp backends** (`llamacpp.kv_share`, off unless

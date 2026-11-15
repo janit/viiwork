@@ -3,12 +3,15 @@
 FROM rocm/dev-ubuntu-24.04:6.2.4-complete AS llama-build
 RUN apt-get update && apt-get install -y cmake git
 # Pin llama.cpp to a known-good release to prevent upstream breakage.
-# b11804 (2026-10-22) is a release (a Mac downloads the same build), and the
-# CUDA and Vulkan images sit on it too: upstream published images for it. It
-# carries the wave64 mul_mat_id reduction fix (#30836, MoE on gfx906), the
-# server's SWA checkpoint fix (#30666), Kolibri-1 (#30673), hybrid DeltaNet
-# (Qwen3.5/3.6 arches) and MTP speculative decoding (PR #22673 + follow-ups
-# #23198, #23237), and is >= the b10430 the Qwen3.8 quants were cut with.
+# b12359 (2026-11-13) is llama.cpp v1.0.0, a release (a Mac downloads the same
+# build). Upstream published no CUDA or Vulkan images for it, so those sit on
+# the first build after it that has them (LLAMA_CPP_IMAGE_BUILD in pins.env).
+# It carries everything b11804 did - the wave64 mul_mat_id reduction fix
+# (#30836, MoE on gfx906), the server's SWA checkpoint fix (#30666), Kolibri-1
+# (#30673), hybrid DeltaNet (Qwen3.5/3.6 arches) and MTP speculative decoding -
+# and is >= the b10430 the Qwen3.8 quants were cut with. v1.0.0 removes
+# --defrag-thold (no fleet config passed it) and keeps the slot save file at
+# version 4, so kv_share replicas from b11804 still restore.
 #
 # Since b11371 llama.cpp no longer reads --mmap/--no-mmap (or --mlock,
 # --direct-io): the one spelling is --load-mode. The node generates whichever
@@ -18,7 +21,7 @@ RUN apt-get update && apt-get install -y cmake git
 # Do not drop this below b10430: the previous b9222 pin cannot load Qwen3.8-27B,
 # which the README recommends, and fails at load with "unknown model
 # architecture" rather than anything self-explanatory.
-ARG LLAMA_CPP_VERSION=b11804
+ARG LLAMA_CPP_VERSION=b12359
 RUN git clone --branch ${LLAMA_CPP_VERSION} --depth 1 \
     https://github.com/ggml-org/llama.cpp /llama.cpp
 WORKDIR /llama.cpp

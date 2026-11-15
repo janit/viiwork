@@ -22,6 +22,44 @@ type job struct {
 	// claimed: the slot was just claimed for another request, which has
 	// not run yet, so it still holds the session although it is busy.
 	claimed bool
+	// run is set while the worker runs the job: a request that claims the
+	// job's slot during the save registers there and waits for it.
+	run *runState
+}
+
+// runState is the job a worker is running, as a request that claims its
+// slot during the save sees it.
+type runState struct {
+	j       job
+	mu      sync.Mutex
+	claimed bool          // a request claimed the slot during the save and waits for it
+	decided bool          // the save is over, its file kept or dropped
+	saved   chan struct{} // closed when decided
+}
+
+// claim registers a request that claimed the slot of the running save, so
+// that the save's file counts although the slot is busy: the request waits
+// (on saved) instead of running. False when the save is already over.
+func (s *runState) claim() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.decided {
+		return false
+	}
+	s.claimed = true
+	return true
+}
+
+// decide ends the save and reports whether a request claimed its slot
+// during it. It may be called more than once.
+func (s *runState) decide() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.decided {
+		s.decided = true
+		close(s.saved)
+	}
+	return s.claimed
 }
 
 // worker runs one backend's saves one at a time: a save pauses every slot of
@@ -31,6 +69,7 @@ type worker struct {
 	mu   sync.Mutex
 	jobs map[string]job // by model + key
 	wake chan struct{}
+	cur  *runState // the job running now, if any
 }
 
 func newWorker() *worker {
@@ -74,6 +113,17 @@ func (w *worker) takeSlot(model string, session uint64, index int) (job, bool) {
 		}
 	}
 	return job{}, false
+}
+
+// runningSlot is the running job that saves session (its routing hash)
+// from slot index, if there is one.
+func (w *worker) runningSlot(model string, session uint64, index int) *runState {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if c := w.cur; c != nil && c.j.model == model && c.j.hash == session && c.j.slotted && c.j.slot.Index == index {
+		return c
+	}
+	return nil
 }
 
 // takeAll removes and returns every waiting job, the earliest due first.
@@ -122,7 +172,16 @@ func (w *worker) run(ctx context.Context, do func(context.Context, job)) {
 	for {
 		j, ok, wait := w.next(time.Now())
 		if ok {
+			st := &runState{j: j, saved: make(chan struct{})}
+			j.run = st
+			w.mu.Lock()
+			w.cur = st
+			w.mu.Unlock()
 			do(ctx, j)
+			st.decide()
+			w.mu.Lock()
+			w.cur = nil
+			w.mu.Unlock()
 			if ctx.Err() != nil {
 				return
 			}

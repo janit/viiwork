@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -99,7 +100,7 @@ func TestSessionShare(t *testing.T) {
 		Group: "flash", Transport: "http", SaveDir: "/opt/strata/sessions",
 		MaxBytes: 1 << 29, MinTokens: 100, MaxFileBytes: 65536*sessionBytesPerToken + sessionBytesFixed,
 	}
-	if cfg != want {
+	if !reflect.DeepEqual(cfg, want) {
 		t.Fatalf("got %+v\nwant %+v", cfg, want)
 	}
 	cfg, _ = New().SessionShare(spec(t, shareSpec(path), shareBlock))

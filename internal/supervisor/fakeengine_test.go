@@ -244,7 +244,21 @@ func serveFake() {
 		n, _ := strconv.ParseInt(r.URL.Query().Get("n"), 10, 64)
 		busy.Store(n)
 	})
-	mux.HandleFunc("/load", func(w http.ResponseWriter, _ *http.Request) {
+	// POST /stall?d=<duration> makes /load answer that late, as llama-server's
+	// /slots does behind a long prefill; d=0 ends it.
+	var stall atomic.Int64
+	mux.HandleFunc("POST /stall", func(w http.ResponseWriter, r *http.Request) {
+		d, _ := time.ParseDuration(r.URL.Query().Get("d"))
+		stall.Store(int64(d))
+	})
+	mux.HandleFunc("/load", func(w http.ResponseWriter, r *http.Request) {
+		if d := time.Duration(stall.Load()); d > 0 {
+			select {
+			case <-time.After(d):
+			case <-r.Context().Done():
+				return
+			}
+		}
 		_ = json.NewEncoder(w).Encode(fakeLoadBody{Slots: slots, Busy: int(busy.Load()), Decoded: 120, Remain: 380})
 	})
 	for pattern, h := range fakeServeRoutes {

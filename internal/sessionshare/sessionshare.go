@@ -28,6 +28,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"sync"
@@ -46,8 +47,13 @@ const (
 	// defaultSaveDelay lets an agent loop's next turn, which usually follows
 	// at once, start before the save that would pause the backend.
 	defaultSaveDelay = 2 * time.Second
-	// pushTimeout bounds a save and its push: 1 GB at 1 Gbit/s is ~9 s.
-	pushTimeout = 5 * time.Minute
+	// saveTimeout bounds an engine's save of one session.
+	saveTimeout = 5 * time.Minute
+	// pushTimeout bounds a save and its push. The send itself ends sooner
+	// when it stalls (sendStall): a slow link that still moves bytes
+	// finishes, at 25 Mbit/s a 2.6 GB replica takes 14 min.
+	pushTimeout = 30 * time.Minute
+	sendStall   = 90 * time.Second
 	// importTimeout bounds what a spilled turn waits for its import.
 	importTimeout = 30 * time.Second
 	// heldTimeout bounds asking a backend whether it still holds a session;
@@ -360,7 +366,7 @@ func (m *Manager) SetModels(models []Model) {
 	m.mu.Unlock()
 	used := map[string]string{} // store dir -> the model using it
 	for _, mm := range models {
-		if cur, ok := old[mm.Name]; ok && cur.cfg == mm.Config && cur.eng == mm.Engine && cur.slots == mm.Slots {
+		if cur, ok := old[mm.Name]; ok && reflect.DeepEqual(cur.cfg, mm.Config) && cur.eng == mm.Engine && cur.slots == mm.Slots {
 			next[mm.Name] = cur
 			used[cur.store.Dir] = mm.Name
 			continue
@@ -513,6 +519,9 @@ func (m *Manager) target(md *model, key uint64) (node, addr string) {
 	}
 	for _, n := range route.SessionRank(key, names) {
 		if n != m.d.Self {
+			if a := md.cfg.Peers[n]; a != "" {
+				return n, a // kv_share.peers: the LAN, not the tailnet
+			}
 			return n, addrs[n]
 		}
 	}
@@ -587,7 +596,9 @@ func (m *Manager) BeforeLocal(ctx context.Context, modelName, raw string, key ui
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, importTimeout)
 	defer cancel()
-	name := "kvi-" + k + ".bin"
+	// A name of its own: two turns of a session importing at once must not
+	// remove each other's file ("No such file" from the engine).
+	name := m.fileName("kvi", k)
 	path := filepath.Join(md.cfg.SaveDir, name)
 	if _, err := md.store.Materialize(k, path); err != nil {
 		md.importFails.Add(1)
@@ -598,6 +609,7 @@ func (m *Manager) BeforeLocal(ctx context.Context, modelName, raw string, key ui
 	if err := md.eng.ImportSession(ctx, b.Addr(), name); err != nil {
 		md.importFails.Add(1)
 		m.failf("import", b.ID(), "%s: backend %s refused the replica of session %s (%d tokens): %v; serving it cold", modelName, b.ID(), k, rep.Tokens, err)
+		m.dropRejected(md, k, err)
 		return
 	}
 	took := time.Since(start)
@@ -725,10 +737,10 @@ func (m *Manager) push(ctx context.Context, j job) {
 	var t kvshare.Transport
 	var man *kvshare.Manifest
 	if hasPeer {
-		t = kvshare.NewHTTPTransport(kvshare.HTTPOptions{
+		t = guardStall(kvshare.NewHTTPTransport(kvshare.HTTPOptions{
 			Query: url.Values{"model": {j.model}},
 			Sign:  m.d.Sign,
-		})
+		}), sendStall)
 		// What the peer holds first: a peer that cannot answer costs no
 		// save (which pauses the backend) unless the save is kept here too,
 		// and the save id it holds is the base the engine may write a
@@ -757,7 +769,9 @@ func (m *Manager) push(ctx context.Context, j job) {
 	start := time.Now()
 	name := m.fileName("kvs", j.key)
 	path := filepath.Join(md.cfg.SaveDir, name)
-	saved, err := md.eng.SaveSession(ctx, j.backend.Addr(), j.raw, name, base)
+	sctx, scancel := context.WithTimeout(ctx, saveTimeout)
+	saved, err := md.eng.SaveSession(sctx, j.backend.Addr(), j.raw, name, base)
+	scancel()
 	if errors.Is(err, engine.ErrSessionGone) {
 		if logging.DebugEnabled() {
 			m.d.Logf("[debug] kv_share: %s: session %s is no longer held by %s; nothing to send", j.model, j.key, j.backend.ID())
@@ -816,6 +830,22 @@ func (m *Manager) push(ctx context.Context, j job) {
 	}
 	md.pushFails.Add(1)
 	m.failf("push", peer, "%s: sending session %s to %s: %v", j.model, j.key, peer, err)
+}
+
+// dropRejected removes the replica of session k when the engine refused it
+// as unusable here, so later turns do not import the same file and fail
+// again. On forge-black a store of 0.2.6-era replicas was retried every
+// turn ("config fingerprint differs"), 526 failures in a day. The next
+// push from the session's host replaces it.
+func (m *Manager) dropRejected(md *model, k string, err error) {
+	if !errors.Is(err, engine.ErrReplicaRejected) {
+		return
+	}
+	if rerr := md.store.Remove(k); rerr != nil {
+		m.failf("drop", "", "%s: removing the refused replica of session %s: %v", md.name, k, rerr)
+		return
+	}
+	m.d.Logf("kv_share: %s: removed the replica of session %s, which this backend cannot restore", md.name, k)
 }
 
 // modelID is the model fingerprint of backend b's weights: the file the
@@ -940,7 +970,7 @@ func (m *Manager) restoreSlot(ctx context.Context, md *model, k string, rep kvsh
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, importTimeout)
 	defer cancel()
-	name := "kvi-" + k + ".bin"
+	name := m.fileName("kvi", k)
 	path := filepath.Join(md.cfg.SaveDir, name)
 	if _, err := md.store.Materialize(k, path); err != nil {
 		md.importFails.Add(1)
@@ -952,6 +982,7 @@ func (m *Manager) restoreSlot(ctx context.Context, md *model, k string, rep kvsh
 	if err := md.slots.RestoreSlot(ctx, b.Addr(), c.Index, name); err != nil {
 		md.importFails.Add(1)
 		m.failf("import", b.ID(), "%s: backend %s refused the replica of session %s (%d tokens) into slot %d: %v; serving it cold", md.name, b.ID(), k, rep.Tokens, c.Index, err)
+		m.dropRejected(md, k, err)
 		return
 	}
 	m.imported(md, gen, rep, time.Since(start))
@@ -977,10 +1008,10 @@ func (m *Manager) pushSlot(ctx context.Context, md *model, j job, peer, addr str
 	var t kvshare.Transport
 	var man *kvshare.Manifest
 	if peer != "" && addr != "" {
-		t = kvshare.NewHTTPTransport(kvshare.HTTPOptions{
+		t = guardStall(kvshare.NewHTTPTransport(kvshare.HTTPOptions{
 			Query: url.Values{"model": {j.model}},
 			Sign:  m.d.Sign,
-		})
+		}), sendStall)
 	}
 	// What the peer holds first: a peer that cannot answer costs no save
 	// (which pauses the backend), unless the save is kept here too. Not for
@@ -1004,7 +1035,9 @@ func (m *Manager) pushSlot(ctx context.Context, md *model, j job, peer, addr str
 	if md.cfg.Local {
 		release = md.markPending(j.key)
 	}
-	err := md.slots.SaveSlot(ctx, j.backend.Addr(), j.slot.Index, name)
+	sctx, scancel := context.WithTimeout(ctx, saveTimeout)
+	err := md.slots.SaveSlot(sctx, j.backend.Addr(), j.slot.Index, name)
+	scancel()
 	if errors.Is(err, engine.ErrSessionGone) {
 		release()
 		return
@@ -1022,12 +1055,14 @@ func (m *Manager) pushSlot(ctx context.Context, md *model, j job, peer, addr str
 	// conversation under this session's key. The slot still holding the
 	// session, idle, after the save proves no other request ran there. (A
 	// claimed slot is busy with a request that waits for this save.)
-	if !j.claimed && !sb.SlotHolds(j.slot, j.hash) {
+	// A request that claimed the slot during the save and waits for it
+	// (saveDisplaced) has not run there either.
+	claimedDuring := j.run != nil && j.run.decide()
+	if !j.claimed && !claimedDuring && !sb.SlotHolds(j.slot, j.hash) {
 		release()
 		os.Remove(path)
-		if logging.DebugEnabled() {
-			m.d.Logf("[debug] kv_share: %s: slot %d of %s was taken during the save of session %s; dropping the file", j.model, j.slot.Index, j.backend.ID(), j.key)
-		}
+		md.pushFails.Add(1)
+		m.failf("dropped", j.backend.ID(), "%s: slot %d of %s was taken during the save of session %s; dropping the file", j.model, j.slot.Index, j.backend.ID(), j.key)
 		return
 	}
 	if j.claimed {
@@ -1103,6 +1138,20 @@ func (m *Manager) saveDisplaced(ctx context.Context, md *model, w *worker, b Bac
 	}
 	j, ok := w.takeSlot(md.name, c.Displaced, c.Index)
 	if !ok {
+		// The worker may be saving that session from this slot right now
+		// (a save of a long conversation on a gb host takes ~18 s). The
+		// request waits for that save instead of running, so the file
+		// still holds the session's conversation and is kept.
+		if st := w.runningSlot(md.name, c.Displaced, c.Index); st != nil && st.claim() {
+			start := time.Now()
+			select {
+			case <-st.saved:
+			case <-ctx.Done():
+			}
+			if logging.DebugEnabled() {
+				m.d.Logf("[debug] kv_share: %s: waited %d ms for the running save of session %016x from %s slot %d before reusing the slot", md.name, time.Since(start).Milliseconds(), c.Displaced, b.ID(), c.Index)
+			}
+		}
 		return
 	}
 	j.claimed = true

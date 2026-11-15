@@ -327,6 +327,10 @@ type SessionShareConfig struct {
 	// Local: this node keeps its own copy of every session it saves and
 	// restores a session from it into a slot that does not hold it.
 	Local bool
+	// Peers is where replicas for a member go, by member name, in place of
+	// its mesh API address (kv_share.peers); nil sends every member's to
+	// its mesh address.
+	Peers map[string]string
 	// LazySaves: a session is saved only before its slot is reused and
 	// when the node stops (kv_share.saves: lazy).
 	LazySaves bool
@@ -335,3 +339,8 @@ type SessionShareConfig struct {
 // ErrSessionGone: the backend does not hold the session's conversation
 // (never saw it, or another conversation has taken its place).
 var ErrSessionGone = errors.New("engine: the session's conversation is no longer held")
+
+// ErrReplicaRejected: the engine refused a session file it was given to
+// import as unusable here (saved by another engine configuration or model),
+// so importing that file again can only fail again.
+var ErrReplicaRejected = errors.New("engine: the session file cannot be restored here")

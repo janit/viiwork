@@ -349,6 +349,45 @@ func TestLoopL15LoadProgress(t *testing.T) {
 	})
 }
 
+// A load poll that times out while the backend serves a request is
+// llama.cpp answering /slots from the task loop a long prefill is holding
+// (gb1: ~2,100 "load failed" lines a day): not logged. The stale load is
+// already discarded after LoadStaleAfter.
+func TestLoopLoadTimeoutWhileInFlightIsQuiet(t *testing.T) {
+	h := newHarness(t)
+	m, _ := h.start(fakeModel("lquiet", []int{0}))
+	b := m.Backends()[0]
+	waitHealthy(t, b, 3*time.Second)
+	b.Acquire()
+	defer b.Release()
+	if err := postFake(b.Addr(), "/stall?d=10s"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(10 * h.deps.Timing.LoadInterval)
+	if strings.Contains(h.log.String(), "load failed") {
+		t.Errorf("logged a load timeout during a request: %q", h.log.String())
+	}
+	if b.State() != StateHealthy || b.Respawns() != 0 {
+		t.Errorf("state %v, respawns %d", b.State(), b.Respawns())
+	}
+}
+
+// The same timeout on an idle backend is not a prefill: logged, once.
+func TestLoopLoadTimeoutWhileIdleIsLogged(t *testing.T) {
+	h := newHarness(t)
+	m, _ := h.start(fakeModel("lidle", []int{0}))
+	b := m.Backends()[0]
+	waitHealthy(t, b, 3*time.Second)
+	if err := postFake(b.Addr(), "/stall?d=10s"); err != nil {
+		t.Fatal(err)
+	}
+	within(t, time.Second, "load failed", func() bool { return strings.Contains(h.log.String(), "load failed") })
+	time.Sleep(6 * h.deps.Timing.LoadInterval)
+	if n := strings.Count(h.log.String(), "load failed"); n != 1 {
+		t.Errorf("logged %d times, want once: %q", n, h.log.String())
+	}
+}
+
 // rocmPIDs answers rocm-smi --showpidgpus with the leader of b holding gpuIndex.
 func rocmPIDs(pid func() int, gpuIndex string) gpu.Runner {
 	return func(_ context.Context, name string, args ...string) ([]byte, error) {

@@ -27,10 +27,10 @@ mkdir -p ~/.local/bin && cp bin/darwin-arm64/viiwork bin/darwin-arm64/viiwork-ac
 
 # 2. llama.cpp at the fleet's pinned release. Prints the llama-server path.
 scripts/macos/fetch-llama.sh
-#   ~/.local/share/viiwork/llama.cpp/b11804/llama-b11804/llama-server
+#   ~/.local/share/viiwork/llama.cpp/b12359/llama-b12359/llama-server
 
 # 3. Check that Metal sees the GPU.
-~/.local/share/viiwork/llama.cpp/b11804/llama-b11804/llama-server --list-devices
+~/.local/share/viiwork/llama.cpp/b12359/llama-b12359/llama-server --list-devices
 #   MTL0: Apple M3 Max (28753 MiB, 28753 MiB free)
 ```
 
@@ -64,7 +64,7 @@ models:
     context: 32768                   # tokens PER SLOT, as everywhere
     parallel: 2
     llamacpp:
-      binary: /Users/YOU/.local/share/viiwork/llama.cpp/b11804/llama-b11804/llama-server
+      binary: /Users/YOU/.local/share/viiwork/llama.cpp/b12359/llama-b12359/llama-server
 ```
 
 The config is a normal v2 file. Only a few values are specific to the Mac:

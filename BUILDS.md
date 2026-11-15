@@ -27,7 +27,7 @@ that silently meant "llama.cpp for gfx906" as though no other kind existed.
 ## `docker/Dockerfile.rocm`
 
 Standard upstream llama.cpp from `ggml-org/llama.cpp`, pinned to a release tag
-(currently `b11804`, which carries Kolibri-1, Qwen3.5/3.6/3.8 hybrid DeltaNet support and
+(currently `b12359`, llama.cpp v1.0.0, which carries Kolibri-1, Qwen3.5/3.6/3.8 hybrid DeltaNet support and
 MTP speculative decoding) and patched for the gfx906 FP8 header
 incompatibility. Built on `rocm/dev-ubuntu-24.04:6.2.4-complete` — the last
 ROCm with reliable gfx906 support.

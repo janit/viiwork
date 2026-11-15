@@ -105,7 +105,24 @@ can read and write and must not turn the engine's conversation cache off
 (`--conversation-cache-mib` 0), and a backend must have one card. Both
 directories are a write-heavy cache, about 240 MB per long-session turn:
 give them a drive of their own, mounted at the same path on every host of
-the group. See [models.md](models.md#sharing-sessions-between-hosts-kv_share).
+the group. A push to a member ends when it has moved no byte for 90 s (at
+most 30 min), so a slow link still finishes a large replica, and a replica
+the engine refuses as unusable on its host (another engine configuration)
+is removed. `peers` (optional) maps a member's node name to the `host:port`
+this node sends that member's replicas to, in place of its mesh address:
+members on one LAN move replicas over it rather than through the tailnet.
+The receiver checks each replica's signature (or, in an open mesh, that it
+comes from an alive member), so a LAN address works only where the mesh is
+secured or the member is reachable from its mesh address's source. See
+[models.md](models.md#sharing-sessions-between-hosts-kv_share).
+
+```yaml
+    strata:
+      kv_share:
+        group: flash-5090
+        peers:
+          node-b: 192.168.0.64:8086   # the LAN, not the tailnet
+```
 
 `llamacpp.kv_share` does the same for a llama.cpp model, with the same keys
 plus `save_dir` (required, absolute): the directory llama-server saves and
@@ -142,7 +159,9 @@ copies and sends none, and saves a turn only once its backend serves no
 other request: a llama.cpp slot save stops every other slot until the file
 is written (1.8 s at 51k tokens on an RTX 5090). A request that takes a slot holding another
 session's conversation first saves that session if its save has not run
-yet, and pays for that save (on a gb host, up to ~18 s at 50k tokens).
+yet, or waits for that save when it is already running, and pays for it
+(on a gb host, up to ~18 s at 50k tokens). A save whose slot another
+request ran in meanwhile is dropped, and the node logs it.
 `saves: lazy` (local and no group only) saves a session only when its slot
 is about to be reused and when the node stops, instead of after every
 turn: nothing is saved while sessions keep their slots, but a crashed

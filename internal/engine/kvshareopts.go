@@ -2,7 +2,10 @@ package engine
 
 import (
 	"fmt"
+	"maps"
+	"net"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -37,6 +40,12 @@ type KVShareOptions struct {
 	// replica host must hold a session before it spills there. A crashed
 	// backend's lazy sessions are lost.
 	Saves string `yaml:"saves"`
+	// Peers names the address this node sends a member's replicas to, by
+	// member name, in place of the member's mesh API address: two hosts on
+	// one LAN move replicas over it rather than through the tailnet. A
+	// member it does not name gets its mesh address. The receiver checks a
+	// replica's signature, not where it came from.
+	Peers map[string]string `yaml:"peers"`
 }
 
 const (
@@ -67,6 +76,19 @@ func (o *KVShareOptions) Validate(path string) error {
 	default:
 		return fmt.Errorf(`%s.saves must be "turn" or "lazy" (got %q)`, path, o.Saves)
 	}
+	for name, addr := range o.Peers {
+		if strings.TrimSpace(o.Group) == "" {
+			return fmt.Errorf("%s.peers needs a group: it names where members' replicas go", path)
+		}
+		if strings.TrimSpace(name) == "" || strings.ContainsAny(name, " \t") {
+			return fmt.Errorf("%s.peers: %q is not a node name", path, name)
+		}
+		host, port, err := net.SplitHostPort(addr)
+		p, perr := strconv.Atoi(port)
+		if err != nil || host == "" || perr != nil || p < 1 || p > 65535 {
+			return fmt.Errorf("%s.peers.%s must be host:port, such as 192.168.1.20:8086 (got %q)", path, name, addr)
+		}
+	}
 	if o.MaxGiB < 0 {
 		return fmt.Errorf("%s.max_gib must not be negative (got %g)", path, o.MaxGiB)
 	}
@@ -87,6 +109,7 @@ func (o *KVShareOptions) Config(saveDir string, maxFileBytes int64) SessionShare
 		MaxFileBytes: maxFileBytes,
 		Local:        o.Local,
 		LazySaves:    o.Saves == "lazy",
+		Peers:        maps.Clone(o.Peers),
 	}
 	if cfg.Transport == "" {
 		cfg.Transport = "http"

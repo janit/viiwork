@@ -41,7 +41,7 @@ const (
 	draftMagic   = 0x54464453 // "SDFT", SLOT_DRAFT_MAGIC
 	draftVersion = 1
 
-	// ggml types are below GGML_TYPE_COUNT (43 in b11804); room for more.
+	// ggml types are below GGML_TYPE_COUNT (44 in b12359, v1.0.0); room for more.
 	maxGGMLType = 63
 	// Bounds that only reject what llama.cpp cannot have written.
 	maxStreams = 256

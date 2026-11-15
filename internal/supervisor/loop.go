@@ -389,6 +389,13 @@ func (l *loop) loadTick() {
 		load, err = b.eng.Load(ctx, spec, addr)
 	}
 	if err != nil {
+		// llama-server answers /slots from its task loop, which a long
+		// prefill holds for seconds: a poll that times out while a request
+		// is in flight is that, not a fault (gb1 logged ~2,100 a day). The
+		// stale load is dropped after LoadStaleAfter either way.
+		if errors.Is(err, context.DeadlineExceeded) && b.InFlight() > 0 {
+			return
+		}
 		if !l.loadFailLogged && l.ctx.Err() == nil {
 			b.logf("load failed: %v", err)
 			l.loadFailLogged = true
