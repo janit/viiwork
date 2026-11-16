@@ -320,7 +320,7 @@ models:
   an image made from upstream's 0.2 sources and signed engine package) lay Strata out differently, and the model's block and
   the JSON must name what is in the image they run on:
 
-  | | `viiwork-strata` (gfx906) | `viiwork-strata-cuda` (Strata 0.2.14) |
+  | | `viiwork-strata` (gfx906) | `viiwork-strata-cuda` (Strata 0.2.15) |
   |---|---|---|
   | `strata.dir` | `/opt/strata` | `/opt/strata/terminal` |
   | `strata.python` | `python3` (default) | `/opt/strata/terminal/python/bin/python3` |
@@ -330,7 +330,7 @@ models:
   | expert profile | `/opt/strata/data/expert-profile.bin` | `/opt/strata/terminal/data/expert-profile.bin` |
 
   The engine directory is named for the engine package's version (0.1.60 in
-  Strata 0.2.14; the fork's current kv_share build is 0.1.51). With another image's
+  Strata 0.2.15; the fork's current kv_share build is 0.1.51). With another image's
   paths the backend dies at launch. The CUDA image's paths were the
   `/opt/strata` checkout and `/opt/strata/.venv/bin/python` up to Strata
   0.1.45 (viiwork v2.11.0-beta1 and earlier).

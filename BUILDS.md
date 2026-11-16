@@ -182,7 +182,7 @@ installed release resolves to the published
 ## `docker/Dockerfile.strata` and `docker/Dockerfile.strata-cuda`
 
 [Strata](https://github.com/Niko1221/Strata) at the tag `STRATA_VERSION` pins in
-`docker/pins.env` (currently `v0.2.14`), with `viiwork` added. Two files rather
+`docker/pins.env` (currently `v0.2.15`), with `viiwork` added. Two files rather
 than one with a build argument, because the gfx906 image compiles the engine
 and the CUDA image does not, and the two lay Strata out differently: the
 model's block and the JSON name different paths on each
@@ -200,7 +200,7 @@ has the table).
   does: `strata: {dir: /opt/strata}` and the JSON's `exe`
   `/opt/strata/build-906/strata`, as at 0.1.x. Upstream's 0.2 Terminal and
   engine packages are release archives this build does not make.
-- **`docker/strata/gfx906-v0.2.14.patch` carries one fix**: HIP aliases in
+- **`docker/strata/gfx906-v0.2.15.patch` carries one fix**: HIP aliases in
   `strata_hip.h` for `cudaDeviceGetStreamPriorityRange` and
   `cudaStreamCreateWithPriority`, which `src/core/dflash2.cpp` (new in 0.2)
   calls on every build; without them the engine does not compile (built
@@ -208,11 +208,11 @@ has the table).
   fixes are gone: the two CMake ones are upstream since 0.2.1, and the cuBLAS
   aliases were for the Qwen3.6 engine, which a gfx906 build no longer
   compiles (`strata --families` lists `qwen4exp`, Qwen3.8-Flash-Next). The
-  patch is the v0.2.3 one, renamed: it applies unchanged to v0.2.14 (checked
+  patch is the v0.2.3 one, renamed: it applies unchanged to v0.2.15 (checked
   with `git apply --check`). The patch is named for the version and must be re-cut when `STRATA_VERSION`
   changes; `scripts/pins_test.sh` checks that the file the Dockerfile names
   exists.
-- **v0.2.14 compiles for gfx906 but is not yet served on a card** (built
+- **v0.2.15 compiles for gfx906 but is not yet served on a card** (built
   2026-11-16; 0.2.14 moves prompt reading to Strata's own kernels on AMD too,
   which no gfx906 card has run). Since 0.2.14 ggml is vendored in the checkout,
   so the build passes no `STRATA_GGML_DIR`; v0.2.3 needed one. v0.1.45 served
@@ -224,14 +224,14 @@ has the table).
 
 **`Dockerfile.strata-cuda` sits on a CUDA image built from the pin.**
 Upstream publishes ready-made images (`ghcr.io/niko1221/strata:<version>-cuda13`)
-some time after a release, and 0.2.14 had none, so `STRATA_CUDA_IMAGE` is a
-local tag (`strata-cuda-base:0.2.14`) that `make docker-strata-cuda-base`
+some time after a release, and 0.2.14 and 0.2.15 had none, so `STRATA_CUDA_IMAGE` is a
+local tag (`strata-cuda-base:0.2.15`) that `make docker-strata-cuda-base`
 (`scripts/build-strata-cuda-base.sh`) makes first: it clones the tag, refuses
 anything but `STRATA_COMMIT`, fetches the cuda13 engine package through
 upstream's `docker/fetch-engines.py` (signed feed, sizes and hashes checked; the
 archive must also be `STRATA_CUDA_ENGINE_SHA256`), and builds with upstream's
 `docker/build.sh`. That script leaves `third_party/strata-gguf-py` out of its
-context at v0.2.14, which `package_terminal.py` needs, so the wrapper adds the
+context at v0.2.15, which `package_terminal.py` needs, so the wrapper adds the
 path to its copy. The image's `/opt/strata/terminal/COMMIT` is checked against
 `STRATA_COMMIT`. `viiwork` is then added to it, as in `Dockerfile.vllm`; nothing
 else is compiled, and the legacy builder works. When upstream publishes the

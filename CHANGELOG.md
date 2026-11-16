@@ -1,5 +1,22 @@
 # Changelog
 
+## v2.12.2
+
+- **The Strata pin is v0.2.15** (was v0.2.14; `STRATA_COMMIT` `c775728`).
+  Upstream's 0.2.15 changes the app and the Terminal only: the engine stays
+  0.1.60, the same files as 0.2.14, so the CUDA engine archive checksum
+  (`STRATA_CUDA_ENGINE_SHA256`) is unchanged. This release changes no viiwork
+  code, and nodes that run their own Strata image (the kv_share fork) are not
+  affected.
+  - **CUDA:** `scripts/build-strata-cuda-base.sh` builds the base image at the
+    new commit (`strata-cuda-base:0.2.15`); the engine directory is still
+    `/opt/strata/components/engine/0.1.60-linux-x86_64-cuda-cuda13`. Upstream
+    published no 0.2.15 image either, and its `build.sh` still leaves
+    `third_party/strata-gguf-py` out, which the script adds.
+  - **gfx906:** the patch is renamed `gfx906-v0.2.15.patch`, content
+    unchanged, and applies. The image compiles and the engine starts.
+  - **Not run on a card.** Neither image has served a model.
+
 ## v2.12.1
 
 - **The Strata pin is v0.2.14** (was v0.2.3; `STRATA_VERSION`, `STRATA_COMMIT`

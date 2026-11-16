@@ -1,7 +1,7 @@
 # viiwork on Strata, CUDA.
 #
 # Upstream publishes ready-made images (ghcr.io/niko1221/strata:<version>-<flavor>)
-# some time after a release; 0.2.14 had none. STRATA_CUDA_IMAGE in
+# some time after a release; 0.2.14 and 0.2.15 had none. STRATA_CUDA_IMAGE in
 # docker/pins.env is therefore a local tag, made by
 # scripts/build-strata-cuda-base.sh (`make docker-strata-cuda-base`) from
 # upstream's own docker/build.sh and the signed engine package. This file is
@@ -23,7 +23,7 @@
 # RTX A4000 at 262,144 context, two RTX 4090 and an RTX 5090.
 # nvidia-smi is injected by the container runtime, as in Dockerfile.vllm.
 
-ARG STRATA_CUDA_IMAGE=strata-cuda-base:0.2.14
+ARG STRATA_CUDA_IMAGE=strata-cuda-base:0.2.15
 
 FROM golang:1.27.2 AS go-build
 WORKDIR /src

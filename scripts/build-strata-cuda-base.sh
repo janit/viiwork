@@ -3,13 +3,13 @@
 # release docker/pins.env names, and tags it STRATA_CUDA_IMAGE.
 #
 # Upstream publishes ready-made images (ghcr.io/niko1221/strata:<version>-cuda13)
-# some time after a release; 0.2.14 had none. This makes the same image from
+# some time after a release; 0.2.14 and 0.2.15 had none. This makes the same image from
 # upstream's own tooling, and trusts nothing it does not check:
 #   - the source is cloned at the tag and must be exactly STRATA_COMMIT;
 #   - the engine package comes from docker/fetch-engines.py, which checks the
 #     signed update feed, the archive's size and sha256, and every file's hash;
 #     its archive sha256 must also be STRATA_CUDA_ENGINE_SHA256;
-#   - docker/build.sh (upstream's) assembles the image. At v0.2.14 it leaves
+#   - docker/build.sh (upstream's) assembles the image. At v0.2.15 it leaves
 #     third_party/strata-gguf-py out of the build context although
 #     package_terminal.py copies it, so that path is added to a copy of the
 #     script; a script that already names it is used as it is.
