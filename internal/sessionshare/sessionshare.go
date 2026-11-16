@@ -60,6 +60,11 @@ const (
 	// past it the node trusts its own record, as with an engine that cannot
 	// say.
 	heldTimeout = 2 * time.Second
+	// manifestTimeout bounds asking a peer what it holds before a save. A
+	// request that takes the slot waits for the running save, so a peer that
+	// accepts the connection and never answers must not hold it for the
+	// push's 30 minutes.
+	manifestTimeout = 15 * time.Second
 	// failLogEvery rate-limits repeated failures per (what, peer).
 	failLogEvery = 10 * time.Minute
 )
@@ -746,7 +751,10 @@ func (m *Manager) push(ctx context.Context, j job) {
 		// and the save id it holds is the base the engine may write a
 		// delta against.
 		var err error
-		if man, err = t.Manifest(ctx, addr, j.key); err != nil {
+		mctx, mcancel := context.WithTimeout(ctx, manifestTimeout)
+		man, err = t.Manifest(mctx, addr, j.key)
+		mcancel()
+		if err != nil {
 			md.pushFails.Add(1)
 			m.failf("push", peer, "%s: asking %s what it holds of session %s: %v", j.model, peer, j.key, err)
 			if !md.cfg.Local {
@@ -1019,7 +1027,10 @@ func (m *Manager) pushSlot(ctx context.Context, md *model, j job, peer, addr str
 	// asked after the save.
 	if t != nil && !j.claimed {
 		var err error
-		if man, err = t.Manifest(ctx, addr, j.key); err != nil {
+		mctx, mcancel := context.WithTimeout(ctx, manifestTimeout)
+		man, err = t.Manifest(mctx, addr, j.key)
+		mcancel()
+		if err != nil {
 			md.pushFails.Add(1)
 			m.failf("push", peer, "%s: asking %s what it holds of session %s: %v", j.model, peer, j.key, err)
 			if !md.cfg.Local {
@@ -1084,7 +1095,10 @@ func (m *Manager) pushSlot(ctx context.Context, md *model, j job, peer, addr str
 			defer cancel()
 			if t != nil {
 				var err error
-				if man, err = t.Manifest(ctx, addr, j.key); err != nil {
+				mctx, mcancel := context.WithTimeout(ctx, manifestTimeout)
+				man, err = t.Manifest(mctx, addr, j.key)
+				mcancel()
+				if err != nil {
 					md.pushFails.Add(1)
 					m.failf("push", peer, "%s: asking %s what it holds of session %s: %v", j.model, peer, j.key, err)
 					t = nil

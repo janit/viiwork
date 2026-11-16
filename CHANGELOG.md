@@ -1,5 +1,20 @@
 # Changelog
 
+## v2.12.0
+
+kv_share for llama.cpp (beta1) and its beta2 hardening and llama.cpp v1.0.0,
+as one release; the entries below describe each part.
+
+- **Fix: a request that takes a slot never waits on a silent peer.** Before
+  a save, the node asks the replica peer what it holds. That call ran under
+  the push's 30 minute limit, and a request that takes the slot waits for the
+  save, so a peer that accepted the connection and never answered could hold
+  a client request for that long. The question now ends after 15 s, and the
+  session is served without a replica as before.
+- `kv_share.peers` over a LAN address needs a secured mesh: an open mesh
+  accepts a replica only from the member's mesh address (the comment in the
+  options said otherwise).
+
 ## v2.12.0-beta2
 
 - **llama.cpp v1.0.0** (b12359). The CUDA and Vulkan images are on b12375,

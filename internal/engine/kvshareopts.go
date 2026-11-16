@@ -43,8 +43,10 @@ type KVShareOptions struct {
 	// Peers names the address this node sends a member's replicas to, by
 	// member name, in place of the member's mesh API address: two hosts on
 	// one LAN move replicas over it rather than through the tailnet. A
-	// member it does not name gets its mesh address. The receiver checks a
-	// replica's signature, not where it came from.
+	// member it does not name gets its mesh address. A secured mesh's receiver
+	// checks a replica's signature, not where it came from; an open mesh's
+	// checks the source address against the member's mesh address, so a LAN
+	// address works there only if the sender's source is that address.
 	Peers map[string]string `yaml:"peers"`
 }
 
