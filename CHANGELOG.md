@@ -1,5 +1,28 @@
 # Changelog
 
+## v2.12.1
+
+- **The Strata pin is v0.2.14** (was v0.2.3; `STRATA_VERSION`, `STRATA_COMMIT`
+  `09b6038`). The images `viiwork-strata` (gfx906) and `viiwork-strata-cuda`
+  are built from it. Nodes that run their own Strata image (the kv_share
+  fork) are not affected: this release changes no viiwork code.
+  - **CUDA:** upstream had published no 0.2.14 image, so
+    `scripts/build-strata-cuda-base.sh` (`make docker-strata-cuda-base`)
+    builds it from upstream's `docker/build.sh` and the engine package of the
+    signed update feed. It refuses any other commit than the pin and any
+    engine archive but `STRATA_CUDA_ENGINE_SHA256`. The engine directory is
+    now `/opt/strata/components/engine/0.1.60-linux-x86_64-cuda-cuda13`, so a
+    model that uses this image changes `exe` and `lib_dirs` from `0.1.48`.
+    Upstream's `build.sh` leaves `third_party/strata-gguf-py` out of its
+    build context at this tag; the script adds it.
+  - **gfx906:** the patch is the v0.2.3 one, unchanged, and applies. Strata
+    vendors ggml now, so the build no longer takes a llama.cpp checkout; the
+    old step failed on that. The image compiles and the engine starts and
+    lists `qwen4exp`.
+  - **Not run on a card.** Neither image has served a model. 0.2.14 reads
+    prompts on Strata's own kernels on NVIDIA and AMD, and upstream says
+    answers can differ from 0.2.13 in some words.
+
 ## v2.12.0
 
 kv_share for llama.cpp (beta1) and its beta2 hardening and llama.cpp v1.0.0,

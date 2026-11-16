@@ -1,17 +1,19 @@
 # viiwork on Strata, CUDA.
 #
-# Since 0.2.1 upstream publishes ready-made images
-# (ghcr.io/niko1221/strata:<version>-<flavor>), so this is the same shape as
-# Dockerfile.vllm: the pinned upstream image (STRATA_CUDA_IMAGE in
-# docker/pins.env, held by digest) with viiwork dropped in. Nothing is
-# compiled. The cuda13 flavor needs NVIDIA driver 580 or newer; its engine is
+# Upstream publishes ready-made images (ghcr.io/niko1221/strata:<version>-<flavor>)
+# some time after a release; 0.2.14 had none. STRATA_CUDA_IMAGE in
+# docker/pins.env is therefore a local tag, made by
+# scripts/build-strata-cuda-base.sh (`make docker-strata-cuda-base`) from
+# upstream's own docker/build.sh and the signed engine package. This file is
+# then the same shape as Dockerfile.vllm: that image with viiwork dropped in.
+# Nothing is compiled. The cuda13 flavor needs NVIDIA driver 580 or newer; its engine is
 # built for sm_75, 86, 89 and 120 (RTX 20 to 50, A4000), plus PTX.
 #
 # The 0.2 layout is not the 0.1.x one. The server and its Python are in the
 # Terminal, so the model's block is
 #   strata: {dir: /opt/strata/terminal, python: /opt/strata/terminal/python/bin/python3}
 # and the engine is an installed component package: the Strata JSON's "exe" is
-#   /opt/strata/components/engine/0.1.48-linux-x86_64-cuda-cuda13/strata
+#   /opt/strata/components/engine/0.1.60-linux-x86_64-cuda-cuda13/strata
 # with that directory in "lib_dirs" (its CUDA libraries are beside it) and
 # "cwd": "/opt/strata/terminal". With the 0.1.x paths the backend dies at launch.
 #
@@ -21,7 +23,7 @@
 # RTX A4000 at 262,144 context, two RTX 4090 and an RTX 5090.
 # nvidia-smi is injected by the container runtime, as in Dockerfile.vllm.
 
-ARG STRATA_CUDA_IMAGE=ghcr.io/niko1221/strata:0.2.3-cuda13@sha256:d39ca9fc583c5085dc66b857fbf3b3e3a9e256f692672d4061322d3bd468433a
+ARG STRATA_CUDA_IMAGE=strata-cuda-base:0.2.14
 
 FROM golang:1.27.2 AS go-build
 WORKDIR /src

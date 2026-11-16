@@ -5,16 +5,18 @@
 #
 # AMD's ROCm no longer ships gfx906 libraries, so the base is the community
 # image upstream itself documents (docs/AMD_HIP.md, "gfx906").
-# docker/strata/gfx906-<version>.patch carries one fix for Strata v0.2.3,
+# docker/strata/gfx906-<version>.patch carries one fix for Strata v0.2.14,
 # inside the gfx906 build only: strata_hip.h gets HIP aliases for two
 # stream-priority calls, cudaDeviceGetStreamPriorityRange and
 # cudaStreamCreateWithPriority, which src/core/dflash2.cpp (new in 0.2) makes
 # unconditionally; without them the engine does not compile. The other three
-# fixes the v0.1.45 patch carried are upstream or unneeded at v0.2.3: the two
+# fixes the v0.1.45 patch carried are upstream or unneeded at v0.2.14: the two
 # CMake ones (moe_f16_kq.cu in the gfx906 strata_mmq, GGML_USE_HIP for
 # strata_mmq_w4a4) since 0.2.1, and the cuBLAS aliases because the Qwen3.6
 # engine that called them is no longer part of a gfx906 build.
-# Built at v0.2.3 on 2026-10-24. v0.1.45 served under viiwork on 2026-10-18,
+# The patch is unchanged since v0.2.3 (built 2026-10-24) and applies to
+# v0.2.14, which compiled for gfx906 on 2026-11-16 (the binary starts and lists
+# qwen4exp; no gfx906 card has served it). v0.1.45 served under viiwork on 2026-10-18,
 # one backend on four Radeon VIIs and an MI60.
 #
 # The source checkout is the image's layout, as it was at 0.1.x: upstream's
@@ -49,8 +51,8 @@ RUN CGO_ENABLED=0 go build -ldflags "-X main.version=${VERSION}" -o /viiwork ./c
 
 # Stage 2: Strata, built for gfx906, and the runtime.
 FROM ${STRATA_ROCM_BASE}
-ARG STRATA_VERSION=v0.2.3
-ARG STRATA_COMMIT=5c8dd322528cc84f68f461ad54a506b9da8fa8d4
+ARG STRATA_VERSION=v0.2.14
+ARG STRATA_COMMIT=09b603886925994d0d4461857b01321ef3aa431c
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -67,13 +69,13 @@ WORKDIR /opt/strata
 RUN git apply /tmp/gfx906.patch \
     && pip3 install --no-cache-dir --break-system-packages -r requirements.txt
 
-# llama.cpp at upstream's pinned commit (setup.get_llama_cpp fetches it and
-# returns its path), then the engine exactly as docs/AMD_HIP.md builds it.
-RUN LLAMA="$(python3 -c 'import setup; print(setup.get_llama_cpp())' | tail -n 1)" \
-    && test -d "$LLAMA/ggml" \
-    && cmake -S . -B build-906 -G Ninja \
+# The engine as docs/AMD_HIP.md builds it. Since 0.2.14 ggml is vendored in the
+# checkout (third_party/strata-ggml), so nothing is fetched and no
+# STRATA_GGML_DIR is passed; v0.2.3 had to be pointed at a llama.cpp checkout
+# (setup.get_llama_cpp returns nothing now, which is what broke the old step).
+RUN cmake -S . -B build-906 -G Ninja \
         -DSTRATA_HIP_GFX906=ON -DCMAKE_HIP_ARCHITECTURES=gfx906 \
-        -DSTRATA_BUILD_TESTS=OFF -DSTRATA_GGML_DIR="$LLAMA" \
+        -DSTRATA_BUILD_TESTS=OFF \
         -DCMAKE_C_COMPILER=/opt/rocm/llvm/bin/clang \
         -DCMAKE_CXX_COMPILER=/opt/rocm/llvm/bin/clang++ \
     && ninja -C build-906 strata \

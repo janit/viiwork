@@ -22,7 +22,11 @@ check "Dockerfile.strata STRATA_COMMIT" "$(sed -n 's/^ARG STRATA_COMMIT=//p' doc
 check "Dockerfile.strata STRATA_ROCM_BASE" "$(sed -n 's/^ARG STRATA_ROCM_BASE=//p' docker/Dockerfile.strata)" "$STRATA_ROCM_BASE"
 check "Dockerfile.strata-cuda STRATA_CUDA_IMAGE" "$(sed -n 's/^ARG STRATA_CUDA_IMAGE=//p' docker/Dockerfile.strata-cuda)" "$STRATA_CUDA_IMAGE"
 v=${STRATA_VERSION#v}
-check "STRATA_CUDA_IMAGE is STRATA_VERSION's" "$(printf '%s' "$STRATA_CUDA_IMAGE" | sed -n 's|^ghcr.io/niko1221/strata:\([^-@]*\)-.*|\1|p')" "$v"
+check "STRATA_CUDA_IMAGE is STRATA_VERSION's" "${STRATA_CUDA_IMAGE##*:}" "$v"
+case "$STRATA_CUDA_ENGINE_SHA256" in
+*[!0-9a-f]*) check "STRATA_CUDA_ENGINE_SHA256 is lowercase hex" "no" "yes" ;;
+esac
+check "STRATA_CUDA_ENGINE_SHA256 length" "${#STRATA_CUDA_ENGINE_SHA256}" 64
 # The Dockerfile applies docker/strata/gfx906-<version>.patch exactly when it names one.
 if grep -q 'gfx906-${STRATA_VERSION}.patch' docker/Dockerfile.strata; then
 	check "gfx906 patch for STRATA_VERSION exists" "$([ -f "docker/strata/gfx906-$STRATA_VERSION.patch" ] && echo yes || echo no)" yes

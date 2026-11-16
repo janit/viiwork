@@ -182,7 +182,7 @@ installed release resolves to the published
 ## `docker/Dockerfile.strata` and `docker/Dockerfile.strata-cuda`
 
 [Strata](https://github.com/Niko1221/Strata) at the tag `STRATA_VERSION` pins in
-`docker/pins.env` (currently `v0.2.3`), with `viiwork` added. Two files rather
+`docker/pins.env` (currently `v0.2.14`), with `viiwork` added. Two files rather
 than one with a build argument, because the gfx906 image compiles the engine
 and the CUDA image does not, and the two lay Strata out differently: the
 model's block and the JSON name different paths on each
@@ -200,7 +200,7 @@ has the table).
   does: `strata: {dir: /opt/strata}` and the JSON's `exe`
   `/opt/strata/build-906/strata`, as at 0.1.x. Upstream's 0.2 Terminal and
   engine packages are release archives this build does not make.
-- **`docker/strata/gfx906-v0.2.3.patch` carries one fix**: HIP aliases in
+- **`docker/strata/gfx906-v0.2.14.patch` carries one fix**: HIP aliases in
   `strata_hip.h` for `cudaDeviceGetStreamPriorityRange` and
   `cudaStreamCreateWithPriority`, which `src/core/dflash2.cpp` (new in 0.2)
   calls on every build; without them the engine does not compile (built
@@ -208,28 +208,41 @@ has the table).
   fixes are gone: the two CMake ones are upstream since 0.2.1, and the cuBLAS
   aliases were for the Qwen3.6 engine, which a gfx906 build no longer
   compiles (`strata --families` lists `qwen4exp`, Qwen3.8-Flash-Next). The
-  patch is named for the version and must be re-cut when `STRATA_VERSION`
+  patch is the v0.2.3 one, renamed: it applies unchanged to v0.2.14 (checked
+  with `git apply --check`). The patch is named for the version and must be re-cut when `STRATA_VERSION`
   changes; `scripts/pins_test.sh` checks that the file the Dockerfile names
   exists.
-- **v0.2.3 is compiled, not yet served on a card.** v0.1.45 served
+- **v0.2.14 compiles for gfx906 but is not yet served on a card** (built
+  2026-11-16; 0.2.14 moves prompt reading to Strata's own kernels on AMD too,
+  which no gfx906 card has run). Since 0.2.14 ggml is vendored in the checkout,
+  so the build passes no `STRATA_GGML_DIR`; v0.2.3 needed one. v0.1.45 served
   Qwen3.8-Flash-Next under viiwork on 2026-10-18, one backend on four Radeon
   VIIs and an MI60 (a 104k-token prompt read at 959 tok/s).
 - The image has no group named `render`. Give the container the host's render
   group by number, as `docker/compose.strata.yaml` does (`RENDER_GID`); with
   the name the container does not start.
 
-**`Dockerfile.strata-cuda` sits on upstream's image.** Since 0.2.1 upstream
-publishes ready-made images, so this is the same shape as `Dockerfile.vllm`:
-`STRATA_CUDA_IMAGE` (`ghcr.io/niko1221/strata:0.2.3-cuda13`, held by digest;
-its `/opt/strata/terminal/COMMIT` is `STRATA_COMMIT`) with `viiwork` added.
-Nothing is compiled, and the legacy builder works.
+**`Dockerfile.strata-cuda` sits on a CUDA image built from the pin.**
+Upstream publishes ready-made images (`ghcr.io/niko1221/strata:<version>-cuda13`)
+some time after a release, and 0.2.14 had none, so `STRATA_CUDA_IMAGE` is a
+local tag (`strata-cuda-base:0.2.14`) that `make docker-strata-cuda-base`
+(`scripts/build-strata-cuda-base.sh`) makes first: it clones the tag, refuses
+anything but `STRATA_COMMIT`, fetches the cuda13 engine package through
+upstream's `docker/fetch-engines.py` (signed feed, sizes and hashes checked; the
+archive must also be `STRATA_CUDA_ENGINE_SHA256`), and builds with upstream's
+`docker/build.sh`. That script leaves `third_party/strata-gguf-py` out of its
+context at v0.2.14, which `package_terminal.py` needs, so the wrapper adds the
+path to its copy. The image's `/opt/strata/terminal/COMMIT` is checked against
+`STRATA_COMMIT`. `viiwork` is then added to it, as in `Dockerfile.vllm`; nothing
+else is compiled, and the legacy builder works. When upstream publishes the
+image for a release, `STRATA_CUDA_IMAGE` can name it by digest again.
 
 - **cuda13 needs NVIDIA driver 580 or newer.** Its engine is built for sm_75,
   86, 89 and 120 plus PTX: RTX 20 to 50 and the A4000.
 - **The layout is upstream's 0.2 one**: the server and its Python in the
   Terminal (`strata: {dir: /opt/strata/terminal, python:
   /opt/strata/terminal/python/bin/python3}`) and the engine in a component
-  package, `/opt/strata/components/engine/0.1.48-linux-x86_64-cuda-cuda13/`,
+  package, `/opt/strata/components/engine/0.1.60-linux-x86_64-cuda-cuda13/`,
   which is the JSON's `exe` directory and its `lib_dirs`. With the 0.1.x
   paths (`/opt/strata`, `/opt/strata/.venv/bin/python`,
   `/opt/strata/engine/strata`) the backend dies at launch: **moving a CUDA
