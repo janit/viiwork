@@ -70,6 +70,36 @@ func (v *servedView) Exists(model string) bool {
 	return false
 }
 
+// OtherModalityOnly reports whether model is listed, at any age, only by
+// members that publish a non-text modality for it (a voice session model, an
+// image generator), and is not configured here. See Resolver.Resolve.
+func (v *servedView) OtherModalityOnly(model string) bool {
+	for _, mc := range v.local.Capacity() {
+		if mc.Name == model {
+			return false
+		}
+	}
+	other := false
+	for _, rep := range v.reports.Reports() {
+		if rep.Node == v.self {
+			continue
+		}
+		if mc, ok := rep.Model(model); ok {
+			if meshapi.IsTextModality(mc.Modality) {
+				return false
+			}
+			other = true
+		}
+	}
+	return other
+}
+
+// modalityView is the optional half of a ServedView that knows modality;
+// the resolver's own view implements it.
+type modalityView interface {
+	OtherModalityOnly(model string) bool
+}
+
 func (v *servedView) Served(model string) bool {
 	for _, mc := range v.local.Capacity() {
 		if mc.Name == model && mc.HealthyBackends > 0 {
@@ -159,8 +189,18 @@ func (r *Resolver) Resolve(requested string) (model, alias string, err error) {
 
 // pick is the target when served, else the first served fallback. A target
 // that is served but full is still the answer: the request queues for it.
+//
+// A target the fleet serves only with another modality (a voice session
+// model) is the answer too, served or not and ahead of the fallbacks: the
+// request then gets the router's refusal for that model (400,
+// model_modality), the same as the name itself, rather than a 503 that
+// invites a retry or a fallback that hides the misconfigured alias. No
+// amount of waiting makes a voice model take a chat request.
 func (r *Resolver) pick(e meshapi.AliasEntry) (string, bool) {
 	if r.served.Served(e.Target) {
+		return e.Target, true
+	}
+	if mv, ok := r.served.(modalityView); ok && mv.OtherModalityOnly(e.Target) {
 		return e.Target, true
 	}
 	for _, f := range e.Fallbacks {

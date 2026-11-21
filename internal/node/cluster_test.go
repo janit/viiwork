@@ -121,3 +121,20 @@ func TestBuildClusterDropsAStaleMemberStatus(t *testing.T) {
 		t.Errorf("cluster cost %v, want gb1's 0.25 only", c.ClusterCostEURPerHour)
 	}
 }
+
+// A voice member's status reaches the dashboards with its modality, through
+// the poller's decode and the cluster view alike.
+func TestClusterCarriesAMembersModality(t *testing.T) {
+	var st meshapi.NodeStatus
+	if err := json.Unmarshal([]byte(`{"node":"gb2","models":[{"name":"haru-4b","engine":"haru","slots":2,"busy":0,"queued":0,"ctx":0,"backends":[],"modality":"voice"}]}`), &st); err != nil {
+		t.Fatal(err)
+	}
+	c := BuildCluster(clusterFixture(fakeRemote{"gb2": st}))
+	b, _ := json.Marshal(c)
+	if !strings.Contains(string(b), `"name":"haru-4b"`) || !strings.Contains(string(b), `"modality":"voice"`) {
+		t.Errorf("cluster view lost the modality: %s", b)
+	}
+	if strings.Count(string(b), `"modality"`) != 1 {
+		t.Errorf("a text model spelled its modality: %s", b)
+	}
+}

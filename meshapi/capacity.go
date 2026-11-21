@@ -44,6 +44,10 @@ type ModelCapacity struct {
 	// a spilled turn pays here instead of its prefill. Absent until the node
 	// has imported one, and on an older version.
 	KVShareImportMsPer1k int `json:"kv_share_import_ms_per_1k,omitempty"`
+	// Modality (v2.13) is the model's kind (modality.go): absent is text.
+	// A non-text model is listed in the fleet view but never receives text
+	// inference, and Slots, Busy and Ctx count its own sessions.
+	Modality string `json:"modality,omitempty"`
 }
 
 // Free is the number of free slots, never negative.

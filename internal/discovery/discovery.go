@@ -97,6 +97,11 @@ type Source interface {
 // their NUMBERS. Driving the walk from the entry list is what stops a model
 // being callable but undiscoverable.
 //
+// The one exception runs the other way: a model the fleet view marks with a
+// non-text modality (v2.13: a voice session model, an image generator) is
+// left out, and so is an alias that targets one. Text inference refuses it,
+// so listing it would make it discoverable but not callable.
+//
 // Pure: no I/O and no clock. Both inputs are already-computed snapshots.
 func Models(src Source) []Model {
 	fleet := map[string]meshapi.FleetModel{}
@@ -120,7 +125,15 @@ func Models(src Source) []Model {
 		if e.Target != "" {
 			name = e.Target
 		}
-		if fm, ok := fleet[name]; ok {
+		fm, ok := fleet[name]
+		if ok && !meshapi.IsTextModality(fm.Modality) {
+			// A model no host serves as text (a voice session model, an
+			// image generator) is not one a chat client can use, and an
+			// alias to one is no better. Every serializer of this record is
+			// a chat-client surface, so it is left out here, once.
+			continue
+		}
+		if ok {
 			m.Engine = fm.Engine
 			m.ServedContext = fm.Ctx
 			m.Hosts, m.OldestAgeMS = provenance(fm)

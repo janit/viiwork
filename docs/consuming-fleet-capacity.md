@@ -55,6 +55,14 @@ GET /v1/fleet/capacity?model=translategemma-27b-it
 Two fields carry the integration: **`slots`** is the depth to size to, and
 **`hosts[].api`** is where to send.
 
+A model that is not text inference (v2.13) carries **`modality`**, on the
+model and on each host: `"voice"` for a viiwork-voice session model, `"image"`
+for an image generator. Absent is text. Such a model's `slots` are its own
+sessions, and its hosts are where to open them; a viiwork node refuses it a
+chat request with 400 (`code: model_modality`). When one name is served as
+text by some hosts and with another modality by others, the totals count only
+the text hosts, and the others are listed with their `modality`.
+
 The model's `free` is the sum of each fresh host's `free`, and a host's `free`
 is `slots - busy` clamped at 0. It is not `slots - busy` over the totals: a host
 running more requests than it has slots (while draining, say) has nothing to

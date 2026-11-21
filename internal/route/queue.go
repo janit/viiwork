@@ -157,7 +157,8 @@ func (r *Router) Run(ctx context.Context) {
 // nothing. Scanning past a waiter with no candidate is what keeps a request
 // pinned to a full host from stalling unpinned requests behind it (Decision 7).
 // A waiter whose model or pinned host is gone completes with that error, and so
-// does one with an image once every host says it reads none.
+// does one with an image once every host says it reads none, and one whose
+// model is now listed only with another modality (ErrNotText).
 //
 // Within one model's scan, once an unpinned waiter finds no free slot, every
 // later unpinned waiter would ask exactly the same question (queued requests
@@ -190,7 +191,7 @@ func (r *Router) dispatchLocked() {
 				case err == nil:
 					r.completeLocked(w, waitResult{lease: l})
 					progressed = true
-				case errors.Is(err, ErrModelNotFound), errors.Is(err, ErrHostNotServing), errors.Is(err, ErrNoImageInput):
+				case errors.Is(err, ErrModelNotFound), errors.Is(err, ErrHostNotServing), errors.Is(err, ErrNoImageInput), errors.Is(err, ErrNotText):
 					r.completeLocked(w, waitResult{err: err})
 					progressed = true
 				case w.req.Host == "" && w.req.Images:

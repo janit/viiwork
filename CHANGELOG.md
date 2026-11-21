@@ -1,5 +1,32 @@
 # Changelog
 
+## v2.13.0
+
+- **Modality: voice and image models in the mesh.** A model on
+  `/v1/capacity`, `/v1/status` and `/v1/fleet/capacity` (model and host) may
+  carry `"modality": "voice"` or `"image"`, published by a member that serves
+  something other than a text LLM (viiwork-voice, which joins as an ordinary
+  `node`). Absent is text, which every earlier node is, and an unknown value
+  counts as not text.
+  - **Never text inference.** Such a host is never a candidate for chat,
+    completions, embeddings or any client-dialect path (`peerFreeLocked`), and
+    neither `?host=` nor `?prefer=` makes it one.
+  - **A clear refusal.** A request for a model the fleet serves only that way
+    is refused at once with 400, `{"error":{"type":"invalid_request",
+    "code":"model_modality",...}}`, naming the modality and the nodes that
+    serve it: never queued, never 503. An alias to one resolves to it ahead of
+    its fallbacks and gets the same answer.
+  - **Listings.** These models are left out of `/v1/models`, `/api.json` and
+    `/v1/model/info` (and so is an alias to one). `/v1/fleet/capacity` lists
+    them with their modality; when a name is also served as text, only the
+    text hosts count toward its totals and context floor. `/mesh` badges them
+    ("voice only", "image only") and offers no chat link.
+  - **Contract.** Additive and omitempty throughout: `modality` on
+    `ModelCapacity`, `ModelStatus`, `FleetModel` and `FleetHost`, and one
+    field outside it, `error.code`. Routing allocates as before.
+  - **Not yet run on the fleet.** The dashboard badge has not been checked in
+    a browser.
+
 ## v2.12.2
 
 - **The Strata pin is v0.2.15** (was v0.2.14; `STRATA_COMMIT` `c775728`).

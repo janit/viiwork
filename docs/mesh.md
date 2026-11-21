@@ -64,6 +64,20 @@ it for up to `routing.queue_timeout` (20 s), then gets 429 with
   ([models.md](models.md#models-that-read-images)), and a session with a saved
   replica prices that host warm
   ([models.md](models.md#sharing-sessions-between-hosts-kv_share)).
+- **Only text models take text inference** (v2.13). A member that is not a
+  viiwork node, such as viiwork-voice, may join the mesh and publish models
+  that are not text LLMs, each marked with `"modality": "voice"` or
+  `"modality": "image"` on its `/v1/capacity` and `/v1/status`. Absent means
+  text, which is what every viiwork node's own models are; a value a node does
+  not recognise counts as not text. Such a host is never a candidate for a
+  chat, completion or embedding request, and neither `?host=` nor `?prefer=`
+  makes it one. A request for a model the fleet serves *only* with another
+  modality is refused at once with 400 and
+  `{"error":{"type":"invalid_request","code":"model_modality",...}}`, naming
+  the modality and the nodes that serve it; an alias to such a model gets the
+  same answer. These models are left out of `/v1/models` and the discovery
+  documents and listed, with their `modality`, on `/v1/fleet/capacity` and
+  the `/mesh` dashboard ("voice only").
 - **Routing follows measured speed** (`routing.performance`, on by default).
   Every node measures its own time to first token per model and publishes the
   score on `/v1/capacity`. For a request, each host with a free slot gets a

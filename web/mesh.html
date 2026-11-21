@@ -186,6 +186,9 @@
   tr.parked td { color: var(--dimmer); }
   .respawns { color: var(--warn); font-size: 0.72rem; }
   .perf { color: var(--dimmer); font-size: 0.72rem; }
+  /* a model that is not text inference (v2.13 modality): voice, image */
+  .modality { font-size: 0.68rem; padding: 0 6px; margin-left: 6px; border-radius: 999px;
+              border: 1px solid var(--warn); color: var(--warn); white-space: nowrap; }
   /* The VRAM cell carried a 46px meter as well as its numbers. In a table that
      has to fit a whole fleet the bar was the widest thing in the column and
      said what the numbers already say, so only its warning survives, as the
@@ -424,6 +427,28 @@ function hostsOf(c) {
   }));
 }
 
+// modalities is model -> modality for every model that no live host serves
+// as text (v2.13: absent is text; a voice session model or an image
+// generator publishes its own). Such a model never takes a chat request, so
+// it gets a badge wherever it is listed and no chat link.
+function modalities(c) {
+  const text = new Set(), other = new Map();
+  for (const h of liveHosts(c)) {
+    for (const m of (h.status.models || [])) {
+      if (!m.modality || m.modality === "text") text.add(m.name);
+      else if (!other.has(m.name) || m.modality < other.get(m.name)) other.set(m.name, m.modality);
+    }
+  }
+  for (const name of text) other.delete(name);
+  return other;
+}
+
+// modalityBadge is the badge for a non-text model, "" for a text one.
+function modalityBadge(mods, model) {
+  const m = mods.get(model);
+  return m ? `<span class="modality" title="modality ${esc(m)}: not served for chat or completions">${esc(m)} only</span>` : "";
+}
+
 // liveHosts is the alive members that have a status: the hosts with numbers.
 function liveHosts(c) {
   return hostsOf(c).filter(h => h.state === "alive" && h.status);
@@ -456,7 +481,7 @@ function flattenBackends(c) {
           gpuHTML: gpuLabel(b), busy: b.busy || 0, slots: b.slots || 0, perf: m.perf || null,
           rssMB: b.rss_mb || 0, util, vramUsed: used, vramTotal: total,
           tokDecoded: b.tok_decoded || 0, tokRemain: b.tok_remain || 0,
-          respawns: b.respawns || 0
+          respawns: b.respawns || 0, modality: m.modality || ""
         });
       }
     }
@@ -513,6 +538,7 @@ function renderBackends() {
   }
 
   const hostWatts = new Map(hostPower(cluster).map(h => [h.host, h.watts]));
+  const mods = modalities(cluster);
   const totalBusy = rows.reduce((a, r) => a + r.busy, 0);
   $("backendSummary").textContent =
     `${rows.length} backend${rows.length === 1 ? "" : "s"} · ${groups.size} ${groupMode}${groups.size === 1 ? "" : "s"} · ${totalBusy} busy`;
@@ -525,7 +551,7 @@ function renderBackends() {
     // models share a machine, so printing it per model would imply a split the
     // BMC cannot make. That split is the energy store's job, not this table's.
     const w = groupMode === "host" ? hostWatts.get(name) : null;
-    html += `<tr class="grouphead"><td colspan="9">${esc(name)}` +
+    html += `<tr class="grouphead"><td colspan="9">${esc(name)}${groupMode === "model" ? modalityBadge(mods, name) : ""}` +
             `<span class="cnt"> · ${list.length} backend${list.length === 1 ? "" : "s"}` +
             `${busy ? " · " + busy + " busy" : ""}` +
             `${w ? " · " + esc(fmtW(w)) + " W" : ""}</span></td></tr>`;
@@ -539,7 +565,8 @@ function renderBackends() {
       const pl = perfLabel(r);
       html += `<tr>` +
         `<td><span class="dot ${esc(r.status)}" title="${esc(title)}"></span></td>` +
-        `<td class="gpu">${esc(r.id)}${r.respawns ? ` <span class="respawns" title="respawns">↻${r.respawns}</span>` : ""}</td>` +
+        `<td class="gpu">${esc(r.id)}${r.respawns ? ` <span class="respawns" title="respawns">↻${r.respawns}</span>` : ""}` +
+        `${groupMode === "host" && r.modality && r.modality !== "text" ? `<span class="modality">${esc(r.modality)} only</span>` : ""}</td>` +
         `<td class="gpu">${r.gpuHTML}</td>` +
         `<td class="host">${esc(r.host)}</td>` +
         `<td class="num">${r.busy}/${r.slots}${pl ? ` <span class="perf">${esc(pl)}</span>` : ""}</td>` +
@@ -579,6 +606,7 @@ function modelCounts() {
 // ---------------------------------------------------------------------------
 function renderModels() {
   const counts = modelCounts();
+  const mods = modalities(cluster);
 
   const el = $("models");
   if (!counts.size) { el.innerHTML = '<span class="empty">no models</span>'; return; }
@@ -586,7 +614,7 @@ function renderModels() {
   el.innerHTML = [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]))
     .map(([m, n]) => {
       const cls = modelFilter === m ? "pill active" : (n ? "pill" : "pill muted");
-      return `<button class="${cls}" data-model="${esc(m)}">${esc(m)}${n ? ` · ${n}` : ""}</button>`;
+      return `<button class="${cls}" data-model="${esc(m)}">${esc(m)}${n ? ` · ${n}` : ""}${modalityBadge(mods, m)}</button>`;
     }).join("");
 
   el.querySelectorAll("button").forEach(b => b.onclick = () => {
@@ -609,11 +637,16 @@ function chatHref(model) {
 
 function renderChatLinks() {
   const counts = modelCounts();
+  const mods = modalities(cluster);
   const el = $("chatlinks");
   if (!counts.size) { el.innerHTML = '<span class="empty">no models</span>'; return; }
 
+  // A voice or image model has no chat to open: /chat would only get the
+  // node's 400. It is listed, muted and badged, so its absence is explained.
   el.innerHTML = [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([m, n]) => n
+    .map(([m, n]) => mods.has(m)
+      ? `<span class="pill muted">${esc(m)}${modalityBadge(mods, m)}</span>`
+      : n
       ? `<a class="pill link" href="${esc(chatHref(m))}" target="_blank" rel="noopener">` +
         `${esc(m)} · ${n}<span class="go">open ↗</span></a>`
       : `<span class="pill muted">${esc(m)}</span>`)
@@ -653,6 +686,7 @@ function renderAliases() {
   for (const b of flattenBackends(cluster)) {
     perModel.set(b.model, (perModel.get(b.model) || 0) + 1);
   }
+  const mods = modalities(cluster);
   body.innerHTML = aliases.map(a => {
     // Shadowed and unavailable read like an unhealthy backend: the name does
     // not lead where its entry says. The dot carries the state, which is why
@@ -668,7 +702,7 @@ function renderAliases() {
     return `<tr title="${esc(title)}">` +
       `<td><span class="dot ${dot}"></span></td>` +
       `<td class="gpu">${esc(a.name)}</td>` +
-      `<td class="gpu">${esc(a.target)}</td>` +
+      `<td class="gpu">${esc(a.target)}${modalityBadge(mods, a.target)}</td>` +
       `<td${n ? "" : ' style="color:var(--bad)"'}>${n}</td>` +
       `</tr>`;
   }).join("");

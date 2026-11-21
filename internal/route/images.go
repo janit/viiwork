@@ -78,7 +78,7 @@ func (r *Router) imageClassLocked(req Request, localHealthy bool, reports []capa
 			if rep.Node == r.c.Self || (req.Host != "" && rep.Node != req.Host) || !capacity.Fresh(rep, now, r.c.StaleAfter) {
 				continue
 			}
-			if mc, has := rep.Model(req.Model); has && mc.HealthyBackends > 0 {
+			if mc, has := rep.Model(req.Model); has && mc.HealthyBackends > 0 && textModel(mc) {
 				note(classOf(mc.Images))
 			}
 		}

@@ -203,12 +203,22 @@ func (r *Router) pickWithReportsLocked(req Request, reports []capacity.Report) (
 
 	// Existence: a model nobody configures or reports is a 404, kept distinct
 	// from "that model, not on that host" (v1.8's rule).
-	existsRemote, pinListed := false, false
+	//
+	// A host that lists the model with another modality (voice, image) does
+	// not make it exist for text inference: when only such hosts list it,
+	// the answer is ErrNotText, a refusal rather than a wait, and a pin to
+	// such a host gets the same answer rather than a forward.
+	existsRemote, pinListed, otherModality, pinOther := false, false, false, false
 	for _, rep := range reports {
 		if rep.Node == r.c.Self {
 			continue
 		}
-		if _, has := rep.Model(req.Model); has {
+		if mc, has := rep.Model(req.Model); has {
+			if !textModel(mc) {
+				otherModality = true
+				pinOther = pinOther || rep.Node == req.Host
+				continue
+			}
 			existsRemote = true
 			if rep.Node == req.Host {
 				pinListed = true
@@ -216,6 +226,15 @@ func (r *Router) pickWithReportsLocked(req Request, reports []capacity.Report) (
 		}
 	}
 	if !localOK && !existsRemote {
+		if otherModality {
+			// Pinned to a host that does not list it at all, the useful
+			// answer is still where the model is.
+			q := req
+			if !pinOther {
+				q.Host = ""
+			}
+			return nil, r.modalityError(q, reports)
+		}
 		return nil, ErrModelNotFound
 	}
 	// The pin is compared against known names only; it is never dialled.
@@ -225,6 +244,9 @@ func (r *Router) pickWithReportsLocked(req Request, reports []capacity.Report) (
 				return nil, ErrHostNotServing
 			}
 		} else if !pinListed {
+			if pinOther {
+				return nil, r.modalityError(req, reports)
+			}
 			return nil, ErrHostNotServing
 		}
 	}
@@ -441,7 +463,7 @@ func (r *Router) peerFreeLocked(req Request, rep capacity.Report, now time.Time)
 		return mc, 0, false
 	}
 	mc, has := rep.Model(req.Model)
-	if !has || mc.HealthyBackends <= 0 {
+	if !has || mc.HealthyBackends <= 0 || !textModel(mc) {
 		return mc, 0, false
 	}
 	if (req.Host != "" && rep.Node != req.Host) || req.Exclude["peer:"+rep.Node] {

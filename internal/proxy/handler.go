@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/janit/viiwork/v2/internal/activity"
@@ -374,7 +375,7 @@ func (h *Handler) dispatch(w http.ResponseWriter, r *http.Request, d *dispatch) 
 			httpjson.Error(w, http.StatusServiceUnavailable, meshapi.ErrTypeUnavailable, fmt.Sprintf("model %q is not served here", d.model))
 			return
 		}
-		h.writeAcquireError(w, err, d.model, d.host)
+		h.writeAcquireError(w, r, err, d)
 		return
 	}
 	var (
@@ -486,7 +487,7 @@ func (h *Handler) dispatch(w http.ResponseWriter, r *http.Request, d *dispatch) 
 		queued += waited
 		if err != nil {
 			h.endUnserved(d, label)
-			h.writeAcquireError(w, err, d.model, d.host)
+			h.writeAcquireError(w, r, err, d)
 			return
 		}
 		final = true
@@ -670,8 +671,14 @@ func (h *Handler) endUnserved(d *dispatch, label string) {
 	h.d.Activity.EmitRequestTask(d.rid, -1, d.taskID, "%s", meshapi.RequestDone(d.model, label, time.Since(d.start).Round(time.Millisecond)))
 }
 
-func (h *Handler) writeAcquireError(w http.ResponseWriter, err error, model, host string) {
+func (h *Handler) writeAcquireError(w http.ResponseWriter, r *http.Request, err error, d *dispatch) {
+	model, host := d.model, d.host
+	var me *route.ModalityError
 	switch {
+	case errors.As(err, &me):
+		// A refusal, not "busy" and not "missing": the model exists and will
+		// never take this request, so a client must not retry it here.
+		httpjson.ErrorCode(w, http.StatusBadRequest, errTypeInvalidRequest, meshapi.ErrCodeModelModality, modalityMessage(me, d.alias, r.URL.Path))
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		// The client is gone; there is no one to answer.
 	case errors.Is(err, route.ErrModelNotFound):
@@ -695,6 +702,31 @@ func (h *Handler) writeAcquireError(w http.ResponseWriter, err error, model, hos
 		log.Printf("proxy: routing %q: %v", model, err)
 		httpjson.Error(w, http.StatusInternalServerError, errTypeServer, "routing failed")
 	}
+}
+
+// modalityMessage is the 400's text for a model served only with another
+// modality, e.g. `model "haru-4b" is voice-only (modality voice): it does not
+// accept /v1/chat/completions; it is served by node(s) sloth-voice — open a
+// session there`. An alias is named first, since that is what the client
+// asked for.
+func modalityMessage(me *route.ModalityError, alias, path string) string {
+	var b strings.Builder
+	if alias != "" {
+		fmt.Fprintf(&b, "alias %q targets ", alias)
+	}
+	fmt.Fprintf(&b, "model %q is %s-only (modality %s): it does not accept %s; ", me.Model, me.Modality, me.Modality, path)
+	if me.Host != "" {
+		fmt.Fprintf(&b, "host %q serves it as %s", me.Host, me.Modality)
+	} else {
+		fmt.Fprintf(&b, "it is served by node(s) %s", strings.Join(me.Nodes, ", "))
+	}
+	switch me.Modality {
+	case meshapi.ModalityVoice:
+		b.WriteString(" — open a session there")
+	case meshapi.ModalityImage:
+		b.WriteString(" — send image requests there")
+	}
+	return b.String()
 }
 
 // handleModels serves /v1/models: the OpenAI-compatible list, enriched with

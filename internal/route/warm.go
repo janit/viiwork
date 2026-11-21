@@ -137,7 +137,7 @@ func (r *Router) warmLocked(req Request, localHealthy bool, reports []capacity.R
 		if rep.Node == r.c.Self || !capacity.Fresh(rep, now, r.c.StaleAfter) {
 			continue
 		}
-		if mc, has := rep.Model(req.Model); has && mc.HealthyBackends > 0 && mc.KVShareGroup != "" {
+		if mc, has := rep.Model(req.Model); has && mc.HealthyBackends > 0 && mc.KVShareGroup != "" && textModel(mc) {
 			members[rep.Node] = member{mc.KVShareGroup, mc.KVShareImportMsPer1k}
 		}
 	}

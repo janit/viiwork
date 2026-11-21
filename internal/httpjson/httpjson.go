@@ -21,3 +21,9 @@ func Write(w http.ResponseWriter, status int, v any) {
 func Error(w http.ResponseWriter, status int, typ, message string) {
 	Write(w, status, meshapi.ErrorResponse{Error: meshapi.ErrorBody{Message: message, Type: typ}})
 }
+
+// ErrorCode is Error with a machine-readable code beside the type:
+// {"error":{"message":…,"type":…,"code":…}}.
+func ErrorCode(w http.ResponseWriter, status int, typ, code, message string) {
+	Write(w, status, meshapi.ErrorResponse{Error: meshapi.ErrorBody{Message: message, Type: typ, Code: code}})
+}

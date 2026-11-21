@@ -81,6 +81,9 @@ type ModelStatus struct {
 	// KVShare (v2.11) counts this node's session replication for the model
 	// since it started. Absent when the model shares nothing.
 	KVShare *KVShareStats `json:"kv_share,omitempty"`
+	// Modality (v2.13) is the model's kind, as in ModelCapacity: absent is
+	// text. A dashboard marks a non-text model rather than offering chat.
+	Modality string `json:"modality,omitempty"`
 }
 
 // KVShareStats is one model's session replication on one node: pushes it

@@ -65,7 +65,7 @@ func TestV2WireFields(t *testing.T) {
 	assertFields(t, ClientEnergy{}, []string{"since", "through", "clients"})
 	assertFields(t, ClientEnergyEntry{}, []string{"name", "wh_total", "w_1m", "kwh_24h", "kwh_30d", "busy_s_total", "tokens_total"})
 	assertFields(t, GPUInfo{}, []string{"index", "uuid", "name", "vendor", "util", "vram_used_mb", "vram_total_mb", "power_w"})
-	assertFields(t, ModelStatus{}, []string{"name", "engine", "slots", "busy", "queued", "ctx", "requests_total", "tokens_total", "perf", "backends", "parked", "engine_name", "engine_version", "images", "kv_share"})
+	assertFields(t, ModelStatus{}, []string{"name", "engine", "slots", "busy", "queued", "ctx", "requests_total", "tokens_total", "perf", "backends", "parked", "engine_name", "engine_version", "images", "kv_share", "modality"})
 	assertFields(t, BackendStatus{}, []string{
 		"id", "gpus", "status", "phase", "pid", "rss_mb", "slots", "busy",
 		"tok_decoded", "tok_remain", "respawns", "uptime_s",
@@ -74,20 +74,20 @@ func TestV2WireFields(t *testing.T) {
 	assertFields(t, CostInfo{}, []string{"available", "eur_per_hour", "today_eur", "breakdown"})
 	assertFields(t, CostBreakdown{}, []string{"spot_cents_kwh", "transfer_cents_kwh", "tax_cents_kwh", "vat_percent", "total_cents_kwh"})
 	assertFields(t, CapacityResponse{}, []string{"node", "ver", "models"})
-	assertFields(t, ModelCapacity{}, []string{"name", "engine", "slots", "busy", "queued", "ctx", "backends", "healthy_backends", "ttft_overhead_ms", "prefill_ms_per_1k", "perf_samples", "images", "kv_share_group", "kv_share_import_ms_per_1k"})
+	assertFields(t, ModelCapacity{}, []string{"name", "engine", "slots", "busy", "queued", "ctx", "backends", "healthy_backends", "ttft_overhead_ms", "prefill_ms_per_1k", "perf_samples", "images", "kv_share_group", "kv_share_import_ms_per_1k", "modality"})
 	assertFields(t, ClusterResponse{}, []string{"view", "mesh", "members", "models", "power_control", "cluster_cost_eur_per_hour", "cluster_cost_today_eur"})
 	assertFields(t, Member{}, []string{"node", "addr", "role", "state", "status"})
 	assertFields(t, PowerControlInfo{}, []string{"hosts", "out_of_band"})
 	assertFields(t, ModelEntry{}, []string{"id", "object", "owned_by", "target", "max_model_len", "context_length"})
 	assertFields(t, ModelsResponse{}, []string{"object", "data"})
 	assertFields(t, ErrorResponse{}, []string{"error"})
-	assertFields(t, ErrorBody{}, []string{"message", "type"})
+	assertFields(t, ErrorBody{}, []string{"message", "type", "code"})
 	assertFields(t, Event{}, []string{"t", "type", "message", "gpu_id", "rid", "task_id", "replay"})
 	assertFields(t, MeshEvent{}, []string{"t", "type", "message", "gpu_id", "rid", "task_id", "replay", "node_id", "hostname", "addr"})
 	assertFields(t, PromptEntry{}, []string{"rid", "t", "model", "prompt", "output", "elapsed_ms", "output_tokens", "gen_ms"})
 	assertFields(t, FleetCapacityResponse{}, []string{"view", "ver", "stale_after_s", "models", "resolved_from"})
-	assertFields(t, FleetModel{}, []string{"name", "engine", "slots", "busy", "free", "queued", "ctx", "hosts", "images"})
-	assertFields(t, FleetHost{}, []string{"node", "api", "slots", "busy", "free", "ctx", "age_ms", "stale", "images"})
+	assertFields(t, FleetModel{}, []string{"name", "engine", "slots", "busy", "free", "queued", "ctx", "hosts", "images", "modality"})
+	assertFields(t, FleetHost{}, []string{"node", "api", "slots", "busy", "free", "ctx", "age_ms", "stale", "images", "modality"})
 	assertFields(t, UpdateStatus{}, []string{"enabled", "running", "current", "last_good", "previous", "pending", "staged", "engines"})
 	assertFields(t, UpdatePending{}, []string{"version", "attempts", "deadline"})
 	assertFields(t, UpdateRequest{}, []string{"version", "allow_downgrade"})
@@ -106,8 +106,8 @@ func TestV2UnmeasurableFieldsAreOmitempty(t *testing.T) {
 	}{
 		{NodeStatus{}, []string{"host_mem_total_mb", "host_mem_used_mb", "gpus", "energy_kwh_24h", "energy_kwh_30d", "client_energy", "prompt_history"}},
 		{GPUInfo{}, []string{"uuid", "name", "vendor", "power_w"}},
-		{ModelStatus{}, []string{"requests_total", "tokens_total", "parked", "perf", "engine_name", "engine_version", "images", "kv_share"}},
-		{ModelCapacity{}, []string{"ttft_overhead_ms", "prefill_ms_per_1k", "perf_samples", "images", "kv_share_group", "kv_share_import_ms_per_1k"}},
+		{ModelStatus{}, []string{"requests_total", "tokens_total", "parked", "perf", "engine_name", "engine_version", "images", "kv_share", "modality"}},
+		{ModelCapacity{}, []string{"ttft_overhead_ms", "prefill_ms_per_1k", "perf_samples", "images", "kv_share_group", "kv_share_import_ms_per_1k", "modality"}},
 		{PerfScore{}, []string{"samples", "baseline_age_s"}},
 		{PromptEntry{}, []string{"elapsed_ms", "output_tokens", "gen_ms"}},
 		{BackendStatus{}, []string{"gpus", "phase", "pid", "rss_mb", "tok_decoded", "tok_remain"}},
@@ -115,8 +115,9 @@ func TestV2UnmeasurableFieldsAreOmitempty(t *testing.T) {
 		{CostInfo{}, []string{"eur_per_hour", "today_eur", "breakdown"}},
 		{ClusterResponse{}, []string{"power_control", "cluster_cost_eur_per_hour", "cluster_cost_today_eur"}},
 		{ModelEntry{}, []string{"target", "max_model_len", "context_length"}},
-		{FleetModel{}, []string{"ctx", "images"}},
-		{FleetHost{}, []string{"slots", "busy", "free", "ctx", "images"}},
+		{FleetModel{}, []string{"ctx", "images", "modality"}},
+		{ErrorBody{}, []string{"code"}},
+		{FleetHost{}, []string{"slots", "busy", "free", "ctx", "images", "modality"}},
 		{UpdateStatus{}, []string{"previous", "pending", "engines"}},
 		{UpdatePending{}, []string{"deadline"}},
 	}
@@ -244,5 +245,39 @@ func TestPathsAreFrozen(t *testing.T) {
 		if c.got != c.want {
 			t.Errorf("path changed: %q, want %q", c.got, c.want)
 		}
+	}
+}
+
+func TestIsTextModality(t *testing.T) {
+	for s, want := range map[string]bool{
+		"": true, ModalityText: true,
+		ModalityVoice: false, ModalityImage: false,
+		// An unknown modality is not text: a reader that cannot say what a
+		// model is must not send it a chat completion.
+		"video": false, "Text": false,
+	} {
+		if got := IsTextModality(s); got != want {
+			t.Errorf("IsTextModality(%q) = %v, want %v", s, got, want)
+		}
+	}
+}
+
+// A capacity entry from a node that predates modality decodes as text, and a
+// viiwork node's own (text) entry carries no field at all.
+func TestModalityAbsentIsText(t *testing.T) {
+	var mc ModelCapacity
+	if err := json.Unmarshal([]byte(`{"name":"m","engine":"llamacpp","slots":1}`), &mc); err != nil {
+		t.Fatal(err)
+	}
+	if !IsTextModality(mc.Modality) {
+		t.Errorf("absent modality decoded as %q", mc.Modality)
+	}
+	b, _ := json.Marshal(ModelCapacity{Name: "m"})
+	if strings.Contains(string(b), "modality") {
+		t.Errorf("a text model must not spell its modality: %s", b)
+	}
+	b, _ = json.Marshal(ModelCapacity{Name: "haru-4b", Modality: ModalityVoice})
+	if !strings.Contains(string(b), `"modality":"voice"`) {
+		t.Errorf("voice model: %s", b)
 	}
 }

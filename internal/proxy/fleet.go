@@ -93,19 +93,50 @@ type fleetAcc struct {
 // request. Sharing it is deliberate — a second rule here would drift, and the
 // number a consumer sees would stop matching the capacity the router will
 // actually use.
+//
+// Modality: a model some host lists as text (this node's own models always
+// are) is a text model, and only its text hosts count toward the totals and
+// the context floor — a voice host of the same name lends nothing to text
+// inference, so its slots would be capacity the router will never use. A
+// host of another modality is still listed, carrying its Modality. A model
+// that no host lists as text carries the modality instead, and its totals
+// are its own hosts' sessions. Listing, like the host list, is age-blind.
 func aggregateFleet(self string, local []meshapi.ModelCapacity, reports []capacity.Report, now time.Time, staleAfter time.Duration) meshapi.FleetCapacityResponse {
 	byModel := map[string]*fleetAcc{}
+
+	textNames := map[string]bool{}
+	for _, m := range local {
+		textNames[m.Name] = true
+	}
+	for _, rep := range reports {
+		if rep.Node == self {
+			continue
+		}
+		for _, m := range rep.Models {
+			if meshapi.IsTextModality(m.Modality) {
+				textNames[m.Name] = true
+			}
+		}
+	}
 
 	add := func(node, api string, m meshapi.ModelCapacity, fresh bool, age time.Duration) {
 		a := byModel[m.Name]
 		if a == nil {
-			a = &fleetAcc{model: meshapi.FleetModel{Name: m.Name, Engine: m.Engine}}
+			a = &fleetAcc{model: meshapi.FleetModel{Name: m.Name}}
 			byModel[m.Name] = a
 		}
-		if a.model.Engine == "" {
+		text := meshapi.IsTextModality(m.Modality)
+		if !textNames[m.Name] && (a.model.Modality == "" || m.Modality < a.model.Modality) {
+			a.model.Modality = m.Modality
+		}
+		// Engine names the model's engine; for a text model, a text host's.
+		if a.model.Engine == "" && (text || !textNames[m.Name]) {
 			a.model.Engine = m.Engine
 		}
 		host := meshapi.FleetHost{Node: node, API: api, AgeMS: age.Milliseconds()}
+		if !text {
+			host.Modality = m.Modality
+		}
 		if !fresh {
 			// Absent is not zero: a host we cannot currently see has no numbers
 			// this node can assert, so it carries none. It stays in the list so
@@ -119,6 +150,11 @@ func aggregateFleet(self string, local []meshapi.ModelCapacity, reports []capaci
 		slots, busy, ctx := m.Slots, m.Busy, m.Ctx
 		host.Slots, host.Busy, host.Free, host.Ctx = &slots, &busy, &free, &ctx
 		host.Images = m.Images
+		if !text && textNames[m.Name] {
+			// Its own numbers, but none of the text model's capacity.
+			a.model.Hosts = append(a.model.Hosts, host)
+			return
+		}
 
 		a.model.Slots += m.Slots
 		a.model.Busy += m.Busy

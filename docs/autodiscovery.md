@@ -244,6 +244,20 @@ on a host's own word (see [models.md](models.md#models-that-read-images));
 audio and video are never claimed. Local inference is free at the point
 of use; the electricity is in the energy store, not in a per-token price.
 
+**A model of another modality is not listed at all** (v2.13). A mesh member
+that is not a viiwork node (viiwork-voice) publishes each of its models with
+`modality` on `/v1/capacity`: `"voice"` for a full-duplex audio session
+model, `"image"` for an image generator. Absent is text, which is accurate,
+because no node before v2.13 serves anything else. A model the fleet serves
+only with another modality is dropped from the discovery record, and so from
+`/v1/models`, `/api.json` and `/v1/model/info`, along with any alias that
+targets it: a chat client could name it but never use it, since text
+inference refuses it with 400 (`code: model_modality`). When some host serves
+the same name as text, the model stays listed and only its text hosts count
+toward the served context. `/v1/fleet/capacity` lists every model, with
+`modality` on the model and on each host, so a consumer that does speak the
+other protocol finds its hosts there.
+
 **No architectural maximum.** No node knows the largest context a checkpoint
 could support, only the context it was loaded at.
 

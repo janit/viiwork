@@ -64,6 +64,13 @@ type FleetModel struct {
 	// slots says it does not, and such a request is refused. Absent when no
 	// host says yes and at least one cannot say.
 	Images *bool `json:"images,omitempty"`
+	// Modality (v2.13) is the model's kind when no host that lists it serves
+	// it as text: every such host publishes a non-text modality (the
+	// smallest name, should they differ). Absent is text. When some host
+	// serves the name as text, the model is text, and the totals and Ctx
+	// count only those hosts: a host of another modality is still listed,
+	// with its own Modality, but lends no capacity to text inference.
+	Modality string `json:"modality,omitempty"`
 }
 
 // FleetHost is one node's contribution to a model.
@@ -92,4 +99,7 @@ type FleetHost struct {
 	// Images (v2.10) is the host's own answer, as in ModelCapacity. Absent
 	// for a stale host and for one that cannot say.
 	Images *bool `json:"images,omitempty"`
+	// Modality (v2.13) is the host's own published modality, stale or not:
+	// it describes the model, not an occupancy reading. Absent is text.
+	Modality string `json:"modality,omitempty"`
 }

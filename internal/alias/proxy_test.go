@@ -177,3 +177,40 @@ func TestProxyAliases(t *testing.T) {
 		t.Errorf("/v1/models = %+v", models.Data)
 	}
 }
+
+// An alias to a model the fleet serves only as voice gets the router's 400,
+// the same answer as the name itself, whether or not the voice member's
+// report is fresh: never a 503 that invites a retry.
+func TestProxyAliasToAVoiceModel(t *testing.T) {
+	backend := &proxyBackend{addr: "127.0.0.1:1", state: supervisor.StateHealthy}
+	node := proxyNode{b: backend}
+	reports := &mutableReports{}
+	voice := func(received time.Time) capacity.Report {
+		return capacity.Report{Node: "sloth-voice", APIAddr: "127.0.0.1:2", Received: received,
+			Models: []meshapi.ModelCapacity{{Name: "haru-4b", Engine: "haru", Slots: 2, Backends: 1, HealthyBackends: 1, Modality: meshapi.ModalityVoice}}}
+	}
+	store := openTest(t, t.TempDir(), newClock())
+	if _, err := store.Set("talk", "haru-4b", []string{"m"}); err != nil {
+		t.Fatal(err)
+	}
+	resolver := NewResolver(store, NewServedView("self", node, reports, time.Minute, nil), nil, nil)
+	router := route.New(route.Config{Self: "self", Local: node, Remote: reports, StaleAfter: time.Minute, QueueMax: 4, QueueTimeout: 200 * time.Millisecond})
+	auth, err := proxy.NewForwardAuth("self", nil, nil, emptyMembers{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := proxy.NewHandler(proxy.Deps{
+		Self: "self", Version: "test", Router: router, Reports: reports, Local: node, Auth: auth,
+		Counters: proxy.NewCounters(), ForwardRetry: 1, Resolve: resolver.Resolve, ExtraModels: resolver.ModelEntries,
+	})
+	for name, received := range map[string]time.Time{"fresh": time.Now(), "stale": time.Now().Add(-time.Hour)} {
+		reports.set(voice(received))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"talk","messages":[]}`)))
+		var e meshapi.ErrorResponse
+		_ = json.Unmarshal(rec.Body.Bytes(), &e)
+		if rec.Code != http.StatusBadRequest || e.Error.Code != meshapi.ErrCodeModelModality || !strings.HasPrefix(e.Error.Message, `alias "talk" targets model "haru-4b" is voice-only`) {
+			t.Errorf("%s: %d %s", name, rec.Code, rec.Body.String())
+		}
+	}
+}
