@@ -21,8 +21,9 @@ type Options struct {
 	// there it is /opt/strata/terminal/python/bin/python3 (0.1.x images:
 	// /opt/strata/.venv/bin/python).
 	Python string `yaml:"python"`
-	// Dir is the directory that holds serve/ (the checkout, or a 0.2 image's
-	// /opt/strata/terminal). It becomes PYTHONPATH, which is all
+	// Dir is the directory that holds serve/ (/opt/strata/terminal in both
+	// images since Strata 0.2.16, which moved it out of the checkout's root).
+	// It becomes PYTHONPATH, which is all
 	// `python -m serve.server` needs: the server finds its own files relative
 	// to itself and starts the engine in the JSON's "cwd".
 	Dir string `yaml:"dir"`

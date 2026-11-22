@@ -97,12 +97,13 @@ docker-freetoken:
 docker-strata:
 	docker build --build-arg VERSION=$(VERSION) -f docker/Dockerfile.strata -t viiwork-strata .
 
-# The CUDA image the next target sits on (STRATA_CUDA_IMAGE): upstream's
-# tooling and signed engine package at the pin. Needs the internet.
+# For a Strata release upstream publishes no CUDA image of: makes the one the
+# next target sits on (STRATA_CUDA_IMAGE) from upstream's tooling and signed
+# engine package at the pin. Needs the internet.
 docker-strata-cuda-base:
 	scripts/build-strata-cuda-base.sh
 
-# On that image (STRATA_CUDA_IMAGE); run docker-strata-cuda-base first.
+# On STRATA_CUDA_IMAGE: upstream's, pulled by digest, or docker-strata-cuda-base's.
 docker-strata-cuda:
 	docker build --build-arg VERSION=$(VERSION) -f docker/Dockerfile.strata-cuda -t viiwork-strata-cuda .
 

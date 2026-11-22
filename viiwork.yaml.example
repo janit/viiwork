@@ -172,11 +172,11 @@ models:
   #   startup_timeout: 45m
   #   env: {STRATA_ARENA_MMAP: "1"}   # needs --pcie-frac 0 in the JSON's args
   #   strata:
-  #     dir: /opt/strata       # the Strata checkout; required, absolute (gfx906 image)
-  #     python: python3        # default
-  #     # The CUDA image (Strata 0.2) has another layout: dir /opt/strata/terminal,
-  #     # python /opt/strata/terminal/python/bin/python3, and the JSON's exe, cwd and
-  #     # lib_dirs move too (docs/models.md#strata-one-moe-family-across-several-cards).
+  #     dir: /opt/strata/terminal  # where serve/ is; required, absolute (both images since Strata 0.2.16)
+  #     python: python3        # default (gfx906 image)
+  #     # The CUDA image brings its own Python, /opt/strata/terminal/python/bin/python3,
+  #     # and the JSON's exe and lib_dirs differ too
+  #     # (docs/models.md#strata-one-moe-family-across-several-cards).
   #     warmup: 30s            # default; the wait between loaded and the first request (0s: none)
   #     # Session sharing (docs/models.md#sharing-sessions-between-hosts-kv_share):
   #     # after a session's turn the conversation is saved and sent, as a delta,

@@ -22,7 +22,16 @@ check "Dockerfile.strata STRATA_COMMIT" "$(sed -n 's/^ARG STRATA_COMMIT=//p' doc
 check "Dockerfile.strata STRATA_ROCM_BASE" "$(sed -n 's/^ARG STRATA_ROCM_BASE=//p' docker/Dockerfile.strata)" "$STRATA_ROCM_BASE"
 check "Dockerfile.strata-cuda STRATA_CUDA_IMAGE" "$(sed -n 's/^ARG STRATA_CUDA_IMAGE=//p' docker/Dockerfile.strata-cuda)" "$STRATA_CUDA_IMAGE"
 v=${STRATA_VERSION#v}
-check "STRATA_CUDA_IMAGE is STRATA_VERSION's" "${STRATA_CUDA_IMAGE##*:}" "$v"
+# Upstream's image (<repo>:<version>-cuda13@sha256:...) or the local one
+# scripts/build-strata-cuda-base.sh makes (strata-cuda-base:<version>).
+tag=${STRATA_CUDA_IMAGE%%@*}
+tag=${tag##*:}
+check "STRATA_CUDA_IMAGE is STRATA_VERSION's" "${tag%-cuda13}" "$v"
+case "$STRATA_CUDA_IMAGE" in
+strata-cuda-base:*) ;;
+*@sha256:*) ;;
+*) check "STRATA_CUDA_IMAGE is held by digest" "no" "yes" ;;
+esac
 case "$STRATA_CUDA_ENGINE_SHA256" in
 *[!0-9a-f]*) check "STRATA_CUDA_ENGINE_SHA256 is lowercase hex" "no" "yes" ;;
 esac

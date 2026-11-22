@@ -310,30 +310,33 @@ models:
     startup_timeout: 45m
     env: {STRATA_ARENA_MMAP: "1"}    # needs --pcie-frac 0 in the JSON's args
     strata:
-      dir: /opt/strata               # the Strata checkout; required
+      dir: /opt/strata/terminal      # where serve/ is; required
       python: python3                # default
       warmup: 30s                    # default
 ```
 
 - **The paths depend on the image.** The gfx906 image (`viiwork-strata`,
-  built from source) and the CUDA image (`viiwork-strata-cuda`, built on
-  an image made from upstream's 0.2 sources and signed engine package) lay Strata out differently, and the model's block and
+  built from source) and the CUDA image (`viiwork-strata-cuda`, on
+  upstream's ready-made image) lay Strata out differently, and the model's block and
   the JSON must name what is in the image they run on:
 
-  | | `viiwork-strata` (gfx906) | `viiwork-strata-cuda` (Strata 0.2.15) |
+  | | `viiwork-strata` (gfx906, Strata 0.2.18) | `viiwork-strata-cuda` (Strata 0.2.18) |
   |---|---|---|
-  | `strata.dir` | `/opt/strata` | `/opt/strata/terminal` |
+  | `strata.dir` | `/opt/strata/terminal` | `/opt/strata/terminal` |
   | `strata.python` | `python3` (default) | `/opt/strata/terminal/python/bin/python3` |
-  | JSON `"exe"` | `/opt/strata/build-906/strata` | `/opt/strata/components/engine/0.1.60-linux-x86_64-cuda-cuda13/strata` |
-  | JSON `"cwd"` | `/opt/strata` | `/opt/strata/terminal` |
-  | JSON `"lib_dirs"` | — | `["/opt/strata/components/engine/0.1.60-linux-x86_64-cuda-cuda13"]` |
-  | expert profile | `/opt/strata/data/expert-profile.bin` | `/opt/strata/terminal/data/expert-profile.bin` |
+  | JSON `"exe"` | `/opt/strata/build-906/strata` | `/opt/strata/components/engine/0.1.64-linux-x86_64-cuda-cuda13/strata` |
+  | JSON `"cwd"` | `/opt/strata/terminal` | `/opt/strata/terminal` |
+  | JSON `"lib_dirs"` | — | `["/opt/strata/components/engine/0.1.64-linux-x86_64-cuda-cuda13"]` |
+  | expert profile | `/opt/strata/terminal/data/expert-profile.bin` | `/opt/strata/terminal/data/expert-profile.bin` |
 
-  The engine directory is named for the engine package's version (0.1.60 in
-  Strata 0.2.15; the fork's current kv_share build is 0.1.51). With another image's
-  paths the backend dies at launch. The CUDA image's paths were the
-  `/opt/strata` checkout and `/opt/strata/.venv/bin/python` up to Strata
-  0.1.45 (viiwork v2.11.0-beta1 and earlier).
+  The engine directory is named for the engine package's version (0.1.64 in
+  Strata 0.2.18; the fork's current kv_share build is 0.1.51). With another image's
+  paths the backend dies at launch. The gfx906 image's `dir`, `cwd` and
+  profile were under `/opt/strata` up to Strata 0.2.15 (viiwork v2.13.0 and
+  earlier), before upstream moved the server into `terminal/`. The CUDA
+  image's paths were the `/opt/strata` checkout and
+  `/opt/strata/.venv/bin/python` up to Strata 0.1.45 (viiwork v2.11.0-beta1
+  and earlier).
 - **One JSON serves every backend of the model.** The node passes host, port
   and cards as flags; the file's `host`, `port` and `gpu` are ignored. Leave
   `layer_split` out and Strata splits the layers itself; the measurements below

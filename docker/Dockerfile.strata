@@ -5,23 +5,19 @@
 #
 # AMD's ROCm no longer ships gfx906 libraries, so the base is the community
 # image upstream itself documents (docs/AMD_HIP.md, "gfx906").
-# docker/strata/gfx906-<version>.patch carries one fix for Strata v0.2.15,
-# inside the gfx906 build only: strata_hip.h gets HIP aliases for two
-# stream-priority calls, cudaDeviceGetStreamPriorityRange and
-# cudaStreamCreateWithPriority, which src/core/dflash2.cpp (new in 0.2) makes
-# unconditionally; without them the engine does not compile. The other three
-# fixes the v0.1.45 patch carried are upstream or unneeded at v0.2.15: the two
-# CMake ones (moe_f16_kq.cu in the gfx906 strata_mmq, GGML_USE_HIP for
-# strata_mmq_w4a4) since 0.2.1, and the cuBLAS aliases because the Qwen3.6
-# engine that called them is no longer part of a gfx906 build.
-# The patch is unchanged since v0.2.3 (built 2026-10-24) and applies to
-# v0.2.15, which compiled for gfx906 on 2026-11-16 (the binary starts and lists
-# qwen4exp; no gfx906 card has served it). v0.1.45 served under viiwork on 2026-10-18,
+# v0.2.18 builds unpatched: the two stream-priority aliases in strata_hip.h
+# that docker/strata/gfx906-v0.2.15.patch carried (dflash2.cpp needs them) are
+# upstream since 0.2.17 (the gfx906 build fix, #6246). 0.2.16 replaced the ggml
+# and llama.cpp matrix kernels with Strata's own and moved the tree: the engine is
+# built from engine/, and the server, its requirements and its data are in
+# terminal/. v0.2.15 compiled for gfx906 on 2026-11-16 and started; no gfx906
+# card has served a 0.2 build. v0.1.45 served under viiwork on 2026-10-18,
 # one backend on four Radeon VIIs and an MI60.
 #
-# The source checkout is the image's layout, as it was at 0.1.x: upstream's
-# 0.2 Terminal and component packages (the CUDA image's /opt/strata/terminal)
-# are its release archives, which this build does not make.
+# The source checkout is the image's layout: upstream's Terminal and component
+# packages (the CUDA image's /opt/strata/components) are release archives this
+# build does not make. Since 0.2.16 the checkout's terminal/ is where the CUDA
+# image's /opt/strata/terminal is, so the model's block is the same on both.
 #
 # WHAT AN OPERATOR WILL NOT GUESS:
 #   - The model is not in the image. Mount the pack, the GGUF shards and the
@@ -31,8 +27,9 @@
 #     volume must be writable, and the JSON's args need --pcie-frac 0.
 #   - Backends of one model share that file; two loaded used 36 GB of RAM.
 #   - The Strata JSON that models[].path names must point INTO THIS IMAGE:
-#       "exe": "/opt/strata/build-906/strata", "cwd": "/opt/strata",
-#     and the model's block is `strata: {dir: /opt/strata}`. An engine binary
+#       "exe": "/opt/strata/build-906/strata", "cwd": "/opt/strata/terminal",
+#     and the model's block is `strata: {dir: /opt/strata/terminal}` (it was
+#     /opt/strata up to v0.2.15; with that the server is not found). An engine binary
 #     mounted from the host was built against that host's ROCm, not this one.
 #   - The image has no group named `render`: give the container the host's
 #     render group by number (docker/compose.strata.yaml).
@@ -51,8 +48,8 @@ RUN CGO_ENABLED=0 go build -ldflags "-X main.version=${VERSION}" -o /viiwork ./c
 
 # Stage 2: Strata, built for gfx906, and the runtime.
 FROM ${STRATA_ROCM_BASE}
-ARG STRATA_VERSION=v0.2.15
-ARG STRATA_COMMIT=c77572806996349b49995e4f98d41b5294d36a21
+ARG STRATA_VERSION=v0.2.18
+ARG STRATA_COMMIT=6e38f588a646c0ee6948a74afbe670eb75896106
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -64,16 +61,14 @@ RUN apt-get update \
 # and run as root on a node with the host's PID namespace.
 RUN git clone --depth 1 --branch ${STRATA_VERSION} https://github.com/Niko1221/Strata /opt/strata \
     && test "$(git -C /opt/strata rev-parse HEAD)" = "${STRATA_COMMIT}"
-COPY docker/strata/gfx906-${STRATA_VERSION}.patch /tmp/gfx906.patch
 WORKDIR /opt/strata
-RUN git apply /tmp/gfx906.patch \
-    && pip3 install --no-cache-dir --break-system-packages -r requirements.txt
+RUN pip3 install --no-cache-dir --break-system-packages -r terminal/requirements.txt
 
-# The engine as docs/AMD_HIP.md builds it. Since 0.2.14 ggml is vendored in the
-# checkout (third_party/strata-ggml), so nothing is fetched and no
-# STRATA_GGML_DIR is passed; v0.2.3 had to be pointed at a llama.cpp checkout
-# (setup.get_llama_cpp returns nothing now, which is what broke the old step).
-RUN cmake -S . -B build-906 -G Ninja \
+# The engine as docs/AMD_HIP.md builds it, from engine/. What it still takes
+# from ggml is vendored in engine/third_party, so nothing is fetched and no
+# STRATA_GGML_DIR is passed (v0.2.3 needed one). The build directory stays
+# /opt/strata/build-906, the JSON's "exe".
+RUN cmake -S engine -B build-906 -G Ninja \
         -DSTRATA_HIP_GFX906=ON -DCMAKE_HIP_ARCHITECTURES=gfx906 \
         -DSTRATA_BUILD_TESTS=OFF \
         -DCMAKE_C_COMPILER=/opt/rocm/llvm/bin/clang \

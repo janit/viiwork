@@ -1,5 +1,50 @@
 # Changelog
 
+## v2.13.1
+
+- **The Strata pin is v0.2.18** (was v0.2.15; `STRATA_COMMIT` `6e38f58`).
+  Nodes that run their own Strata image (the kv_share fork) are not affected.
+  **Upstream's server has no session endpoints, so kv_share does not run on
+  either image**: a node in a kv_share group stays on the fork.
+  - **CUDA:** upstream publishes a cuda13 image for 0.2.18, so
+    `STRATA_CUDA_IMAGE` is `ghcr.io/niko1221/strata:0.2.18-cuda13` again, by
+    digest, and `make docker-strata-cuda-base` is no longer a step. The
+    engine is 0.1.64: **a model on this image changes its JSON's `exe` and
+    `lib_dirs` from `…/engine/0.1.60-linux-x86_64-cuda-cuda13` to
+    `…/engine/0.1.64-linux-x86_64-cuda-cuda13`**; `strata.dir` and
+    `strata.python` stay. `scripts/build-strata-cuda-base.sh` remains for a
+    release with no image and follows upstream's new `tools/docker/` paths.
+  - **gfx906:** upstream moved its tree at 0.2.16 (`engine/`, `terminal/`),
+    so the server is now in `/opt/strata/terminal`: **a model on this image
+    changes `strata.dir` and its JSON's `cwd` from `/opt/strata` to
+    `/opt/strata/terminal`** (the expert profile moves to
+    `/opt/strata/terminal/data/` too). The engine stays
+    `/opt/strata/build-906/strata`. The patch is gone: upstream carries its
+    two HIP aliases since 0.2.17.
+  - **Upstream changes an operator will notice.** The route tail skip is off
+    by default since 0.2.17 (`STRATA_ROUTE_TAIL_SKIP`; `=7` turns it back
+    on): answers match a run without it, and decode is slower where it was on
+    (NVIDIA; 47.0 against 50.8 tok/s on two A4000 in upstream's numbers).
+    0.2.16 moved every engine to Strata's own kernels; upstream reports the
+    same tokens as 0.2.15 on its test prompts. 0.2.18 adds the Hy4-Flash
+    family as a separate engine (`components/shapes/hy4` in the CUDA image),
+    which viiwork has not run.
+  - **Served on CUDA, not yet on gfx906.** The CUDA image served
+    Qwen3.8-Flash-Next (IQ3_XXS, four slots of 262,144, MTP, vision) on an
+    RTX 5090 on 2026-11-22: loaded in 50 to 80 s, chat, an image, and a
+    needle in a 43k-token prompt correct, the prompt read at about 3,860
+    tok/s. The gfx906 image builds and starts its engine (`qwen4exp`) and
+    server; no card has served it. With the old gfx906 `dir` the backend
+    fails at once: `No module named 'serve'`.
+  - **Parallel slots run without MTP drafts** on upstream's default ("Drafting:
+    none in parallel slots"; a single request still drafts). Leave it: on the
+    RTX 5090, four and eight requests at once ran 204 to 242 tok/s in all
+    without the drafts and 161 to 219 with `--batch-mtp`, at 53 to 70 tok/s
+    each either way. Against the fork on the same card (2026-10-23), needles
+    at 117k, 148k and 200k tokens read at 3,728 / 3,628 / 3,561 tok/s (was
+    3,541 / 3,466 / 3,457) and decoded at 200 to 208 tok/s, and four at once
+    ran 53 to 64 tok/s each (was 41 to 50).
+
 ## v2.13.0
 
 - **Modality: voice and image models in the mesh.** A model on

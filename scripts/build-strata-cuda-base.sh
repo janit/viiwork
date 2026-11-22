@@ -3,16 +3,18 @@
 # release docker/pins.env names, and tags it STRATA_CUDA_IMAGE.
 #
 # Upstream publishes ready-made images (ghcr.io/niko1221/strata:<version>-cuda13)
-# some time after a release; 0.2.14 and 0.2.15 had none. This makes the same image from
-# upstream's own tooling, and trusts nothing it does not check:
+# some time after a release; 0.2.14 and 0.2.15 had none. For such a release
+# this makes the same image from upstream's own tooling (then STRATA_CUDA_IMAGE
+# is strata-cuda-base:<version without v>), and trusts nothing it does not
+# check:
 #   - the source is cloned at the tag and must be exactly STRATA_COMMIT;
-#   - the engine package comes from docker/fetch-engines.py, which checks the
+#   - the engine package comes from tools/docker/fetch-engines.py (docker/ up
+#     to 0.2.15), which checks the
 #     signed update feed, the archive's size and sha256, and every file's hash;
 #     its archive sha256 must also be STRATA_CUDA_ENGINE_SHA256;
-#   - docker/build.sh (upstream's) assembles the image. At v0.2.15 it leaves
-#     third_party/strata-gguf-py out of the build context although
-#     package_terminal.py copies it, so that path is added to a copy of the
-#     script; a script that already names it is used as it is.
+#   - tools/docker/build.sh (upstream's) assembles the image. Since 0.2.16 it
+#     carries engine/third_party/strata-gguf-py in its build context itself;
+#     at 0.2.14 and 0.2.15 this script had to add it.
 #
 #   scripts/build-strata-cuda-base.sh
 #
@@ -32,19 +34,16 @@ if [ "$got" != "$STRATA_COMMIT" ]; then
 fi
 
 cd "$work/src"
-sha=$(python3 -I docker/fetch-engines.py --release-tag "$STRATA_VERSION" --list 2>/dev/null | awk -F'\t' '$1=="cuda13" {print $5}')
+[ -f tools/docker/build.sh ] || { echo "build-strata-cuda-base: no tools/docker/build.sh at $STRATA_VERSION; this script follows the 0.2.16 layout" >&2; exit 1; }
+sha=$(python3 -I tools/docker/fetch-engines.py --release-tag "$STRATA_VERSION" --list 2>/dev/null | awk -F'\t' '$1=="cuda13" {print $5}')
 if [ "$sha" != "$STRATA_CUDA_ENGINE_SHA256" ]; then
 	echo "build-strata-cuda-base: the feed lists the cuda13 engine as ${sha:-nothing}, docker/pins.env says $STRATA_CUDA_ENGINE_SHA256" >&2
 	exit 1
 fi
-pkg=$(python3 -I docker/fetch-engines.py --release-tag "$STRATA_VERSION" --flavors cuda13 --out "$work/pkgs" | awk -F'\t' '$1=="cuda13" {print $3}')
+pkg=$(python3 -I tools/docker/fetch-engines.py --release-tag "$STRATA_VERSION" --flavors cuda13 --out "$work/pkgs" | awk -F'\t' '$1=="cuda13" {print $3}')
 [ -d "$pkg" ] || { echo "build-strata-cuda-base: no engine package" >&2; exit 1; }
 
-if ! grep -q 'paths="third_party/strata-gguf-py ' docker/build.sh; then
-	sed -i 's#^paths="packaging bin#paths="third_party/strata-gguf-py packaging bin#' docker/build.sh
-	grep -q 'paths="third_party/strata-gguf-py ' docker/build.sh || { echo "build-strata-cuda-base: upstream's build.sh changed shape; update this script" >&2; exit 1; }
-fi
-sh docker/build.sh --flavor cuda --engine "$pkg" --tag "$STRATA_CUDA_IMAGE"
+sh tools/docker/build.sh --flavor cuda --engine "$pkg" --tag "$STRATA_CUDA_IMAGE"
 
 # What was built must be what was pinned.
 built=$(docker run --rm --entrypoint cat "$STRATA_CUDA_IMAGE" /opt/strata/terminal/COMMIT | tr -d '[:space:]')
